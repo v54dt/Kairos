@@ -35,6 +35,13 @@ target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
 add_executable(kairos_quote_tap src/quote_tap_main.cpp)
 target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
+add_library(kairos_engine src/engine.cpp)
+target_include_directories(kairos_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(kairos_engine PUBLIC kairos_uds kairos_scenario)
+
+add_executable(kairos_scenario_trader src/scenario_trader_main.cpp)
+target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine)
+
 add_library(kairos_scenario src/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)

@@ -27,7 +27,9 @@ class OrderBackend {
   virtual bool Connect() = 0;
   virtual void Disconnect() = 0;
   virtual bool IsConnected() const = 0;
-  virtual std::string Submit(Side side, Cents price, long shares) = 0;
+  // The engine supplies a correlation id (concords user_defined_id) so callbacks
+  // can be matched even when the backend fills synchronously.
+  virtual void Submit(const std::string& id, Side side, Cents price, long shares) = 0;
   virtual void UpdatePrice(const std::string& id, Cents new_price) = 0;  // re-peg
   virtual void Cancel(const std::string& id) = 0;
 
@@ -54,11 +56,9 @@ class PaperOrderBackend : public OrderBackend {
   void Disconnect() override { connected_ = false; }
   bool IsConnected() const override { return connected_; }
 
-  std::string Submit(Side /*side*/, Cents price, long shares) override {
-    std::string id = "paper-" + std::to_string(++seq_);
+  void Submit(const std::string& id, Side /*side*/, Cents price, long shares) override {
     if (on_ack_) on_ack_(id, true, "");
     if (on_fill_) on_fill_(id, Fill{shares, price});
-    return id;
   }
 
   void UpdatePrice(const std::string& /*id*/, Cents /*new_price*/) override {}
@@ -69,7 +69,6 @@ class PaperOrderBackend : public OrderBackend {
 
  private:
   bool connected_ = false;
-  long seq_ = 0;
 };
 
 }  // namespace kairos::exec

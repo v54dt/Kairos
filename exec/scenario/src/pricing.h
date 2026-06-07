@@ -22,11 +22,11 @@ namespace kairos::exec {
 inline Cents DecideLimitPrice(const Scenario& s, const TopOfBook& tob, Cents fixed_reference,
                               std::string& reason) {
   if (tob.is_trial && !s.use_trial_quotes) {
-    reason = "試撮報價，跳過";
+    reason = "trial quote, skipped";
     return 0;
   }
   if (s.require_two_sided && !tob.HasTwoSided()) {
-    reason = "非雙邊報價";
+    reason = "not two-sided";
     return 0;
   }
 
@@ -47,7 +47,7 @@ inline Cents DecideLimitPrice(const Scenario& s, const TopOfBook& tob, Cents fix
       break;
   }
   if (base <= 0) {
-    reason = "所選定價來源無報價";
+    reason = "no price for policy";
     return 0;
   }
 
@@ -57,7 +57,7 @@ inline Cents DecideLimitPrice(const Scenario& s, const TopOfBook& tob, Cents fix
   }
   Cents price = RoundNearestTick(base, s.product);
   if (price <= 0) {
-    reason = "定價無效";
+    reason = "invalid price";
     return 0;
   }
 
@@ -66,8 +66,8 @@ inline Cents DecideLimitPrice(const Scenario& s, const TopOfBook& tob, Cents fix
   if (ref > 0) {
     double dev = std::fabs(static_cast<double>(price - ref)) / static_cast<double>(ref) * 100.0;
     if (dev > s.max_deviation_pct) {
-      reason = std::format("價格 {} 偏離參考 {} 達 {:.2f}% > {:.2f}%", CentsToString(price),
-                           CentsToString(ref), dev, s.max_deviation_pct);
+      reason = std::format("price {} deviates from ref {} by {:.2f}% > {:.2f}%",
+                           CentsToString(price), CentsToString(ref), dev, s.max_deviation_pct);
       return 0;
     }
   }

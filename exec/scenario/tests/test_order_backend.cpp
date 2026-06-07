@@ -51,21 +51,20 @@ int main() {
   CHECK(backend.Connect());
   CHECK(backend.IsConnected());
 
-  std::string id = backend.Submit(Side::kBuy, 58000, 100);
-  CHECK(!id.empty());
-  CHECK(acked_id == id);
+  backend.Submit("ord-1", Side::kBuy, 58000, 100);
+  CHECK(acked_id == "ord-1");
   CHECK(ack_ok);
-  CHECK(filled_id == id);  // paper fills immediately at the limit
+  CHECK(filled_id == "ord-1");  // paper fills immediately at the limit
   CHECK_EQ(got.shares, 100);
   CHECK_EQ(got.price, 58000);
 
-  std::string id2 = backend.Submit(Side::kSell, 58100, 50);
-  CHECK(id2 != id);  // unique ids
+  backend.Submit("ord-2", Side::kSell, 58100, 50);
+  CHECK(filled_id == "ord-2");
   CHECK_EQ(got.shares, 50);
   CHECK_EQ(got.price, 58100);
 
-  backend.Cancel(id);
-  CHECK(cancelled_id == id);
+  backend.Cancel("ord-1");
+  CHECK(cancelled_id == "ord-1");
 
   backend.Disconnect();
   CHECK(!backend.IsConnected());

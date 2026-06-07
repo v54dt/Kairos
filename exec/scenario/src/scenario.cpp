@@ -73,35 +73,33 @@ Product ParseProduct(const std::string& s) {
 
 }  // namespace
 
-const char* BoardName(Board b) { return b == Board::kOddLot ? "OddLot(零股)" : "RoundLot(整股)"; }
-const char* PacingName(Pacing p) {
-  return p == Pacing::kTwap ? "twap(時間分散)" : "asap(盡快買滿)";
-}
-const char* SideName(Side s) { return s == Side::kBuy ? "Buy(買)" : "Sell(賣)"; }
+const char* BoardName(Board b) { return b == Board::kOddLot ? "OddLot" : "RoundLot"; }
+const char* PacingName(Pacing p) { return p == Pacing::kTwap ? "twap" : "asap"; }
+const char* SideName(Side s) { return s == Side::kBuy ? "Buy" : "Sell"; }
 const char* MarketName(Market m) { return m == Market::kTse ? "TSE" : "OTC"; }
 const char* PricePolicyName(PricePolicy p) {
   switch (p) {
     case PricePolicy::kCross:
-      return "cross(吃對手價)";
+      return "cross";
     case PricePolicy::kJoin:
-      return "join(掛同方向)";
+      return "join";
     case PricePolicy::kMid:
-      return "mid(中價)";
+      return "mid";
     case PricePolicy::kLast:
-      return "last(成交價)";
+      return "last";
   }
   return "?";
 }
 const char* ProductName(Product p) {
   switch (p) {
     case Product::kStock:
-      return "stock(股票)";
+      return "stock";
     case Product::kEtf:
-      return "etf(ETF)";
+      return "etf";
     case Product::kWarrant:
-      return "warrant(權證)";
+      return "warrant";
     case Product::kConvertibleBond:
-      return "cb(可轉債)";
+      return "cb";
   }
   return "?";
 }
@@ -206,23 +204,23 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
 std::string SummarizeScenario(const Scenario& s) {
   long cap = ResolvedMaxOrderValueTwd(s.fees, s.IsOddLot());
   std::string out;
-  out += std::format("劇本: {}\n", s.name);
-  out += std::format("  標的     : {} ({}, {}, {})\n", s.symbol, MarketName(s.market),
+  out += std::format("scenario: {}\n", s.name);
+  out += std::format("  symbol   : {} ({}, {}, {})\n", s.symbol, MarketName(s.market),
                      BoardName(s.board), ProductName(s.product));
   out +=
-      std::format("  方向/條件: {} / {} / {}\n", SideName(s.side), s.funding_type, s.time_in_force);
-  out += std::format("  預算     : NT$ {}  每 {} 秒一筆\n", s.budget_twd, s.interval_seconds);
-  out += std::format("  下單節奏 : {}\n", PacingName(s.pacing));
+      std::format("  side/cond: {} / {} / {}\n", SideName(s.side), s.funding_type, s.time_in_force);
+  out += std::format("  budget   : NT$ {}  every {}s\n", s.budget_twd, s.interval_seconds);
+  out += std::format("  pacing   : {}\n", PacingName(s.pacing));
   if (s.shares_per_order > 0) {
-    out += std::format("  每筆股數 : {} 股 (固定)\n", s.shares_per_order);
+    out += std::format("  per order: {} shares (fixed)\n", s.shares_per_order);
   } else {
-    out += std::format("  每筆股數 : 自動 (最優手續費, 每筆 <= NT$ {})\n", cap);
+    out += std::format("  per order: auto (fee-optimal, <= NT$ {})\n", cap);
   }
-  out += std::format("  定價      : {} (offset {} ticks, 偏離上限 {:.1f}%)\n",
+  out += std::format("  pricing  : {} (offset {} ticks, max dev {:.1f}%)\n",
                      PricePolicyName(s.price_policy), s.tick_offset, s.max_deviation_pct);
-  out += std::format("  交易時段 : {} ~ {} {}\n", s.window_start, s.window_end,
-                     s.weekdays_only ? "(僅平日)" : "");
-  out += std::format("  模式     : {}\n", s.live ? "*** LIVE 實單 ***" : "PAPER 模擬");
+  out += std::format("  window   : {} ~ {} {}\n", s.window_start, s.window_end,
+                     s.weekdays_only ? "(weekdays)" : "");
+  out += std::format("  mode     : {}\n", s.live ? "*** LIVE ***" : "PAPER");
   return out;
 }
 

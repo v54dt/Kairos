@@ -20,6 +20,7 @@ struct Action {
   ActionKind kind = ActionKind::kNone;
   Cents price = 0;
   long shares = 0;
+  bool done = false;   // terminal: budget met or remaining can't buy another slice
   std::string reason;  // why kNone (skip / done)
 };
 
@@ -36,19 +37,21 @@ inline Action DecideAction(const Scenario& s, const TopOfBook& tob, const Restin
                            long remaining_twd) {
   Action a;
   if (remaining_twd <= 0) {
-    a.reason = "預算已滿";
+    a.reason = "budget reached";
+    a.done = true;
     return a;
   }
   std::string reason;
   Cents target = DecideLimitPrice(s, tob, FloatToCents(s.reference_price), reason);
   if (target <= 0) {
-    a.reason = reason;
+    a.reason = reason;  // transient skip (試撮 / one-sided / deviation)
     return a;
   }
   if (!resting.active) {
     long shares = DecideOrderShares(s, target, remaining_twd);
     if (shares <= 0) {
-      a.reason = "預算不足一筆";
+      a.reason = "remaining below one slice";
+      a.done = true;  // dust: can't afford another share at this price
       return a;
     }
     a.kind = ActionKind::kPlace;
