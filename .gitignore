@@ -3,6 +3,7 @@
 
 # C++ build output
 /sidecar/concords/build/
+/exec/scenario/build/
 
 # Live sidecar config
 /sidecar/concords/sidecar.toml

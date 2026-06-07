@@ -90,3 +90,20 @@ jobs:
           cmake -S sidecar/concords -B sidecar/concords/build -DCMAKE_BUILD_TYPE=Release
           cmake --build sidecar/concords/build -j
           ctest --test-dir sidecar/concords/build --output-on-failure
+
+  exec:
+    name: exec build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake-format clang-format
+      - name: cmake-format check
+        run: cmake-format --check exec/scenario/CMakeLists.txt
+      - name: clang-format check
+        run: clang-format --dry-run --Werror exec/scenario/src/*.h exec/scenario/tests/*.cpp
+      - name: Build + test
+        run: |
+          cmake -S exec/scenario -B exec/scenario/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build exec/scenario/build -j
+          ctest --test-dir exec/scenario/build --output-on-failure
