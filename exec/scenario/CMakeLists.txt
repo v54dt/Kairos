@@ -39,8 +39,29 @@ add_library(kairos_engine src/engine.cpp)
 target_include_directories(kairos_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(kairos_engine PUBLIC kairos_uds kairos_scenario)
 
+# Live order backend: real concords StockClient when the stock SDK is present in exec/scenario/lib,
+# otherwise a stub so --live reports "no broker SDK". CI has no SDK and builds the stub.
+set(CONCORDS_STOCK_LIB ${CMAKE_CURRENT_SOURCE_DIR}/lib/concords_sdk.so)
+if(EXISTS ${CONCORDS_STOCK_LIB})
+  add_library(kairos_live src/concords_order_backend.cpp)
+  target_include_directories(
+    kairos_live
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+  target_link_libraries(
+    kairos_live
+    PUBLIC kairos_scenario
+    PRIVATE ${CONCORDS_STOCK_LIB})
+  set_target_properties(kairos_live PROPERTIES BUILD_RPATH ${CMAKE_CURRENT_SOURCE_DIR}/lib
+                                               INSTALL_RPATH ${CMAKE_CURRENT_SOURCE_DIR}/lib)
+else()
+  add_library(kairos_live src/live_backend_stub.cpp)
+  target_include_directories(kairos_live PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(kairos_live PUBLIC kairos_scenario)
+endif()
+
 add_executable(kairos_scenario_trader src/scenario_trader_main.cpp)
-target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine)
+target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_live)
 
 add_library(kairos_scenario src/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

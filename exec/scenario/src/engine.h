@@ -30,6 +30,8 @@ class ScenarioEngine {
  private:
   void OnAck(const std::string& id, bool ok, const std::string& err);
   void OnFill(const std::string& id, const Fill& f);
+  void OnCancel(const std::string& id, bool ok);
+  void ClearResting();  // call under mu_
   void SdkGate();
   std::string NextOrderId();
 
@@ -44,6 +46,8 @@ class ScenarioEngine {
   RestingOrder resting_;
   std::string resting_id_;
   long resting_filled_ = 0;
+  bool resting_acked_ = false;  // broker confirmed the working order (OnSubmit)
+  bool cancelling_ = false;     // cancel issued for re-peg, awaiting OnCancel/full fill
   bool complete_ = false;
   std::atomic<bool> stop_{false};
   bool ignore_window_ = false;

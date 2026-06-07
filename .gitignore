@@ -17,3 +17,6 @@
 
 # Live scenario configs (creds); the committed template is scenario.example.toml
 /exec/scenario/scenarios/
+
+# Vendor stock SDK for exec (orders)
+/exec/scenario/lib/
