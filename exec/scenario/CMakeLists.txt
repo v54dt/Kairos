@@ -9,6 +9,17 @@ endif()
 
 # Pure-logic self-tests (no broker SDK, no network) for the TW market + fee model. The execution
 # engine (concords order backend, UDS quote consumer) is added in later phases.
+include(FetchContent)
+FetchContent_Declare(
+  tomlplusplus
+  GIT_REPOSITORY https://github.com/marzer/tomlplusplus.git
+  GIT_TAG v3.4.0)
+FetchContent_MakeAvailable(tomlplusplus)
+
+add_library(kairos_scenario src/scenario.cpp)
+target_include_directories(kairos_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
+
 enable_testing()
 add_executable(test_market_fees tests/test_market_fees.cpp)
 target_include_directories(test_market_fees PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -17,3 +28,7 @@ add_test(NAME test_market_fees COMMAND test_market_fees)
 add_executable(test_pricing tests/test_pricing.cpp)
 target_include_directories(test_pricing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_pricing COMMAND test_pricing)
+
+add_executable(test_scenario tests/test_scenario.cpp)
+target_link_libraries(test_scenario PRIVATE kairos_scenario)
+add_test(NAME test_scenario COMMAND test_scenario)

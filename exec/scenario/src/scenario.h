@@ -5,6 +5,7 @@
 // loader / validator / summary live in scenario.cpp.
 
 #include <string>
+#include <vector>
 
 #include "tw_fees.h"
 #include "tw_market.h"
@@ -72,6 +73,17 @@ struct Scenario {
   bool IsOddLot() const { return board == Board::kOddLot; }
   long EffectiveMaxNotional() const { return max_notional_twd > 0 ? max_notional_twd : budget_twd; }
 };
+
+Scenario LoadScenario(const std::string& path);  // throws std::runtime_error on parse/missing
+std::vector<std::string> ValidateScenario(const Scenario& s);  // empty == valid
+std::string SummarizeScenario(const Scenario& s);
+
+const char* BoardName(Board b);
+const char* PacingName(Pacing p);
+const char* SideName(Side s);
+const char* MarketName(Market m);
+const char* PricePolicyName(PricePolicy p);
+const char* ProductName(Product p);
 
 }  // namespace kairos::exec
 
