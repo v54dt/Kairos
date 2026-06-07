@@ -67,13 +67,22 @@ static void TestDecide() {
   CHECK_EQ(r.price, 501'00);
   CHECK_EQ(r.shares, resting.shares);
 
-  // budget exhausted -> nothing
-  CHECK(DecideAction(s, book, none, 0).kind == ActionKind::kNone);
+  // budget exhausted -> terminal done
+  Action spent = DecideAction(s, book, none, 0);
+  CHECK(spent.kind == ActionKind::kNone);
+  CHECK(spent.done);
 
-  // 試撮 quote ignored by default -> nothing
+  // remaining dust (< one share at 500) -> terminal done, not a spin
+  Action dust = DecideAction(s, book, none, 100);
+  CHECK(dust.kind == ActionKind::kNone);
+  CHECK(dust.done);
+
+  // 試撮 quote ignored by default -> transient skip (NOT done)
   auto trial = MakeBook(500'00, 501'00);
   trial.is_trial = true;
-  CHECK(DecideAction(s, trial, none, s.budget_twd).kind == ActionKind::kNone);
+  Action skip = DecideAction(s, trial, none, s.budget_twd);
+  CHECK(skip.kind == ActionKind::kNone);
+  CHECK(!skip.done);
 }
 
 static void TestAccounting() {
