@@ -1,5 +1,6 @@
 #include "feed.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -44,7 +45,7 @@ int ParseHhmm(const std::string& s, int fallback) {
 
 struct LocalNow {
   int hhmm;
-  long day;
+  std::int64_t day;
 };
 LocalNow NowUtc8() {
   auto utc8 = std::chrono::system_clock::now() + std::chrono::hours(8);
@@ -53,7 +54,7 @@ LocalNow NowUtc8() {
   return {static_cast<int>(hms.hours().count()) * 100 + static_cast<int>(hms.minutes().count()),
           dp.time_since_epoch().count()};
 }
-bool DailyReconnectDue(int reconnect_hhmm, long& last_day) {
+bool DailyReconnectDue(int reconnect_hhmm, std::int64_t& last_day) {
   LocalNow n = NowUtc8();
   if (n.hhmm >= reconnect_hhmm && last_day != n.day) {
     last_day = n.day;
@@ -139,22 +140,28 @@ int RunFeed(const std::string& config_path) {
     return 1;
   }
 
-  Publisher publisher(aeron_dir, stream_id);
+  std::unique_ptr<Publisher> publisher;
+  try {
+    publisher = std::make_unique<Publisher>(aeron_dir, stream_id);
+  } catch (const std::exception& e) {
+    std::cerr << "kairos-sidecar: failed to connect to Aeron media driver: " << e.what() << "\n";
+    return 1;
+  }
   std::unique_ptr<concords_sdk::ticker::Ticker> ticker;
 
   auto build = [&]() -> bool {
     TickerGate();
     ticker = concords_sdk::ticker::BuildTicker(user_id.c_str(), password.c_str(), pfx.c_str());
     if (!ticker) {
-      std::cerr << "BuildTicker failed (credentials?)\n";
+      std::cerr << "kairos-sidecar: failed to build concords ticker (check credentials/PFX)\n";
       return false;
     }
     ticker->SetErrorCallback(
-        [](const std::string& e) { std::cerr << "ticker error: " << e << "\n"; });
+        [](const std::string& e) { std::cerr << "kairos-sidecar: concords ticker error: " << e << "\n"; });
     ticker->SetQuotationCallback([&](const concords_sdk::ticker::Quotation& q) {
       const char* pid = q.GetProductId();
       if (!pid) return;
-      publisher.Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
+      publisher->Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
     });
     for (const auto& s : symbols) {
       TickerGate();
@@ -169,7 +176,8 @@ int RunFeed(const std::string& config_path) {
   std::cout << "kairos-sidecar: concords feed live, " << symbols.size()
             << " symbols -> aeron:ipc stream " << stream_id << "\n";
 
-  long last_reconnect_day = NowUtc8().hhmm >= reconnect_hhmm ? NowUtc8().day : NowUtc8().day - 1;
+  LocalNow now = NowUtc8();
+  std::int64_t last_reconnect_day = now.hhmm >= reconnect_hhmm ? now.day : now.day - 1;
   while (!g_stop) {
     if (DailyReconnectDue(reconnect_hhmm, last_reconnect_day)) {
       std::cout << "kairos-sidecar: daily reconnect\n";
@@ -180,7 +188,16 @@ int RunFeed(const std::string& config_path) {
           ticker->Unsubscribe(s.c_str());
         }
       }
-      build();
+      auto backoff = std::chrono::seconds(1);
+      while (!build() && !g_stop) {
+        std::cerr << "kairos-sidecar: concords reconnect failed; retrying in " << backoff.count()
+                  << "s\n";
+        auto until = std::chrono::steady_clock::now() + backoff;
+        while (std::chrono::steady_clock::now() < until && !g_stop) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        backoff = std::min(backoff * 2, std::chrono::seconds(30));
+      }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
