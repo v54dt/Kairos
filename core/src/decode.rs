@@ -7,6 +7,7 @@ pub enum DecodeError {
     NotInSchema(capnp::NotInSchema),
     Utf8(core::str::Utf8Error),
     NotAQuote,
+    Unsupported,
 }
 
 impl From<capnp::Error> for DecodeError {
@@ -75,6 +76,37 @@ pub fn decode_quote_bytes(bytes: &[u8]) -> Result<Quote, DecodeError> {
         capnp::serialize::read_message(&mut &bytes[..], capnp::message::ReaderOptions::new())?;
     let env = reader.get_root::<kairos_capnp::envelope::Reader>()?;
     decode_envelope(env)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Message {
+    Quote(Quote),
+    Subscribe(Vec<String>),
+    Unsubscribe(Vec<String>),
+}
+
+fn decode_symbols(list: capnp::text_list::Reader<'_>) -> Result<Vec<String>, DecodeError> {
+    let mut out = Vec::with_capacity(list.len() as usize);
+    for i in 0..list.len() {
+        out.push(list.get(i)?.to_string()?);
+    }
+    Ok(out)
+}
+
+pub fn decode_message_bytes(bytes: &[u8]) -> Result<Message, DecodeError> {
+    let reader =
+        capnp::serialize::read_message(&mut &bytes[..], capnp::message::ReaderOptions::new())?;
+    let env = reader.get_root::<kairos_capnp::envelope::Reader>()?;
+    match env.which()? {
+        kairos_capnp::envelope::Which::Quote(q) => Ok(Message::Quote(decode_quote(q?)?)),
+        kairos_capnp::envelope::Which::Subscribe(s) => {
+            Ok(Message::Subscribe(decode_symbols(s?.get_symbols()?)?))
+        }
+        kairos_capnp::envelope::Which::Unsubscribe(u) => {
+            Ok(Message::Unsubscribe(decode_symbols(u?.get_symbols()?)?))
+        }
+        _ => Err(DecodeError::Unsupported),
+    }
 }
 
 #[cfg(test)]
