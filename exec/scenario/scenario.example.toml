@@ -1,0 +1,58 @@
+# Kairos scenario (劇本) template — copy, fill creds, run. Real configs (with creds) go in scenarios/ (gitignored).
+
+[user]
+user_id = ""
+password = ""
+account = ""
+pfx_filepath = ""
+pfx_password = ""
+
+[scenario]
+name = "2330-accumulate"
+symbol = "2330"
+market = "TSE"
+board = "OddLot"
+side = "Buy"
+product = "stock"
+funding_type = "Cash"
+time_in_force = "ROD"
+budget_twd = 300000
+interval_seconds = 30
+shares_per_order = 0
+pacing = "twap"
+
+[fees]
+base_rate = 0.001425
+discount = 1.0
+min_fee_oddlot = 1
+min_fee_roundlot = 20
+sell_tax_rate = 0.003
+daytrade_tax_rate = 0.0015
+max_order_value_twd = 0
+
+[pricing]
+policy = "cross"
+tick_offset = 0
+reference_price = 0.0
+max_deviation_pct = 9.0
+use_trial_quotes = false
+
+[window]
+start_time = "09:10"
+end_time = "13:25"
+weekdays_only = true
+
+[reconnect]
+daily_at = "07:05"
+
+[risk]
+max_orders = 0
+max_open_orders = 0
+max_notional_twd = 0
+require_two_sided = true
+quote_max_age_ms = 5000
+quote_stall_alert_ms = 30000
+stop_on_disconnect = true
+
+[mode]
+live = false
