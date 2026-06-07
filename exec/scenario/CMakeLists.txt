@@ -70,7 +70,7 @@ else()
 endif()
 
 add_executable(kairos_scenario_trader src/scenario_trader_main.cpp)
-target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_live)
+target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_live kairos_notify)
 
 add_library(kairos_scenario src/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

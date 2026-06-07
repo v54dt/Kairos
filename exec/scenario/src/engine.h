@@ -8,6 +8,7 @@
 #include <string>
 
 #include "engine_logic.h"
+#include "event_sink.h"
 #include "order_backend.h"
 #include "quote_book.h"
 #include "scenario.h"
@@ -21,7 +22,7 @@ namespace kairos::exec {
 // the window closes, or RequestStop().
 class ScenarioEngine {
  public:
-  ScenarioEngine(Scenario scenario, OrderBackend* backend);
+  ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink);
 
   void Run();
   void RequestStop();
@@ -37,6 +38,7 @@ class ScenarioEngine {
 
   Scenario s_;
   OrderBackend* backend_;
+  EventSink* sink_;
   QuoteBook book_;
   std::unique_ptr<UdsQuoteClient> quotes_;
 
