@@ -2,4 +2,10 @@
 /core/target/
 
 # C++ build output
-/sidecar/build/
+/sidecar/concords/build/
+
+# Live sidecar config
+/sidecar/concords/sidecar.toml
+
+# Vendor SDK
+/sidecar/concords/lib

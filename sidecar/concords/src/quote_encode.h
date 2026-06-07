@@ -4,9 +4,9 @@
 #include <string>
 #include <vector>
 
-namespace kairos {
+namespace kairos::concords {
 
-enum class Exchange { Twse, Tpex, Tfx, Otc };
+enum class Exchange { kTwse, kTpex, kTfx, kOtc };
 
 struct Level {
   std::int64_t price_mantissa;
@@ -26,6 +26,6 @@ struct Quote {
   bool is_trial;
 };
 
-std::vector<std::uint8_t> encode_quote_envelope(const Quote& q);
+std::vector<std::uint8_t> EncodeQuoteEnvelope(const Quote& q);
 
-}  // namespace kairos
+}  // namespace kairos::concords
