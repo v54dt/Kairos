@@ -1,10 +1,10 @@
+#include <capnp/serialize.h>
+
 #include <cassert>
 #include <cstdint>
 #include <iostream>
 #include <string>
 #include <vector>
-
-#include <capnp/serialize.h>
 
 #include "kairos.capnp.h"
 #include "quote_encode.h"
