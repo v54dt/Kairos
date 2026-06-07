@@ -70,6 +70,13 @@ pub fn decode_envelope(env: kairos_capnp::envelope::Reader) -> Result<Quote, Dec
     }
 }
 
+pub fn decode_quote_bytes(bytes: &[u8]) -> Result<Quote, DecodeError> {
+    let reader =
+        capnp::serialize::read_message(&mut &bytes[..], capnp::message::ReaderOptions::new())?;
+    let env = reader.get_root::<kairos_capnp::envelope::Reader>()?;
+    decode_envelope(env)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
