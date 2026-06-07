@@ -54,6 +54,38 @@ static void TestTickTable() {
   CHECK(!TickAligned(1501'00));
 }
 
+static void TestProductTicks() {
+  // ETF: only two tiers (<50 -> 0.01, else 0.05). 0050 @~190 is the gotcha:
+  // ETF tick 0.05 vs the stock table's 0.50.
+  CHECK_EQ(TickSizeCents(9'99, Product::kEtf), 1);
+  CHECK_EQ(TickSizeCents(49'95, Product::kEtf), 1);
+  CHECK_EQ(TickSizeCents(50'00, Product::kEtf), 5);
+  CHECK_EQ(TickSizeCents(190'00, Product::kEtf), 5);     // 0050 -> 0.05
+  CHECK_EQ(TickSizeCents(190'00, Product::kStock), 50);  // same price, stock -> 0.50
+  CHECK_EQ(TickSizeCents(5000'00, Product::kEtf), 5);
+
+  // Warrant: <5:0.01, 5-10:0.05, 10-50:0.10, 50-100:0.50, 100-500:1.00, >=500:5.00
+  CHECK_EQ(TickSizeCents(4'99, Product::kWarrant), 1);
+  CHECK_EQ(TickSizeCents(5'00, Product::kWarrant), 5);
+  CHECK_EQ(TickSizeCents(10'00, Product::kWarrant), 10);
+  CHECK_EQ(TickSizeCents(50'00, Product::kWarrant), 50);
+  CHECK_EQ(TickSizeCents(100'00, Product::kWarrant), 100);
+  CHECK_EQ(TickSizeCents(499'00, Product::kWarrant), 100);
+  CHECK_EQ(TickSizeCents(500'00, Product::kWarrant), 500);
+
+  // Convertible bond: <150:0.05, 150-1000:1.00, >=1000:5.00
+  CHECK_EQ(TickSizeCents(149'95, Product::kConvertibleBond), 5);
+  CHECK_EQ(TickSizeCents(150'00, Product::kConvertibleBond), 100);
+  CHECK_EQ(TickSizeCents(999'00, Product::kConvertibleBond), 100);
+  CHECK_EQ(TickSizeCents(1000'00, Product::kConvertibleBond), 500);
+
+  // Rounding honours the product table: 190.03 on an ETF rounds to the 0.05 grid.
+  CHECK_EQ(RoundNearestTick(190'03, Product::kEtf), 190'05);
+  CHECK_EQ(RoundDownToTick(190'03, Product::kEtf), 190'00);
+  CHECK(TickAligned(190'05, Product::kEtf));
+  CHECK(!TickAligned(190'05, Product::kStock));  // off the 0.50 stock grid
+}
+
 static void TestRounding() {
   // 2330 ~ 1005.0 sits on the 5.00 grid.
   CHECK_EQ(RoundNearestTick(1003'00), 1005'00);
@@ -129,6 +161,7 @@ static void TestSizing() {
 
 int main() {
   TestTickTable();
+  TestProductTicks();
   TestRounding();
   TestFormat();
   TestFees();
