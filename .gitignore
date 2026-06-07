@@ -1,2 +1,5 @@
 # Rust build output
 /core/target/
+
+# C++ build output
+/sidecar/build/
