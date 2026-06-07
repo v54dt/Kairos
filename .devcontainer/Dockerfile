@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libbsd-dev \
     capnproto \
     libcapnp-dev \
+    cmake-format \
     curl \
     git \
     wget \

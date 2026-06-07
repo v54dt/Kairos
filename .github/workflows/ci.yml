@@ -79,8 +79,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Cap'n Proto
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq capnproto libcapnp-dev
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq capnproto libcapnp-dev cmake-format
+      - name: cmake-format check
+        run: cmake-format --check sidecar/concords/CMakeLists.txt
       - name: Build + test
         run: |
           cmake -S sidecar/concords -B sidecar/concords/build -DCMAKE_BUILD_TYPE=Release
