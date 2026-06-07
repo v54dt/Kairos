@@ -3,6 +3,8 @@
 #include <capnp/message.h>
 #include <capnp/serialize.h>
 
+#include <cstring>
+
 #include "kairos.capnp.h"
 
 namespace kairos::concords {
@@ -52,6 +54,31 @@ std::vector<std::uint8_t> EncodeQuoteEnvelope(const Quote& q) {
   auto flat = capnp::messageToFlatArray(msg);
   auto bytes = flat.asBytes();
   return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
+}
+
+bool DecodeSubscribe(const std::uint8_t* data, std::size_t len, std::vector<std::string>* out) {
+  if (data == nullptr || len == 0 || len % sizeof(capnp::word) != 0) {
+    return false;
+  }
+  try {
+    // Aeron fragments aren't guaranteed word-aligned; copy into aligned storage.
+    std::vector<capnp::word> words(len / sizeof(capnp::word));
+    std::memcpy(words.data(), data, len);
+    capnp::FlatArrayMessageReader reader(kj::arrayPtr(words.data(), words.size()));
+    auto env = reader.getRoot<Envelope>();
+    if (env.which() != Envelope::SUBSCRIBE) {
+      return false;
+    }
+    auto symbols = env.getSubscribe().getSymbols();
+    out->clear();
+    out->reserve(symbols.size());
+    for (auto s : symbols) {
+      out->emplace_back(s.cStr());
+    }
+    return true;
+  } catch (...) {
+    return false;
+  }
 }
 
 }  // namespace kairos::concords

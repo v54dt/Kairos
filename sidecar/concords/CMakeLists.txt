@@ -25,6 +25,10 @@ add_executable(test_encode tests/test_encode.cpp)
 target_link_libraries(test_encode PRIVATE kairos_quote_encode)
 add_test(NAME test_encode COMMAND test_encode)
 
+add_executable(test_decode tests/test_decode.cpp)
+target_link_libraries(test_decode PRIVATE kairos_quote_encode)
+add_test(NAME test_decode COMMAND test_decode)
+
 # The concords feed executable links the broker SDK + Aeron; built only where the SDK is present in
 # concords/lib (CI has none, so it builds just the encode lib + test).
 set(CONCORDS_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
@@ -60,7 +64,7 @@ if(EXISTS "${CONCORDS_LIB}")
     GIT_TAG v3.4.0)
   FetchContent_MakeAvailable(tomlplusplus)
 
-  add_executable(kairos_sidecar src/main.cpp src/feed.cpp src/publisher.cpp)
+  add_executable(kairos_sidecar src/main.cpp src/feed.cpp src/publisher.cpp src/control_sub.cpp)
   target_include_directories(
     kairos_sidecar PRIVATE ${aeron_SOURCE_DIR}/aeron-client/src/main/cpp_wrapper
                            ${CONCORDS_LIB_DIR})

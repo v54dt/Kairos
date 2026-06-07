@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -27,5 +28,10 @@ struct Quote {
 };
 
 std::vector<std::uint8_t> EncodeQuoteEnvelope(const Quote& q);
+
+// Decode a serialized Envelope. If it is a Subscribe, write its (possibly empty)
+// symbol list to *out and return true. Returns false for any other variant or
+// malformed bytes.
+bool DecodeSubscribe(const std::uint8_t* data, std::size_t len, std::vector<std::string>* out);
 
 }  // namespace kairos::concords
