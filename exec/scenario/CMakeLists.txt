@@ -23,6 +23,11 @@ set(CAPNPC_SRC_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/../../schema")
 set(CAPNPC_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 capnp_generate_cpp(CAPNP_SRCS CAPNP_HDRS "${CMAKE_CURRENT_SOURCE_DIR}/../../schema/kairos.capnp")
 
+find_package(CURL REQUIRED)
+add_library(kairos_transport src/http_poster.cpp)
+target_include_directories(kairos_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(kairos_transport PUBLIC CURL::libcurl)
+
 add_library(kairos_quote_codec src/quote_codec.cpp ${CAPNP_SRCS})
 target_include_directories(kairos_quote_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
                                                      ${CMAKE_CURRENT_BINARY_DIR})
@@ -99,3 +104,7 @@ add_test(NAME test_engine_logic COMMAND test_engine_logic)
 add_executable(test_event tests/test_event.cpp)
 target_include_directories(test_event PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_event COMMAND test_event)
+
+add_executable(test_transport tests/test_transport.cpp)
+target_link_libraries(test_transport PRIVATE kairos_transport)
+add_test(NAME test_transport COMMAND test_transport)

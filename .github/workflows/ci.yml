@@ -97,7 +97,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq capnproto libcapnp-dev cmake-format clang-format
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq capnproto libcapnp-dev libcurl4-openssl-dev cmake-format clang-format
       - name: cmake-format check
         run: cmake-format --check exec/scenario/CMakeLists.txt
       - name: clang-format check
