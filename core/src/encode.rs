@@ -45,6 +45,21 @@ pub fn encode_quote(q: &Quote) -> Vec<u8> {
     buf
 }
 
+pub fn encode_subscribe(symbols: &[&str]) -> Vec<u8> {
+    let mut msg = Builder::new_default();
+    {
+        let env = msg.init_root::<kairos_capnp::envelope::Builder>();
+        let sub = env.init_subscribe();
+        let mut list = sub.init_symbols(symbols.len() as u32);
+        for (i, s) in symbols.iter().enumerate() {
+            list.set(i as u32, *s);
+        }
+    }
+    let mut buf = Vec::new();
+    serialize::write_message(&mut buf, &msg).unwrap();
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +101,16 @@ mod tests {
         let decoded = decode_envelope(env).unwrap();
 
         assert_eq!(decoded, q);
+    }
+
+    #[test]
+    fn subscribe_roundtrip() {
+        let bytes = encode_subscribe(&["2330", "2317"]);
+        match crate::decode::decode_message_bytes(&bytes).unwrap() {
+            crate::decode::Message::Subscribe(syms) => {
+                assert_eq!(syms, vec!["2330".to_string(), "2317".to_string()]);
+            }
+            other => panic!("expected subscribe, got {other:?}"),
+        }
     }
 }
