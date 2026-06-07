@@ -22,3 +22,37 @@ jobs:
           rustup default ${{ env.RUST_VERSION }}
       - run: cargo fmt --all -- --check
         working-directory: core
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cap'n Proto
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq capnproto
+      - name: Install Rust
+        run: |
+          rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal --component clippy
+          rustup default ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: core
+
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Cap'n Proto
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq capnproto
+      - name: Install Rust
+        run: |
+          rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal
+          rustup default ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: cargo test --all
+        working-directory: core
