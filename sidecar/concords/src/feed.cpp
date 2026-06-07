@@ -10,9 +10,11 @@
 #include <cstdio>
 #include <iostream>
 #include <memory>
+#include <set>
 #include <thread>
 #include <vector>
 
+#include "control_sub.h"
 #include "publisher.h"
 #include "quote_encode.h"
 #include "ticker.h"
@@ -147,7 +149,20 @@ int RunFeed(const std::string& config_path) {
     std::cerr << "kairos-sidecar: failed to connect to Aeron media driver: " << e.what() << "\n";
     return 1;
   }
+  std::unique_ptr<ControlSub> control;
+  try {
+    control = std::make_unique<ControlSub>(aeron_dir, stream_id + 1);
+  } catch (const std::exception& e) {
+    std::cerr << "kairos-sidecar: failed to open subscription control stream: " << e.what() << "\n";
+    return 1;
+  }
   std::unique_ptr<concords_sdk::ticker::Ticker> ticker;
+
+  // warm set: always-subscribed floor that keeps the concords ticker fed past
+  // its ~30s idle disconnect. core drives extra on-demand symbols via stream 1002.
+  std::set<std::string> warm(symbols.begin(), symbols.end());
+  std::set<std::string> subscribed;    // what we currently hold on concords
+  std::set<std::string> core_desired;  // latest on-demand set from core
 
   auto build = [&]() -> bool {
     TickerGate();
@@ -164,11 +179,37 @@ int RunFeed(const std::string& config_path) {
       if (!pid) return;
       publisher->Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
     });
-    for (const auto& s : symbols) {
+    subscribed.clear();
+    for (const auto& s : warm) {
       TickerGate();
       ticker->Subscribe(s.c_str());
+      subscribed.insert(s);
     }
     return true;
+  };
+
+  // Reconcile concords subscriptions toward (warm ∪ core_desired). SDK calls
+  // only fire on an actual diff; warm is never unsubscribed (target ⊇ warm).
+  auto reconcile = [&]() {
+    std::set<std::string> target = warm;
+    target.insert(core_desired.begin(), core_desired.end());
+    for (const auto& s : target) {
+      if (subscribed.insert(s).second) {
+        TickerGate();
+        ticker->Subscribe(s.c_str());
+        std::cout << "kairos-sidecar: subscribe " << s << " (on demand)\n";
+      }
+    }
+    for (auto it = subscribed.begin(); it != subscribed.end();) {
+      if (target.count(*it) == 0) {
+        TickerGate();
+        ticker->Unsubscribe(it->c_str());
+        std::cout << "kairos-sidecar: unsubscribe " << *it << " (no subscribers)\n";
+        it = subscribed.erase(it);
+      } else {
+        ++it;
+      }
+    }
   };
 
   if (!build()) return 1;
@@ -184,7 +225,7 @@ int RunFeed(const std::string& config_path) {
       std::cout << "kairos-sidecar: daily reconnect\n";
       if (ticker) {
         ticker->ClearQuotationCallback();
-        for (const auto& s : symbols) {
+        for (const auto& s : subscribed) {
           TickerGate();
           ticker->Unsubscribe(s.c_str());
         }
@@ -200,6 +241,11 @@ int RunFeed(const std::string& config_path) {
         backoff = std::min(backoff * 2, std::chrono::seconds(30));
       }
     }
+    std::vector<std::string> latest;
+    if (control->Poll(&latest)) {
+      core_desired = std::set<std::string>(latest.begin(), latest.end());
+    }
+    reconcile();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
   std::cout << "kairos-sidecar: shutting down\n";
