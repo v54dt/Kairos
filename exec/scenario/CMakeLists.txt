@@ -63,3 +63,7 @@ add_test(NAME test_uds COMMAND test_uds)
 add_executable(test_order_backend tests/test_order_backend.cpp)
 target_include_directories(test_order_backend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_order_backend COMMAND test_order_backend)
+
+add_executable(test_engine_logic tests/test_engine_logic.cpp)
+target_include_directories(test_engine_logic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_engine_logic COMMAND test_engine_logic)
