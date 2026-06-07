@@ -1,5 +1,6 @@
 #include "feed.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -143,7 +144,7 @@ int RunFeed(const std::string& config_path) {
   try {
     publisher = std::make_unique<Publisher>(aeron_dir, stream_id);
   } catch (const std::exception& e) {
-    std::cerr << "kairos-sidecar: aeron connect failed (is aeronmd running?): " << e.what() << "\n";
+    std::cerr << "kairos-sidecar: failed to connect to Aeron media driver: " << e.what() << "\n";
     return 1;
   }
   std::unique_ptr<concords_sdk::ticker::Ticker> ticker;
@@ -152,11 +153,11 @@ int RunFeed(const std::string& config_path) {
     TickerGate();
     ticker = concords_sdk::ticker::BuildTicker(user_id.c_str(), password.c_str(), pfx.c_str());
     if (!ticker) {
-      std::cerr << "BuildTicker failed (credentials?)\n";
+      std::cerr << "kairos-sidecar: failed to build concords ticker (check credentials/PFX)\n";
       return false;
     }
     ticker->SetErrorCallback(
-        [](const std::string& e) { std::cerr << "ticker error: " << e << "\n"; });
+        [](const std::string& e) { std::cerr << "kairos-sidecar: concords ticker error: " << e << "\n"; });
     ticker->SetQuotationCallback([&](const concords_sdk::ticker::Quotation& q) {
       const char* pid = q.GetProductId();
       if (!pid) return;
@@ -187,11 +188,15 @@ int RunFeed(const std::string& config_path) {
           ticker->Unsubscribe(s.c_str());
         }
       }
+      auto backoff = std::chrono::seconds(1);
       while (!build() && !g_stop) {
-        std::cerr << "kairos-sidecar: reconnect failed, retrying in 30s\n";
-        for (int i = 0; i < 300 && !g_stop; ++i) {
+        std::cerr << "kairos-sidecar: concords reconnect failed; retrying in " << backoff.count()
+                  << "s\n";
+        auto until = std::chrono::steady_clock::now() + backoff;
+        while (std::chrono::steady_clock::now() < until && !g_stop) {
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+        backoff = std::min(backoff * 2, std::chrono::seconds(30));
       }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
