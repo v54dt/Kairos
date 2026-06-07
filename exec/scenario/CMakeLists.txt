@@ -28,6 +28,13 @@ target_include_directories(kairos_quote_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
                                                      ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(kairos_quote_codec PUBLIC CapnProto::capnp)
 
+add_library(kairos_uds src/uds_quote_client.cpp)
+target_include_directories(kairos_uds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
+
+add_executable(kairos_quote_tap src/quote_tap_main.cpp)
+target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
+
 add_library(kairos_scenario src/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
@@ -48,3 +55,7 @@ add_test(NAME test_scenario COMMAND test_scenario)
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
 add_test(NAME test_quote_codec COMMAND test_quote_codec)
+
+add_executable(test_uds tests/test_uds.cpp)
+target_link_libraries(test_uds PRIVATE kairos_uds)
+add_test(NAME test_uds COMMAND test_uds)
