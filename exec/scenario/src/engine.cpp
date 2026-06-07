@@ -60,8 +60,31 @@ void ScenarioEngine::SdkGate() {
   last_sdk_ = std::chrono::steady_clock::now();
 }
 
+void ScenarioEngine::ClearResting() {
+  resting_ = RestingOrder{};
+  resting_id_.clear();
+  resting_filled_ = 0;
+  resting_acked_ = false;
+  cancelling_ = false;
+}
+
 void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& err) {
-  if (!ok) std::fprintf(stderr, "kairos-exec: order %s rejected: %s\n", id.c_str(), err.c_str());
+  std::lock_guard<std::mutex> lock(mu_);
+  if (id != resting_id_) return;
+  if (ok) {
+    resting_acked_ = true;
+  } else {
+    std::fprintf(stderr, "kairos-exec: order %s rejected: %s\n", id.c_str(), err.c_str());
+    ClearResting();  // rejected -> free the working slot, retry next tick
+    cv_.notify_all();
+  }
+}
+
+void ScenarioEngine::OnCancel(const std::string& id, bool /*ok*/) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (id != resting_id_) return;
+  ClearResting();  // working order gone; next tick re-places at the current peg
+  cv_.notify_all();
 }
 
 void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
@@ -72,11 +95,7 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
   std::printf("kairos-exec: fill %s %ld @ %s  (cum %ld sh / NT$ %ld, fee %ld)\n", id.c_str(),
               f.shares, CentsToString(f.price).c_str(), acct_.filled_shares, acct_.FilledTwd(),
               acct_.total_fee_twd);
-  if (resting_filled_ >= resting_.shares) {
-    resting_ = RestingOrder{};
-    resting_id_.clear();
-    resting_filled_ = 0;
-  }
+  if (resting_filled_ >= resting_.shares) ClearResting();
   int pct = s_.budget_twd > 0 ? static_cast<int>(acct_.FilledTwd() * 100 / s_.budget_twd) : 0;
   if (pct >= last_milestone_pct_ + 25) {
     last_milestone_pct_ = pct - (pct % 25);
@@ -95,7 +114,7 @@ void ScenarioEngine::Run() {
   backend_->SetCallbacks(
       [this](const std::string& id, bool ok, const std::string& e) { OnAck(id, ok, e); },
       [this](const std::string& id, const Fill& f) { OnFill(id, f); },
-      [](const std::string&, bool) {});
+      [this](const std::string& id, bool ok) { OnCancel(id, ok); });
   quotes_->Start();
   std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
               s_.budget_twd, PricePolicyName(s_.price_policy), s_.live ? "*** LIVE ***" : "PAPER");
@@ -122,12 +141,15 @@ void ScenarioEngine::Run() {
     long remaining;
     RestingOrder resting;
     std::string rid;
+    bool acked, cancelling;
     {
       std::lock_guard<std::mutex> lock(mu_);
       if (complete_) break;
       remaining = acct_.RemainingTwd(s_);
       resting = resting_;
       rid = resting_id_;
+      acked = resting_acked_;
+      cancelling = cancelling_;
     }
     if (remaining <= 0) break;
 
@@ -145,14 +167,18 @@ void ScenarioEngine::Run() {
           resting_ = RestingOrder{true, act.price, act.shares};
           resting_id_ = id;
           resting_filled_ = 0;
+          resting_acked_ = false;
+          cancelling_ = false;
         }
         SdkGate();
         backend_->Submit(id, s_.side, act.price, act.shares);
-      } else if (act.kind == ActionKind::kRepeg) {
+      } else if (act.kind == ActionKind::kRepeg && acked && !cancelling) {
+        // Re-peg = cancel the (acked) working order; next tick re-places at the
+        // new peg. Clearing waits for OnCancel/full-fill so racing fills count.
         SdkGate();
-        backend_->UpdatePrice(rid, act.price);
+        backend_->Cancel(rid);
         std::lock_guard<std::mutex> lock(mu_);
-        if (resting_id_ == rid) resting_.price = act.price;
+        if (resting_id_ == rid) cancelling_ = true;
       }
     }
 
@@ -161,11 +187,11 @@ void ScenarioEngine::Run() {
                  [this] { return stop_.load() || complete_; });
   }
 
-  // Wind down: cancel any resting order.
+  // Wind down: cancel the working order only if the broker acked it (ArbX-aligned).
   std::string rid;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (resting_.active) rid = resting_id_;
+    if (resting_.active && resting_acked_) rid = resting_id_;
   }
   if (!rid.empty()) {
     SdkGate();

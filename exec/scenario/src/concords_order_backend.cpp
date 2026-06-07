@@ -94,11 +94,6 @@ void ConcordsOrderBackend::Submit(const std::string& id, Side side, Cents price,
   stock_->SubmitOrder(order);
 }
 
-void ConcordsOrderBackend::UpdatePrice(const std::string& id, Cents new_price) {
-  Gate();
-  stock_->UpdateOrderPrice(id, id, CentsToString(new_price));
-}
-
 void ConcordsOrderBackend::Cancel(const std::string& id) {
   Gate();
   stock_->CancelOrder(id);

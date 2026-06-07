@@ -30,8 +30,7 @@ class OrderBackend {
   // The engine supplies a correlation id (concords user_defined_id) so callbacks
   // can be matched even when the backend fills synchronously.
   virtual void Submit(const std::string& id, Side side, Cents price, long shares) = 0;
-  virtual void UpdatePrice(const std::string& id, Cents new_price) = 0;  // re-peg
-  virtual void Cancel(const std::string& id) = 0;
+  virtual void Cancel(const std::string& id) = 0;  // also used to re-peg (cancel + re-place)
 
   void SetCallbacks(AckFn ack, FillFn fill, CancelFn cancel) {
     on_ack_ = std::move(ack);
@@ -60,8 +59,6 @@ class PaperOrderBackend : public OrderBackend {
     if (on_ack_) on_ack_(id, true, "");
     if (on_fill_) on_fill_(id, Fill{shares, price});
   }
-
-  void UpdatePrice(const std::string& /*id*/, Cents /*new_price*/) override {}
 
   void Cancel(const std::string& id) override {
     if (on_cancel_) on_cancel_(id, true);
