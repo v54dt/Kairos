@@ -20,8 +20,7 @@ Publisher::Publisher(const std::string& aeron_dir, std::int32_t stream_id) {
 }
 
 bool Publisher::Offer(const std::vector<std::uint8_t>& payload) {
-  aeron::concurrent::AtomicBuffer buffer(const_cast<std::uint8_t*>(payload.data()),
-                                         payload.size());
+  aeron::concurrent::AtomicBuffer buffer(const_cast<std::uint8_t*>(payload.data()), payload.size());
   for (int attempt = 0; attempt < 5; ++attempt) {
     if (publication_->offer(buffer, 0, static_cast<std::int32_t>(payload.size())) >= 0) {
       return true;

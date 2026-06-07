@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     capnproto \
     libcapnp-dev \
     cmake-format \
+    clang-format \
     curl \
     git \
     wget \

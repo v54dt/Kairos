@@ -1,5 +1,7 @@
 #include "feed.h"
 
+#include <toml++/toml.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -10,8 +12,6 @@
 #include <memory>
 #include <thread>
 #include <vector>
-
-#include <toml++/toml.h>
 
 #include "publisher.h"
 #include "quote_encode.h"
@@ -92,9 +92,9 @@ Quote ToQuote(const concords_sdk::ticker::Quotation& q, const char* pid) {
   Quote out;
   out.symbol = pid;
   out.exchange = MapExchange(q.GetExchange());
-  out.quote_ts_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                        q.GetTimestamp().time_since_epoch())
-                        .count();
+  out.quote_ts_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(q.GetTimestamp().time_since_epoch())
+          .count();
   FillLevels(out.bids, q, true);
   FillLevels(out.asks, q, false);
   if (q.GetTradeSize() > 0) {
@@ -156,8 +156,9 @@ int RunFeed(const std::string& config_path) {
       std::cerr << "kairos-sidecar: failed to build concords ticker (check credentials/PFX)\n";
       return false;
     }
-    ticker->SetErrorCallback(
-        [](const std::string& e) { std::cerr << "kairos-sidecar: concords ticker error: " << e << "\n"; });
+    ticker->SetErrorCallback([](const std::string& e) {
+      std::cerr << "kairos-sidecar: concords ticker error: " << e << "\n";
+    });
     ticker->SetQuotationCallback([&](const concords_sdk::ticker::Quotation& q) {
       const char* pid = q.GetProductId();
       if (!pid) return;
