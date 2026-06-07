@@ -57,6 +57,23 @@ jobs:
       - run: cargo test --all
         working-directory: core
 
+  release:
+    name: cargo build --release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq capnproto uuid-dev libbsd-dev
+      - name: Install Rust
+        run: |
+          rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal --component rustfmt
+          rustup default ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - run: cargo build --release
+        working-directory: core
+
   sidecar:
     name: sidecar build + test
     runs-on: ubuntu-latest

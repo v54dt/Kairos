@@ -1,0 +1,3 @@
+[target.x86_64-unknown-linux-gnu]
+# rust-lld mis-resolves the vendored Aeron static archives under release flags; use GNU bfd.
+rustflags = ["-C", "link-arg=-fuse-ld=bfd"]
