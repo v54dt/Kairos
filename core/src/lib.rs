@@ -7,4 +7,5 @@ pub mod decode;
 pub mod encode;
 pub mod ipc;
 pub mod model;
+pub mod subreg;
 pub mod uds;

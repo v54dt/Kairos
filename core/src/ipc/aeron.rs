@@ -4,6 +4,9 @@ use anyhow::Context as _;
 use rusteron_client::*;
 
 pub const DEFAULT_STREAM_ID: i32 = 1001;
+/// Reverse control stream (core -> sidecar): carries the desired subscription
+/// set so the sidecar can dynamically (un)subscribe upstream on concords.
+pub const CONTROL_STREAM_ID: i32 = 1002;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_OFFER_RETRIES: usize = 5;
 

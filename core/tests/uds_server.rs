@@ -1,10 +1,11 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use kairos_core::book::Book;
 use kairos_core::decode::decode_quote_bytes;
 use kairos_core::encode::encode_subscribe;
 use kairos_core::model::{Exchange, PriceLevel, Quote};
+use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::frame::{read_frame, write_frame};
 use kairos_core::uds::server::run_server;
 use tokio::net::UnixStream;
@@ -41,11 +42,22 @@ async fn next_quote(client: &mut UnixStream) -> Quote {
     decode_quote_bytes(&frame).unwrap()
 }
 
+async fn wait_for_socket(socket: &str) {
+    for _ in 0..100 {
+        if std::path::Path::new(socket).exists() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn uds_snapshot_then_live_push_with_filtering() {
     let socket = format!("/tmp/kairos-uds-test-{}.sock", std::process::id());
     let book = Arc::new(RwLock::new(Book::new()));
     let (tx, _rx) = broadcast::channel::<Quote>(16);
+    let registry = Arc::new(Mutex::new(SubRegistry::new()));
+    let (change_tx, _change_rx) = std::sync::mpsc::channel::<()>();
 
     book.write().unwrap().update(quote("2330", 58000));
 
@@ -53,15 +65,10 @@ async fn uds_snapshot_then_live_push_with_filtering() {
     let srv_tx = tx.clone();
     let srv_socket = socket.clone();
     tokio::spawn(async move {
-        let _ = run_server(&srv_socket, srv_book, srv_tx).await;
+        let _ = run_server(&srv_socket, srv_book, srv_tx, registry, change_tx).await;
     });
 
-    for _ in 0..100 {
-        if std::path::Path::new(&socket).exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    wait_for_socket(&socket).await;
 
     let mut client = UnixStream::connect(&socket).await.unwrap();
     write_frame(&mut client, &encode_subscribe(&["2330"]))
@@ -80,6 +87,62 @@ async fn uds_snapshot_then_live_push_with_filtering() {
     let live = next_quote(&mut client).await;
     assert_eq!(live.symbol, "2330");
     assert_eq!(live.last_price, 58100);
+
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn subscribe_refcounts_and_disconnect_releases() {
+    let socket = format!("/tmp/kairos-uds-reg-test-{}.sock", std::process::id());
+    let book = Arc::new(RwLock::new(Book::new()));
+    let (tx, _rx) = broadcast::channel::<Quote>(16);
+    let registry = Arc::new(Mutex::new(SubRegistry::new()));
+    let (change_tx, change_rx) = std::sync::mpsc::channel::<()>();
+
+    let srv_book = book.clone();
+    let srv_tx = tx.clone();
+    let srv_socket = socket.clone();
+    let srv_reg = registry.clone();
+    tokio::spawn(async move {
+        let _ = run_server(&srv_socket, srv_book, srv_tx, srv_reg, change_tx).await;
+    });
+
+    wait_for_socket(&socket).await;
+
+    let mut client = UnixStream::connect(&socket).await.unwrap();
+    write_frame(&mut client, &encode_subscribe(&["2330"]))
+        .await
+        .unwrap();
+
+    // the subscription enters the global desired set
+    let mut registered = false;
+    for _ in 0..200 {
+        if registry.lock().unwrap().desired() == vec!["2330".to_string()] {
+            registered = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(registered, "registry should contain 2330 after subscribe");
+    assert!(
+        change_rx.try_recv().is_ok(),
+        "subscribe should signal a change"
+    );
+
+    // disconnecting the only subscriber releases the refcount
+    drop(client);
+    let mut released = false;
+    for _ in 0..200 {
+        if registry.lock().unwrap().desired().is_empty() {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        released,
+        "registry should be empty after client disconnects"
+    );
 
     let _ = std::fs::remove_file(&socket);
 }

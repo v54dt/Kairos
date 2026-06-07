@@ -10,18 +10,27 @@ use crate::book::Book;
 use crate::decode::{Message, decode_message_bytes};
 use crate::encode::encode_quote;
 use crate::model::Quote;
+use crate::subreg::SubRegistry;
 use crate::uds::frame::{read_frame, write_frame};
 
 pub async fn run_server(
     socket_path: &str,
     book: Arc<RwLock<Book>>,
     quotes: broadcast::Sender<Quote>,
+    registry: Arc<Mutex<SubRegistry>>,
+    change_tx: std::sync::mpsc::Sender<()>,
 ) -> std::io::Result<()> {
     let _ = std::fs::remove_file(socket_path);
     let listener = UnixListener::bind(socket_path)?;
     loop {
         let (stream, _) = listener.accept().await?;
-        tokio::spawn(handle_client(stream, book.clone(), quotes.clone()));
+        tokio::spawn(handle_client(
+            stream,
+            book.clone(),
+            quotes.clone(),
+            registry.clone(),
+            change_tx.clone(),
+        ));
     }
 }
 
@@ -29,6 +38,8 @@ async fn handle_client(
     stream: UnixStream,
     book: Arc<RwLock<Book>>,
     quotes: broadcast::Sender<Quote>,
+    registry: Arc<Mutex<SubRegistry>>,
+    change_tx: std::sync::mpsc::Sender<()>,
 ) {
     let (read_half, write_half) = stream.into_split();
     let subs = Arc::new(Mutex::new(HashSet::<String>::new()));
@@ -39,7 +50,7 @@ async fn handle_client(
         subs.clone(),
         snap_rx,
     ));
-    reader_loop(read_half, book, subs, snap_tx).await;
+    reader_loop(read_half, book, subs, snap_tx, registry, change_tx).await;
     writer.abort();
 }
 
@@ -48,15 +59,24 @@ async fn reader_loop(
     book: Arc<RwLock<Book>>,
     subs: Arc<Mutex<HashSet<String>>>,
     snap_tx: mpsc::UnboundedSender<Quote>,
+    registry: Arc<Mutex<SubRegistry>>,
+    change_tx: std::sync::mpsc::Sender<()>,
 ) {
     while let Ok(Some(frame)) = read_frame(&mut read_half).await {
         match decode_message_bytes(&frame) {
             Ok(Message::Subscribe(syms)) => {
+                let mut changed = false;
                 {
                     let mut s = subs.lock().unwrap();
+                    let mut reg = registry.lock().unwrap();
                     for sym in &syms {
-                        s.insert(sym.clone());
+                        if s.insert(sym.clone()) {
+                            changed |= reg.add(sym);
+                        }
                     }
+                }
+                if changed {
+                    let _ = change_tx.send(());
                 }
                 let snapshots: Vec<Quote> = {
                     let b = book.read().unwrap();
@@ -67,13 +87,34 @@ async fn reader_loop(
                 }
             }
             Ok(Message::Unsubscribe(syms)) => {
-                let mut s = subs.lock().unwrap();
-                for sym in &syms {
-                    s.remove(sym);
+                let mut changed = false;
+                {
+                    let mut s = subs.lock().unwrap();
+                    let mut reg = registry.lock().unwrap();
+                    for sym in &syms {
+                        if s.remove(sym) {
+                            changed |= reg.remove(sym);
+                        }
+                    }
+                }
+                if changed {
+                    let _ = change_tx.send(());
                 }
             }
             _ => {}
         }
+    }
+    // Client gone: release all of its refcounts so the desired set shrinks.
+    let mut changed = false;
+    {
+        let mut s = subs.lock().unwrap();
+        let mut reg = registry.lock().unwrap();
+        for sym in s.drain() {
+            changed |= reg.remove(&sym);
+        }
+    }
+    if changed {
+        let _ = change_tx.send(());
     }
 }
 
