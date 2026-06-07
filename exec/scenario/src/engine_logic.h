@@ -1,0 +1,90 @@
+#ifndef KAIROS_EXEC_ENGINE_LOGIC_H_
+#define KAIROS_EXEC_ENGINE_LOGIC_H_
+
+// Pure (SDK-free) re-peg decision + accounting. The runtime drives the SDK and
+// timing; this file holds the money logic so it stays unit-testable.
+
+#include <string>
+
+#include "pricing.h"
+#include "quote_book.h"
+#include "scenario.h"
+#include "tw_fees.h"
+#include "tw_market.h"
+
+namespace kairos::exec {
+
+enum class ActionKind { kNone, kPlace, kRepeg };
+
+struct Action {
+  ActionKind kind = ActionKind::kNone;
+  Cents price = 0;
+  long shares = 0;
+  std::string reason;  // why kNone (skip / done)
+};
+
+struct RestingOrder {
+  bool active = false;
+  Cents price = 0;
+  long shares = 0;
+};
+
+// Quantity is the fee-optimal slice (only the PRICE is dynamic). With no resting
+// order, place a slice at the target; with one resting, re-peg its price when the
+// target tick moves; otherwise do nothing.
+inline Action DecideAction(const Scenario& s, const TopOfBook& tob, const RestingOrder& resting,
+                           long remaining_twd) {
+  Action a;
+  if (remaining_twd <= 0) {
+    a.reason = "預算已滿";
+    return a;
+  }
+  std::string reason;
+  Cents target = DecideLimitPrice(s, tob, FloatToCents(s.reference_price), reason);
+  if (target <= 0) {
+    a.reason = reason;
+    return a;
+  }
+  if (!resting.active) {
+    long shares = DecideOrderShares(s, target, remaining_twd);
+    if (shares <= 0) {
+      a.reason = "預算不足一筆";
+      return a;
+    }
+    a.kind = ActionKind::kPlace;
+    a.price = target;
+    a.shares = shares;
+    return a;
+  }
+  if (resting.price != target) {
+    a.kind = ActionKind::kRepeg;
+    a.price = target;
+    a.shares = resting.shares;
+  }
+  return a;
+}
+
+// Filled accounting + budget gate. Placement only happens when nothing rests, so
+// remaining = budget - filled is sufficient (no double counting).
+struct Accounting {
+  long filled_shares = 0;
+  Cents filled_notional = 0;
+  long total_fee_twd = 0;
+
+  void RecordFill(const Scenario& s, Cents price, long shares) {
+    filled_shares += shares;
+    filled_notional += price * shares;
+    total_fee_twd += BrokerageFee(price * shares, s.fees, s.IsOddLot());
+  }
+
+  long FilledTwd() const { return filled_notional / 100; }
+  long RemainingTwd(const Scenario& s) const {
+    long r = s.budget_twd - FilledTwd();
+    return r > 0 ? r : 0;
+  }
+  bool BudgetReached(const Scenario& s) const { return RemainingTwd(s) <= 0; }
+};
+
+}  // namespace kairos::exec
+
+#endif  // KAIROS_EXEC_ENGINE_LOGIC_H_
