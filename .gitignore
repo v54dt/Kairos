@@ -7,5 +7,9 @@
 # Live sidecar config
 /sidecar/concords/sidecar.toml
 
+# Broker credentials / certs
+/sidecar/concords/certs/
+*.pfx
+
 # Vendor SDK
 /sidecar/concords/lib
