@@ -16,6 +16,18 @@ FetchContent_Declare(
   GIT_TAG v3.4.0)
 FetchContent_MakeAvailable(tomlplusplus)
 
+# Pre-satisfy libcapnp-dev's libatomic check (false-negative on Ubuntu 24.04).
+set(FOUND_LIBATOMIC TRUE)
+find_package(CapnProto CONFIG REQUIRED)
+set(CAPNPC_SRC_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/../../schema")
+set(CAPNPC_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+capnp_generate_cpp(CAPNP_SRCS CAPNP_HDRS "${CMAKE_CURRENT_SOURCE_DIR}/../../schema/kairos.capnp")
+
+add_library(kairos_quote_codec src/quote_codec.cpp ${CAPNP_SRCS})
+target_include_directories(kairos_quote_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
+                                                     ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(kairos_quote_codec PUBLIC CapnProto::capnp)
+
 add_library(kairos_scenario src/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
@@ -32,3 +44,7 @@ add_test(NAME test_pricing COMMAND test_pricing)
 add_executable(test_scenario tests/test_scenario.cpp)
 target_link_libraries(test_scenario PRIVATE kairos_scenario)
 add_test(NAME test_scenario COMMAND test_scenario)
+
+add_executable(test_quote_codec tests/test_quote_codec.cpp)
+target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
+add_test(NAME test_quote_codec COMMAND test_quote_codec)
