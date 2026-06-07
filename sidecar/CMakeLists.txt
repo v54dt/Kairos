@@ -26,3 +26,22 @@ enable_testing()
 add_executable(test_encode tests/test_encode.cpp)
 target_link_libraries(test_encode PRIVATE kairos_quote_encode)
 add_test(NAME test_encode COMMAND test_encode)
+
+# Aeron C++ client (cpp_wrapper) for the publisher, pinned to rusteron's version.
+include(FetchContent)
+set(AERON_TESTS OFF CACHE BOOL "" FORCE)
+set(AERON_SYSTEM_TESTS OFF CACHE BOOL "" FORCE)
+set(AERON_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)
+set(AERON_BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
+set(BUILD_AERON_DRIVER OFF CACHE BOOL "" FORCE)
+set(BUILD_AERON_ARCHIVE_API OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  aeron
+  GIT_REPOSITORY https://github.com/real-logic/aeron.git
+  GIT_TAG 1.51.0
+)
+FetchContent_MakeAvailable(aeron)
+
+add_executable(kairos_sidecar src/main.cpp src/publisher.cpp)
+target_include_directories(kairos_sidecar PRIVATE ${aeron_SOURCE_DIR}/aeron-client/src/main/cpp_wrapper)
+target_link_libraries(kairos_sidecar PRIVATE kairos_quote_encode aeron_static pthread)
