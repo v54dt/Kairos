@@ -5,27 +5,30 @@
 
 #include "kairos.capnp.h"
 
-namespace kairos {
+namespace kairos::concords {
+namespace {
 
-static ::Exchange cap_exchange(Exchange e) {
+::Exchange CapExchange(Exchange e) {
   switch (e) {
-    case Exchange::Twse:
+    case Exchange::kTwse:
       return ::Exchange::TWSE;
-    case Exchange::Tpex:
+    case Exchange::kTpex:
       return ::Exchange::TPEX;
-    case Exchange::Tfx:
+    case Exchange::kTfx:
       return ::Exchange::TFX;
-    case Exchange::Otc:
+    case Exchange::kOtc:
       return ::Exchange::OTC;
   }
   return ::Exchange::TWSE;
 }
 
-std::vector<std::uint8_t> encode_quote_envelope(const Quote& q) {
+}  // namespace
+
+std::vector<std::uint8_t> EncodeQuoteEnvelope(const Quote& q) {
   capnp::MallocMessageBuilder msg;
   auto quote = msg.initRoot<Envelope>().initQuote();
   quote.setSymbol(q.symbol.c_str());
-  quote.setExchange(cap_exchange(q.exchange));
+  quote.setExchange(CapExchange(q.exchange));
   quote.setQuoteTsUs(q.quote_ts_us);
 
   auto bids = quote.initBids(static_cast<unsigned>(q.bids.size()));
@@ -51,4 +54,4 @@ std::vector<std::uint8_t> encode_quote_envelope(const Quote& q) {
   return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
 }
 
-}  // namespace kairos
+}  // namespace kairos::concords

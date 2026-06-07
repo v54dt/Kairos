@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include <capnp/serialize.h>
 
@@ -9,9 +10,9 @@
 #include "quote_encode.h"
 
 int main() {
-  kairos::Quote q;
+  kairos::concords::Quote q;
   q.symbol = "2330";
-  q.exchange = kairos::Exchange::Twse;
+  q.exchange = kairos::concords::Exchange::kTwse;
   q.quote_ts_us = 1700000000000000LL;
   q.bids = {{58000, 2, 100}, {57950, 2, 50}};
   q.asks = {{58100, 2, 80}};
@@ -20,7 +21,7 @@ int main() {
   q.last_volume = 10;
   q.is_trial = false;
 
-  std::vector<std::uint8_t> bytes = kairos::encode_quote_envelope(q);
+  std::vector<std::uint8_t> bytes = kairos::concords::EncodeQuoteEnvelope(q);
   assert(!bytes.empty());
   assert(bytes.size() % sizeof(capnp::word) == 0);
 

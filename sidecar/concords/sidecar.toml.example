@@ -1,0 +1,14 @@
+[user]
+user_id = ""
+password = ""
+pfx_filepath = ""
+
+[feed]
+symbols = ["2330", "2317"]
+
+[reconnect]
+daily_at = "07:05"
+
+[aeron]
+stream_id = 1001
+dir = ""
