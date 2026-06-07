@@ -95,3 +95,7 @@ add_test(NAME test_order_backend COMMAND test_order_backend)
 add_executable(test_engine_logic tests/test_engine_logic.cpp)
 target_include_directories(test_engine_logic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_engine_logic COMMAND test_engine_logic)
+
+add_executable(test_event tests/test_event.cpp)
+target_include_directories(test_event PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_event COMMAND test_event)
