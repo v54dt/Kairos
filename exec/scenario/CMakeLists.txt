@@ -59,3 +59,7 @@ add_test(NAME test_quote_codec COMMAND test_quote_codec)
 add_executable(test_uds tests/test_uds.cpp)
 target_link_libraries(test_uds PRIVATE kairos_uds)
 add_test(NAME test_uds COMMAND test_uds)
+
+add_executable(test_order_backend tests/test_order_backend.cpp)
+target_include_directories(test_order_backend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_order_backend COMMAND test_order_backend)
