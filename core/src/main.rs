@@ -9,10 +9,10 @@ use kairos_core::encode::encode_subscribe;
 use kairos_core::ipc::aeron::{AeronPub, AeronSub, CONTROL_STREAM_ID, DEFAULT_STREAM_ID};
 use kairos_core::model::Quote;
 use kairos_core::subreg::SubRegistry;
+use kairos_core::uds::path::quote_socket_path;
 use kairos_core::uds::server::run_server;
 use tokio::sync::broadcast;
 
-const SOCKET_PATH: &str = "/tmp/kairos-quotes.sock";
 /// Re-publish the desired set at least this often (also the upstream heartbeat
 /// that recovers a sidecar restart/reconnect).
 const CONTROL_HEARTBEAT: Duration = Duration::from_secs(10);
@@ -31,8 +31,9 @@ async fn main() -> anyhow::Result<()> {
     let control_registry = registry.clone();
     thread::spawn(move || control_publish_loop(control_registry, change_rx));
 
-    eprintln!("kairos-core: UDS quote server on {SOCKET_PATH}");
-    run_server(SOCKET_PATH, book, tx, registry, change_tx).await?;
+    let socket_path = quote_socket_path();
+    eprintln!("kairos-core: UDS quote server on {socket_path}");
+    run_server(&socket_path, book, tx, registry, change_tx).await?;
     Ok(())
 }
 

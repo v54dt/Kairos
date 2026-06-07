@@ -1,9 +1,8 @@
 use kairos_core::decode::decode_quote_bytes;
 use kairos_core::encode::encode_subscribe;
 use kairos_core::uds::frame::{read_frame, write_frame};
+use kairos_core::uds::path::quote_socket_path;
 use tokio::net::UnixStream;
-
-const SOCKET: &str = "/tmp/kairos-quotes.sock";
 
 fn px(mantissa: i64, scale: u8) -> f64 {
     mantissa as f64 / 10f64.powi(scale as i32)
@@ -17,7 +16,7 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    let mut stream = UnixStream::connect(SOCKET).await?;
+    let mut stream = UnixStream::connect(quote_socket_path()).await?;
     let refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     write_frame(&mut stream, &encode_subscribe(&refs)).await?;
     println!("kairos-uds-client: subscribed {symbols:?}; waiting for quotes...");
