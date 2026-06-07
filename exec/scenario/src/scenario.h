@@ -1,0 +1,78 @@
+#ifndef KAIROS_EXEC_SCENARIO_H_
+#define KAIROS_EXEC_SCENARIO_H_
+
+// Declarative scenario (劇本) config consumed by the execution engine. The TOML
+// loader / validator / summary live in scenario.cpp.
+
+#include <string>
+
+#include "tw_fees.h"
+#include "tw_market.h"
+
+namespace kairos::exec {
+
+enum class Board { kOddLot, kRoundLot };
+enum class Side { kBuy, kSell };
+enum class Market { kTse, kOtc };
+enum class Pacing { kAsap, kTwap };
+enum class PricePolicy { kCross, kJoin, kMid, kLast };
+
+struct UserCreds {
+  std::string user_id;
+  std::string password;
+  std::string account;
+  std::string pfx_filepath;
+  std::string pfx_password;
+};
+
+struct Scenario {
+  std::string name = "scenario";
+  std::string symbol;
+  Market market = Market::kTse;
+  Board board = Board::kOddLot;
+  Side side = Side::kBuy;
+  Product product = Product::kStock;  // tick schedule; caller-supplied
+  std::string funding_type = "Cash";
+  std::string time_in_force = "ROD";
+
+  long budget_twd = 0;
+  int interval_seconds = 30;
+  long shares_per_order = 0;  // 0 => auto fee-optimal
+  Pacing pacing = Pacing::kTwap;
+
+  FeeParams fees;
+
+  PricePolicy price_policy = PricePolicy::kCross;
+  int tick_offset = 0;
+  double reference_price = 0.0;
+  double max_deviation_pct = 9.0;
+  bool use_trial_quotes = false;
+
+  std::string window_start = "09:00";
+  std::string window_end = "13:25";
+  int window_start_hhmm = 900;
+  int window_end_hhmm = 1325;
+  bool weekdays_only = true;
+
+  std::string daily_reconnect = "07:05";
+  int daily_reconnect_hhmm = 705;
+
+  long max_orders = 0;
+  long max_open_orders = 0;
+  long max_notional_twd = 0;
+  bool require_two_sided = true;
+  long quote_max_age_ms = 5000;
+  long quote_stall_alert_ms = 30000;
+  bool stop_on_disconnect = true;
+
+  bool live = false;
+
+  UserCreds creds;
+
+  bool IsOddLot() const { return board == Board::kOddLot; }
+  long EffectiveMaxNotional() const { return max_notional_twd > 0 ? max_notional_twd : budget_twd; }
+};
+
+}  // namespace kairos::exec
+
+#endif  // KAIROS_EXEC_SCENARIO_H_

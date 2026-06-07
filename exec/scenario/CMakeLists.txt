@@ -13,3 +13,7 @@ enable_testing()
 add_executable(test_market_fees tests/test_market_fees.cpp)
 target_include_directories(test_market_fees PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_market_fees COMMAND test_market_fees)
+
+add_executable(test_pricing tests/test_pricing.cpp)
+target_include_directories(test_pricing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_pricing COMMAND test_pricing)
