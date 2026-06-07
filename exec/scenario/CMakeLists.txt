@@ -28,6 +28,10 @@ add_library(kairos_transport src/http_poster.cpp)
 target_include_directories(kairos_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(kairos_transport PUBLIC CURL::libcurl)
 
+add_library(kairos_notify src/ntfy_dispatcher.cpp)
+target_include_directories(kairos_notify PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(kairos_notify PUBLIC kairos_transport)
+
 add_library(kairos_quote_codec src/quote_codec.cpp ${CAPNP_SRCS})
 target_include_directories(kairos_quote_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
                                                      ${CMAKE_CURRENT_BINARY_DIR})
@@ -108,3 +112,7 @@ add_test(NAME test_event COMMAND test_event)
 add_executable(test_transport tests/test_transport.cpp)
 target_link_libraries(test_transport PRIVATE kairos_transport)
 add_test(NAME test_transport COMMAND test_transport)
+
+add_executable(test_ntfy_dispatcher tests/test_ntfy_dispatcher.cpp)
+target_link_libraries(test_ntfy_dispatcher PRIVATE kairos_notify)
+add_test(NAME test_ntfy_dispatcher COMMAND test_ntfy_dispatcher)
