@@ -1,9 +1,6 @@
 @0x99545b8926effaa8;
 
-# Kairos quote wire schema. Shared by the Rust core and the C++ concords sidecar,
-# carried over both Aeron (sidecar -> core) and the UDS feed (core -> consumers).
-# Prices are mantissa + scale (lossless from concords FixedPoint{digits,precision});
-# core never does decimal math, so integers travel end to end.
+# Kairos quote wire schema.
 
 enum Exchange {
   twse @0;
@@ -21,13 +18,13 @@ struct PriceLevel {
 struct Quote {
   symbol     @0 :Text;
   exchange   @1 :Exchange;
-  quoteTsUs  @2 :Int64;             # concords timestamp, micros since epoch
-  bids       @3 :List(PriceLevel);  # up to 5, best first
-  asks       @4 :List(PriceLevel);  # up to 5, best first
-  lastPrice  @5 :Int64;             # last trade, mantissa
+  quoteTsUs  @2 :Int64;
+  bids       @3 :List(PriceLevel);
+  asks       @4 :List(PriceLevel);
+  lastPrice  @5 :Int64;
   lastScale  @6 :UInt8;
   lastVolume @7 :Int64;
-  isTrial    @8 :Bool;              # 試撮
+  isTrial    @8 :Bool;
 }
 
 struct Subscribe {
@@ -43,14 +40,13 @@ struct SubAck {
   ok      @1 :Bool;
 }
 
-# One envelope covers both directions; the union discriminant is the message tag.
 struct Envelope {
   union {
-    quote       @0 :Quote;        # core -> client (data)
-    subscribe   @1 :Subscribe;    # client -> core (control)
-    unsubscribe @2 :Unsubscribe;  # client -> core (control)
-    subAck      @3 :SubAck;       # core -> client
-    error       @4 :Text;         # core -> client
+    quote       @0 :Quote;
+    subscribe   @1 :Subscribe;
+    unsubscribe @2 :Unsubscribe;
+    subAck      @3 :SubAck;
+    error       @4 :Text;
     heartbeat   @5 :Void;
   }
 }
