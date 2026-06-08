@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
   std::unique_ptr<OrderBackend> live;
   OrderBackend* backend = &paper;
   if (scenario.live) {
-    live = MakeLiveBackend(scenario);
+    live = MakeLiveBackend(scenario.creds);
     if (!live) {
       std::fprintf(stderr, "kairos-exec: this build has no broker SDK; --live unavailable\n");
       return 1;

@@ -1,0 +1,89 @@
+// Integration test: OrderHubServer over a real UDS socket with a PaperOrderBackend.
+// A client submits and must receive the routed ack + fill. No broker.
+
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "order_backend.h"
+#include "order_codec.h"
+#include "order_hub_server.h"
+#include "uds_frame.h"
+
+using namespace kairos::exec;
+
+static int g_failures = 0;
+
+#define CHECK(cond)                                                \
+  do {                                                             \
+    if (!(cond)) {                                                 \
+      std::printf("FAIL  %s:%d  %s\n", __FILE__, __LINE__, #cond); \
+      ++g_failures;                                                \
+    }                                                              \
+  } while (0)
+
+static int ConnectClient(const std::string& path) {
+  int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+  if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+    ::close(fd);
+    return -1;
+  }
+  timeval tv{2, 0};  // a missing reply fails instead of hanging
+  ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  return fd;
+}
+
+int main() {
+  std::string path = "/tmp/kairos-test-hub-" + std::to_string(::getpid()) + ".sock";
+  PaperOrderBackend backend;
+  OrderHubServer server(&backend, path);
+  CHECK(server.Start());
+
+  int fd = ConnectClient(path);
+  CHECK(fd >= 0);
+  if (fd < 0) {
+    server.Stop();
+    std::printf("test_order_hub_server: FAILED (connect)\n");
+    return 1;
+  }
+
+  OrderSubmitMsg m{"k-1", "2330", Market::kTse, Board::kOddLot, Side::kBuy, "Cash",
+                   "ROD", 92500,  1000};
+  CHECK(WriteFrame(fd, EncodeOrderSubmit(m)));
+
+  // paper acks then fills -> expect both routed back to this client
+  bool got_ack = false, got_fill = false;
+  for (int i = 0; i < 2; ++i) {
+    std::vector<std::uint8_t> frame;
+    if (ReadFrame(fd, &frame) != 1) break;
+    OrderMessage om;
+    if (!DecodeOrder(frame.data(), frame.size(), &om)) continue;
+    if (om.kind == OrderMsgKind::kAck) {
+      got_ack = om.ack.id == "k-1" && om.ack.ok;
+    } else if (om.kind == OrderMsgKind::kFill) {
+      got_fill = om.fill.id == "k-1" && om.fill.shares == 1000 && om.fill.price == 92500;
+    }
+  }
+  CHECK(got_ack);
+  CHECK(got_fill);
+
+  ::close(fd);
+  server.Stop();
+
+  if (g_failures == 0) {
+    std::printf("test_order_hub_server: OK\n");
+    return 0;
+  }
+  std::printf("test_order_hub_server: FAILED %d check(s)\n", g_failures);
+  return 1;
+}
