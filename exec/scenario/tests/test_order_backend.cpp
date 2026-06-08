@@ -51,14 +51,16 @@ int main() {
   CHECK(backend.Connect());
   CHECK(backend.IsConnected());
 
-  backend.Submit("ord-1", Side::kBuy, 58000, 100);
+  backend.Submit(
+      {"ord-1", "2330", Market::kTse, Board::kOddLot, Side::kBuy, "Cash", "ROD", 58000, 100});
   CHECK(acked_id == "ord-1");
   CHECK(ack_ok);
   CHECK(filled_id == "ord-1");  // paper fills immediately at the limit
   CHECK_EQ(got.shares, 100);
   CHECK_EQ(got.price, 58000);
 
-  backend.Submit("ord-2", Side::kSell, 58100, 50);
+  backend.Submit(
+      {"ord-2", "2330", Market::kTse, Board::kOddLot, Side::kSell, "Cash", "ROD", 58100, 50});
   CHECK(filled_id == "ord-2");
   CHECK_EQ(got.shares, 50);
   CHECK_EQ(got.price, 58100);

@@ -22,7 +22,7 @@ class ConcordsOrderBackend : public OrderBackend {
   bool Connect() override;
   void Disconnect() override;
   bool IsConnected() const override;
-  void Submit(const std::string& id, Side side, Cents price, long shares) override;
+  void Submit(const OrderSubmitMsg& order) override;
   void Cancel(const std::string& id) override;
 
  private:
