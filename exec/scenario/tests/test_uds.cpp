@@ -29,6 +29,10 @@ static void TestSocketPath() {
   CHECK(ResolveSocketPath(nullptr, nullptr) == "/tmp/kairos-quotes.sock");
   CHECK(ResolveSocketPath("", "") == "/tmp/kairos-quotes.sock");
   CHECK(ResolveSocketPath("", "/run/user/1001") == "/run/user/1001/kairos-quotes.sock");
+
+  CHECK(ResolveOrderSocketPath("/run/o.sock", "/run/user/1001") == "/run/o.sock");
+  CHECK(ResolveOrderSocketPath(nullptr, "/run/user/1001") == "/run/user/1001/kairos-orders.sock");
+  CHECK(ResolveOrderSocketPath(nullptr, nullptr) == "/tmp/kairos-orders.sock");
 }
 
 static void TestFraming() {

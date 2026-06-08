@@ -24,7 +24,7 @@ concords_sdk::stock::Side ToSide(Side s) {
 
 }  // namespace
 
-ConcordsOrderBackend::ConcordsOrderBackend(Scenario s) : s_(std::move(s)) {}
+ConcordsOrderBackend::ConcordsOrderBackend(UserCreds creds) : creds_(std::move(creds)) {}
 
 void ConcordsOrderBackend::Gate() {
   std::lock_guard<std::mutex> lock(gate_mu_);
@@ -40,8 +40,8 @@ void ConcordsOrderBackend::Gate() {
 bool ConcordsOrderBackend::Connect() {
   Gate();
   stock_ = concords_sdk::stock::BuildStockClient(
-      s_.creds.user_id.c_str(), s_.creds.password.c_str(), s_.creds.account.c_str(),
-      s_.creds.pfx_filepath.c_str(), s_.creds.pfx_password.c_str());
+      creds_.user_id.c_str(), creds_.password.c_str(), creds_.account.c_str(),
+      creds_.pfx_filepath.c_str(), creds_.pfx_password.c_str());
   if (!stock_) {
     std::fprintf(stderr, "kairos-exec: BuildStockClient failed (credentials/PFX?)\n");
     return false;
@@ -98,8 +98,8 @@ void ConcordsOrderBackend::Cancel(const std::string& id) {
   stock_->CancelOrder(id);
 }
 
-std::unique_ptr<OrderBackend> MakeLiveBackend(const Scenario& s) {
-  return std::make_unique<ConcordsOrderBackend>(s);
+std::unique_ptr<OrderBackend> MakeLiveBackend(const UserCreds& creds) {
+  return std::make_unique<ConcordsOrderBackend>(creds);
 }
 
 }  // namespace kairos::exec

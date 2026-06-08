@@ -60,6 +60,11 @@ add_library(kairos_order_hub src/order/order_hub.cpp)
 target_include_directories(kairos_order_hub PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_order_hub PUBLIC kairos_order_codec)
 
+# UDS front end for the order hub: listen socket + per-client reader threads.
+add_library(kairos_order_hub_server src/order/order_hub_server.cpp)
+target_include_directories(kairos_order_hub_server PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_order_hub_server PUBLIC kairos_order_hub pthread)
+
 add_library(kairos_uds src/quote/uds_quote_client.cpp)
 target_include_directories(kairos_uds PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
@@ -100,6 +105,10 @@ target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
 target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_live kairos_notify)
 
+add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
+target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
+                                                tomlplusplus::tomlplusplus)
+
 # --- tests ---
 enable_testing()
 add_executable(test_market_fees tests/test_market_fees.cpp)
@@ -125,6 +134,10 @@ add_test(NAME test_order_codec COMMAND test_order_codec)
 add_executable(test_order_hub tests/test_order_hub.cpp)
 target_link_libraries(test_order_hub PRIVATE kairos_order_hub)
 add_test(NAME test_order_hub COMMAND test_order_hub)
+
+add_executable(test_order_hub_server tests/test_order_hub_server.cpp)
+target_link_libraries(test_order_hub_server PRIVATE kairos_order_hub_server)
+add_test(NAME test_order_hub_server COMMAND test_order_hub_server)
 
 add_executable(test_uds tests/test_uds.cpp)
 target_link_libraries(test_uds PRIVATE kairos_uds)

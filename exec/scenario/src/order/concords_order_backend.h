@@ -15,9 +15,11 @@ namespace kairos::exec {
 // Real order backend over the concords StockClient. Every SDK call is serialized
 // through a 1 req/s gate (concords rate limit). Order ids are the engine's
 // correlation ids (concords user_defined_id); cancel/update target the same id.
+// Holds only creds: the full order spec arrives per Submit, so one backend can
+// serve any symbol (used directly by a scenario, or shared by the order hub).
 class ConcordsOrderBackend : public OrderBackend {
  public:
-  explicit ConcordsOrderBackend(Scenario s);
+  explicit ConcordsOrderBackend(UserCreds creds);
 
   bool Connect() override;
   void Disconnect() override;
@@ -28,7 +30,7 @@ class ConcordsOrderBackend : public OrderBackend {
  private:
   void Gate();
 
-  Scenario s_;
+  UserCreds creds_;
   std::unique_ptr<concords_sdk::stock::StockClient> stock_;
   std::mutex gate_mu_;
   std::chrono::steady_clock::time_point last_req_{};
