@@ -55,6 +55,11 @@ add_library(kairos_order_codec src/order/order_codec.cpp)
 target_include_directories(kairos_order_codec PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_order_codec PUBLIC kairos_capnp)
 
+# Order hub routing core (socket-agnostic): routes client orders <-> one backend.
+add_library(kairos_order_hub src/order/order_hub.cpp)
+target_include_directories(kairos_order_hub PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_order_hub PUBLIC kairos_order_codec)
+
 add_library(kairos_uds src/quote/uds_quote_client.cpp)
 target_include_directories(kairos_uds PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
@@ -116,6 +121,10 @@ add_test(NAME test_quote_codec COMMAND test_quote_codec)
 add_executable(test_order_codec tests/test_order_codec.cpp)
 target_link_libraries(test_order_codec PRIVATE kairos_order_codec)
 add_test(NAME test_order_codec COMMAND test_order_codec)
+
+add_executable(test_order_hub tests/test_order_hub.cpp)
+target_link_libraries(test_order_hub PRIVATE kairos_order_hub)
+add_test(NAME test_order_hub COMMAND test_order_hub)
 
 add_executable(test_uds tests/test_uds.cpp)
 target_link_libraries(test_uds PRIVATE kairos_uds)
