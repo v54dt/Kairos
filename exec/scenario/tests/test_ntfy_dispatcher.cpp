@@ -63,7 +63,7 @@ int main() {
     CHECK(tr.reqs.empty());
   }
 
-  // fill -> one post with topic/title/priority/tag + auth header
+  // fill -> one post with topic/title/priority + auth header (capitalized title, no tags)
   {
     RecordingTransport tr;
     NtfyDispatcher d(BaseCfg(), &tr, clock);
@@ -71,9 +71,9 @@ int main() {
     CHECK(tr.reqs.size() == 1);
     CHECK(tr.reqs[0].url == "https://notify.test");
     CHECK(Contains(tr.reqs[0].body, "\"topic\":\"kairos\""));
-    CHECK(Contains(tr.reqs[0].body, "2330 fill"));
+    CHECK(Contains(tr.reqs[0].body, "2330 Fill"));
     CHECK(Contains(tr.reqs[0].body, "\"priority\":3"));
-    CHECK(Contains(tr.reqs[0].body, "white_check_mark"));
+    CHECK(Contains(tr.reqs[0].body, "\"tags\":[]"));
     bool auth = false;
     for (const auto& h : tr.reqs[0].headers)
       if (h == "Authorization: Bearer tok") auth = true;
