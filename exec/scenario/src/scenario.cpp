@@ -189,6 +189,12 @@ Scenario LoadScenario(const std::string& path) {
   s.notify.rate_capacity = t["notify"]["rate_capacity"].value_or<long>(250);
   s.notify.rate_refill_per_h = t["notify"]["rate_refill_per_h"].value_or<double>(20.0);
 
+  // [dashboard]
+  s.dashboard.enabled = t["dashboard"]["enabled"].value_or<bool>(false);
+  s.dashboard.api_url = t["dashboard"]["api_url"].value_or<std::string>("");
+  s.dashboard.broker_name =
+      t["dashboard"]["broker_name"].value_or<std::string>("concords-scenario");
+
   return s;
 }
 
@@ -214,6 +220,8 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
   if (s.creds.pfx_filepath.empty()) errs.push_back("user.pfx_filepath is empty");
   if (s.notify.enabled && (s.notify.base_url.empty() || s.notify.topic.empty()))
     errs.push_back("notify.enabled but notify.base_url/topic is empty");
+  if (s.dashboard.enabled && s.dashboard.api_url.empty())
+    errs.push_back("dashboard.enabled but dashboard.api_url is empty");
 
   return errs;
 }
@@ -239,6 +247,7 @@ std::string SummarizeScenario(const Scenario& s) {
                      s.weekdays_only ? "(weekdays)" : "");
   out += std::format("  mode     : {}\n", s.live ? "*** LIVE ***" : "PAPER");
   out += std::format("  notify   : {}\n", s.notify.enabled ? "on" : "off");
+  out += std::format("  dashboard: {}\n", s.dashboard.enabled ? "on (LIVE only)" : "off");
   return out;
 }
 

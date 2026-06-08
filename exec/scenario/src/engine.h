@@ -7,6 +7,7 @@
 #include <mutex>
 #include <string>
 
+#include "dashboard_metrics.h"
 #include "engine_logic.h"
 #include "event_sink.h"
 #include "order_backend.h"
@@ -27,6 +28,7 @@ class ScenarioEngine {
   void Run();
   void RequestStop();
   void set_ignore_window(bool v) { ignore_window_ = v; }
+  void set_dashboard(DashboardMetrics* d) { dashboard_ = d; }
 
  private:
   void OnAck(const std::string& id, bool ok, const std::string& err);
@@ -39,6 +41,7 @@ class ScenarioEngine {
   Scenario s_;
   OrderBackend* backend_;
   EventSink* sink_;
+  DashboardMetrics* dashboard_ = nullptr;
   QuoteBook book_;
   std::unique_ptr<UdsQuoteClient> quotes_;
 
@@ -50,6 +53,9 @@ class ScenarioEngine {
   long resting_filled_ = 0;
   bool resting_acked_ = false;  // broker confirmed the working order (OnSubmit)
   bool cancelling_ = false;     // cancel issued for re-peg, awaiting OnCancel/full fill
+  int resting_seq_ = 0;         // order id's sequence number (dashboard iteration_id)
+  std::chrono::steady_clock::time_point resting_t_start_;   // before Submit (post-gate)
+  std::chrono::steady_clock::time_point resting_t_submit_;  // after Submit returns
   bool complete_ = false;
   std::atomic<bool> stop_{false};
   bool ignore_window_ = false;

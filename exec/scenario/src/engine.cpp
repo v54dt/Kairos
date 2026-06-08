@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <optional>
 #include <thread>
 #include <utility>
 
@@ -13,6 +14,10 @@
 namespace kairos::exec {
 
 namespace {
+
+double Millis(std::chrono::steady_clock::duration d) {
+  return std::chrono::duration_cast<std::chrono::microseconds>(d).count() / 1000.0;
+}
 
 struct LocalNow {
   int hhmm;
@@ -73,10 +78,20 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
   if (id != resting_id_) return;
   if (ok) {
     resting_acked_ = true;
+    if (dashboard_ && s_.live) {
+      auto now = std::chrono::steady_clock::now();
+      dashboard_->ReportOrder(resting_seq_, "success", "", Millis(now - resting_t_start_),
+                              Millis(resting_t_submit_ - resting_t_start_),
+                              Millis(now - resting_t_submit_));
+    }
   } else {
     std::fprintf(stderr, "kairos-exec: order %s rejected: %s\n", id.c_str(), err.c_str());
     sink_->Emit(
         {EventCategory::kError, Severity::kError, s_.symbol, "reject:" + id, {{"reason", err}}});
+    if (dashboard_ && s_.live) {
+      dashboard_->ReportOrder(resting_seq_, "submit_error", err, std::nullopt,
+                              Millis(resting_t_submit_ - resting_t_start_), std::nullopt);
+    }
     ClearResting();  // rejected -> free the working slot, retry next tick
     cv_.notify_all();
   }
@@ -185,6 +200,7 @@ void ScenarioEngine::Run() {
       }
       if (act.kind == ActionKind::kPlace) {
         std::string id = NextOrderId();
+        int seq = order_seq_;
         {
           std::lock_guard<std::mutex> lock(mu_);
           resting_ = RestingOrder{true, act.price, act.shares};
@@ -192,9 +208,19 @@ void ScenarioEngine::Run() {
           resting_filled_ = 0;
           resting_acked_ = false;
           cancelling_ = false;
+          resting_seq_ = seq;
         }
-        SdkGate();
+        SdkGate();  // before t_start so the rate-limit sleep isn't counted as RTT
+        auto t0 = std::chrono::steady_clock::now();
         backend_->Submit(id, s_.side, act.price, act.shares);
+        auto t1 = std::chrono::steady_clock::now();
+        {
+          std::lock_guard<std::mutex> lock(mu_);
+          if (resting_id_ == id) {
+            resting_t_start_ = t0;
+            resting_t_submit_ = t1;
+          }
+        }
       } else if (act.kind == ActionKind::kRepeg && acked && !cancelling) {
         // Re-peg = cancel the (acked) working order; next tick re-places at the
         // new peg. Clearing waits for OnCancel/full-fill so racing fills count.

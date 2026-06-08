@@ -32,6 +32,10 @@ add_library(kairos_notify src/ntfy_dispatcher.cpp)
 target_include_directories(kairos_notify PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(kairos_notify PUBLIC kairos_transport)
 
+add_library(kairos_dashboard src/dashboard_metrics.cpp)
+target_include_directories(kairos_dashboard PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(kairos_dashboard PUBLIC kairos_transport)
+
 add_library(kairos_quote_codec src/quote_codec.cpp ${CAPNP_SRCS})
 target_include_directories(kairos_quote_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
                                                      ${CMAKE_CURRENT_BINARY_DIR})
@@ -46,7 +50,7 @@ target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
 add_library(kairos_engine src/engine.cpp)
 target_include_directories(kairos_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(kairos_engine PUBLIC kairos_uds kairos_scenario)
+target_link_libraries(kairos_engine PUBLIC kairos_uds kairos_scenario kairos_dashboard)
 
 # Live order backend: real concords StockClient when the stock SDK is present in exec/scenario/lib,
 # otherwise a stub so --live reports "no broker SDK". CI has no SDK and builds the stub.
@@ -116,3 +120,7 @@ add_test(NAME test_transport COMMAND test_transport)
 add_executable(test_ntfy_dispatcher tests/test_ntfy_dispatcher.cpp)
 target_link_libraries(test_ntfy_dispatcher PRIVATE kairos_notify)
 add_test(NAME test_ntfy_dispatcher COMMAND test_ntfy_dispatcher)
+
+add_executable(test_dashboard_metrics tests/test_dashboard_metrics.cpp)
+target_link_libraries(test_dashboard_metrics PRIVATE kairos_dashboard)
+add_test(NAME test_dashboard_metrics COMMAND test_dashboard_metrics)
