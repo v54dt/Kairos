@@ -1,0 +1,88 @@
+// End-to-end: HubOrderBackend <-> OrderHubServer (paper backend) over a real UDS.
+// A submit flows client -> hub -> backend, and the ack + fill route back to the
+// client's callbacks. Exercises both ends of the order hub. No broker.
+
+#include <unistd.h>
+
+#include <chrono>
+#include <cstdio>
+#include <mutex>
+#include <string>
+#include <thread>
+
+#include "hub_order_backend.h"
+#include "order_backend.h"
+#include "order_hub_server.h"
+
+using namespace kairos::exec;
+
+static int g_failures = 0;
+
+#define CHECK(cond)                                                \
+  do {                                                             \
+    if (!(cond)) {                                                 \
+      std::printf("FAIL  %s:%d  %s\n", __FILE__, __LINE__, #cond); \
+      ++g_failures;                                                \
+    }                                                              \
+  } while (0)
+
+int main() {
+  std::string path = "/tmp/kairos-test-hubbe-" + std::to_string(::getpid()) + ".sock";
+  PaperOrderBackend paper;
+  OrderHubServer server(&paper, path);
+  CHECK(server.Start());
+
+  std::mutex mu;
+  std::string ack_id, fill_id;
+  bool ack_ok = false;
+  long fill_sh = 0;
+  Cents fill_px = 0;
+
+  HubOrderBackend client(path);
+  client.SetCallbacks(
+      [&](const std::string& id, bool ok, const std::string&) {
+        std::lock_guard<std::mutex> lock(mu);
+        ack_id = id;
+        ack_ok = ok;
+      },
+      [&](const std::string& id, const Fill& f) {
+        std::lock_guard<std::mutex> lock(mu);
+        fill_id = id;
+        fill_sh = f.shares;
+        fill_px = f.price;
+      },
+      [&](const std::string&, bool) {});
+  CHECK(client.Connect());
+  CHECK(client.IsConnected());
+
+  client.Submit(
+      {"k-1", "2330", Market::kTse, Board::kOddLot, Side::kBuy, "Cash", "ROD", 92500, 1000});
+
+  // wait (up to ~2s) for the async ack + fill to arrive via the reader thread
+  for (int i = 0; i < 200; ++i) {
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      if (!ack_id.empty() && !fill_id.empty()) break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mu);
+    CHECK(ack_id == "k-1");
+    CHECK(ack_ok);
+    CHECK(fill_id == "k-1");
+    CHECK(fill_sh == 1000);
+    CHECK(fill_px == 92500);
+  }
+
+  client.Disconnect();
+  server.Stop();
+
+  if (g_failures == 0) {
+    std::printf("test_hub_order_backend: OK\n");
+    return 0;
+  }
+  std::printf("test_hub_order_backend: FAILED %d check(s)\n", g_failures);
+  return 1;
+}

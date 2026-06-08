@@ -19,10 +19,11 @@
 #include "engine.h"
 #include "event_sink.h"
 #include "http_poster.h"
-#include "live_backend.h"
+#include "hub_order_backend.h"
 #include "ntfy_dispatcher.h"
 #include "order_backend.h"
 #include "scenario.h"
+#include "socket_path.h"
 #include "tw_fees.h"
 #include "tw_market.h"
 #include "uds_quote_client.h"
@@ -138,19 +139,15 @@ int main(int argc, char** argv) {
   std::printf("%s", SummarizeScenario(scenario).c_str());
   std::fflush(stdout);
 
+  // --live routes orders through the shared order hub (kairos_order_hubd); the hub
+  // holds the account creds and the 1 req/s gate, so the scenario just connects.
   PaperOrderBackend paper;
   std::unique_ptr<OrderBackend> live;
   OrderBackend* backend = &paper;
   if (scenario.live) {
-    live = MakeLiveBackend(scenario.creds);
-    if (!live) {
-      std::fprintf(stderr, "kairos-exec: this build has no broker SDK; --live unavailable\n");
-      return 1;
-    }
     if (!assume_yes) {
-      std::printf("*** LIVE: real orders on account %s, %s %s NT$ %ld. Type LIVE to confirm: ",
-                  scenario.creds.account.c_str(), SideName(scenario.side), scenario.symbol.c_str(),
-                  scenario.budget_twd);
+      std::printf("*** LIVE via order hub: %s %s NT$ %ld. Type LIVE to confirm: ",
+                  SideName(scenario.side), scenario.symbol.c_str(), scenario.budget_twd);
       std::fflush(stdout);
       std::string line;
       std::getline(std::cin, line);
@@ -159,6 +156,7 @@ int main(int argc, char** argv) {
         return 0;
       }
     }
+    live = std::make_unique<HubOrderBackend>(OrderSocketPath());
     backend = live.get();
   }
 
