@@ -15,6 +15,7 @@
 #include <string>
 #include <thread>
 
+#include "dashboard_metrics.h"
 #include "engine.h"
 #include "event_sink.h"
 #include "http_poster.h"
@@ -163,16 +164,23 @@ int main(int argc, char** argv) {
 
   std::unique_ptr<HttpPoster> poster;
   std::unique_ptr<NtfyDispatcher> dispatcher;
+  std::unique_ptr<DashboardMetrics> dashboard;
   NullEventSink null_sink;
   EventSink* sink = &null_sink;
-  if (scenario.notify.enabled) {
+  if (scenario.notify.enabled || scenario.dashboard.enabled) {
     poster = std::make_unique<HttpPoster>();
+  }
+  if (scenario.notify.enabled) {
     dispatcher = std::make_unique<NtfyDispatcher>(scenario.notify, poster.get());
     sink = dispatcher.get();
+  }
+  if (scenario.dashboard.enabled) {
+    dashboard = std::make_unique<DashboardMetrics>(scenario.dashboard, poster.get());
   }
 
   ScenarioEngine engine(std::move(scenario), backend, sink);
   if (ignore_window) engine.set_ignore_window(true);
+  if (dashboard) engine.set_dashboard(dashboard.get());
   g_engine = &engine;
   engine.Run();
   return 0;

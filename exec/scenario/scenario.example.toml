@@ -65,3 +65,8 @@ token = ""
 min_severity = "info"
 rate_capacity = 250
 rate_refill_per_h = 20.0
+
+[dashboard]
+enabled = false
+api_url = ""
+broker_name = "concords-scenario"

@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "dashboard_metrics.h"
 #include "notify_config.h"
 #include "tw_fees.h"
 #include "tw_market.h"
@@ -70,6 +71,7 @@ struct Scenario {
   bool live = false;
 
   NotifyConfig notify;
+  DashboardConfig dashboard;
 
   UserCreds creds;
 
