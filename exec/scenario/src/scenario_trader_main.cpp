@@ -16,7 +16,10 @@
 #include <thread>
 
 #include "engine.h"
+#include "event_sink.h"
+#include "http_poster.h"
 #include "live_backend.h"
+#include "ntfy_dispatcher.h"
 #include "order_backend.h"
 #include "scenario.h"
 #include "tw_fees.h"
@@ -158,7 +161,17 @@ int main(int argc, char** argv) {
     backend = live.get();
   }
 
-  ScenarioEngine engine(std::move(scenario), backend);
+  std::unique_ptr<HttpPoster> poster;
+  std::unique_ptr<NtfyDispatcher> dispatcher;
+  NullEventSink null_sink;
+  EventSink* sink = &null_sink;
+  if (scenario.notify.enabled) {
+    poster = std::make_unique<HttpPoster>();
+    dispatcher = std::make_unique<NtfyDispatcher>(scenario.notify, poster.get());
+    sink = dispatcher.get();
+  }
+
+  ScenarioEngine engine(std::move(scenario), backend, sink);
   if (ignore_window) engine.set_ignore_window(true);
   g_engine = &engine;
   engine.Run();

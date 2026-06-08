@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "notify_config.h"
 #include "tw_fees.h"
 #include "tw_market.h"
 
@@ -67,6 +68,8 @@ struct Scenario {
   bool stop_on_disconnect = true;
 
   bool live = false;
+
+  NotifyConfig notify;
 
   UserCreds creds;
 

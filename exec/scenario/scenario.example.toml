@@ -56,3 +56,12 @@ stop_on_disconnect = true
 
 [mode]
 live = false
+
+[notify]
+enabled = false
+base_url = ""
+topic = ""
+token = ""
+min_severity = "info"
+rate_capacity = 250
+rate_refill_per_h = 20.0

@@ -31,8 +31,8 @@ LocalNow NowUtc8() {
 
 }  // namespace
 
-ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend)
-    : s_(std::move(scenario)), backend_(backend) {
+ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink)
+    : s_(std::move(scenario)), backend_(backend), sink_(sink) {
   oid_prefix_ = "k" + std::to_string(::getpid());
   std::string sym = s_.symbol;
   quotes_ =
@@ -75,6 +75,8 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
     resting_acked_ = true;
   } else {
     std::fprintf(stderr, "kairos-exec: order %s rejected: %s\n", id.c_str(), err.c_str());
+    sink_->Emit(
+        {EventCategory::kError, Severity::kError, s_.symbol, "reject:" + id, {{"reason", err}}});
     ClearResting();  // rejected -> free the working slot, retry next tick
     cv_.notify_all();
   }
@@ -96,10 +98,23 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
               f.shares, CentsToString(f.price).c_str(), acct_.filled_shares, acct_.FilledTwd(),
               acct_.total_fee_twd);
   if (resting_filled_ >= resting_.shares) ClearResting();
+  sink_->Emit({EventCategory::kFill,
+               Severity::kInfo,
+               s_.symbol,
+               "",
+               {{"shares", std::to_string(f.shares)},
+                {"price", CentsToString(f.price)},
+                {"cum_twd", std::to_string(acct_.FilledTwd())},
+                {"budget", std::to_string(s_.budget_twd)}}});
   int pct = s_.budget_twd > 0 ? static_cast<int>(acct_.FilledTwd() * 100 / s_.budget_twd) : 0;
   if (pct >= last_milestone_pct_ + 25) {
     last_milestone_pct_ = pct - (pct % 25);
     std::printf("kairos-exec: progress %d%%\n", last_milestone_pct_);
+    sink_->Emit({EventCategory::kMilestone,
+                 Severity::kInfo,
+                 s_.symbol,
+                 "",
+                 {{"pct", std::to_string(last_milestone_pct_)}}});
   }
   if (acct_.BudgetReached(s_)) complete_ = true;
   std::fflush(stdout);
@@ -119,6 +134,14 @@ void ScenarioEngine::Run() {
   std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
               s_.budget_twd, PricePolicyName(s_.price_policy), s_.live ? "*** LIVE ***" : "PAPER");
   std::fflush(stdout);
+  sink_->Emit({EventCategory::kMilestone,
+               Severity::kInfo,
+               s_.symbol,
+               "",
+               {{"phase", "start"},
+                {"side", SideName(s_.side)},
+                {"budget", std::to_string(s_.budget_twd)},
+                {"mode", s_.live ? "LIVE" : "PAPER"}}});
 
   while (!stop_) {
     if (!ignore_window_) {
@@ -204,6 +227,14 @@ void ScenarioEngine::Run() {
   std::printf("kairos-exec: end - filled %ld sh / NT$ %ld of %ld, fee NT$ %ld\n",
               acct_.filled_shares, acct_.FilledTwd(), s_.budget_twd, acct_.total_fee_twd);
   std::fflush(stdout);
+  sink_->Emit({EventCategory::kComplete,
+               Severity::kInfo,
+               s_.symbol,
+               "",
+               {{"filled_sh", std::to_string(acct_.filled_shares)},
+                {"filled_twd", std::to_string(acct_.FilledTwd())},
+                {"budget", std::to_string(s_.budget_twd)},
+                {"fee", std::to_string(acct_.total_fee_twd)}}});
 }
 
 void ScenarioEngine::RequestStop() {

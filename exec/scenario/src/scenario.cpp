@@ -62,6 +62,12 @@ PricePolicy ParsePolicy(const std::string& s) {
   throw std::runtime_error("invalid price policy (cross|join|mid|last): " + s);
 }
 
+Severity ParseSeverity(const std::string& s) {
+  if (s == "warning" || s == "warn") return Severity::kWarning;
+  if (s == "error") return Severity::kError;
+  return Severity::kInfo;
+}
+
 Product ParseProduct(const std::string& s) {
   if (s == "stock" || s == "Stock" || s == "股票") return Product::kStock;
   if (s == "etf" || s == "ETF") return Product::kEtf;
@@ -174,6 +180,15 @@ Scenario LoadScenario(const std::string& path) {
   // [mode]
   s.live = t["mode"]["live"].value_or<bool>(false);
 
+  // [notify]
+  s.notify.enabled = t["notify"]["enabled"].value_or<bool>(false);
+  s.notify.base_url = t["notify"]["base_url"].value_or<std::string>("");
+  s.notify.topic = t["notify"]["topic"].value_or<std::string>("");
+  s.notify.token = t["notify"]["token"].value_or<std::string>("");
+  s.notify.min_severity = ParseSeverity(t["notify"]["min_severity"].value_or<std::string>("info"));
+  s.notify.rate_capacity = t["notify"]["rate_capacity"].value_or<long>(250);
+  s.notify.rate_refill_per_h = t["notify"]["rate_refill_per_h"].value_or<double>(20.0);
+
   return s;
 }
 
@@ -197,6 +212,8 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
   if (s.creds.user_id.empty() || s.creds.password.empty())
     errs.push_back("user credentials are incomplete");
   if (s.creds.pfx_filepath.empty()) errs.push_back("user.pfx_filepath is empty");
+  if (s.notify.enabled && (s.notify.base_url.empty() || s.notify.topic.empty()))
+    errs.push_back("notify.enabled but notify.base_url/topic is empty");
 
   return errs;
 }
@@ -221,6 +238,7 @@ std::string SummarizeScenario(const Scenario& s) {
   out += std::format("  window   : {} ~ {} {}\n", s.window_start, s.window_end,
                      s.weekdays_only ? "(weekdays)" : "");
   out += std::format("  mode     : {}\n", s.live ? "*** LIVE ***" : "PAPER");
+  out += std::format("  notify   : {}\n", s.notify.enabled ? "on" : "off");
   return out;
 }
 
