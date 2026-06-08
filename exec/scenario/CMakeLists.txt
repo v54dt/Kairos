@@ -41,9 +41,19 @@ add_library(kairos_dashboard src/notify/dashboard_metrics.cpp)
 target_include_directories(kairos_dashboard PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_dashboard PUBLIC kairos_transport)
 
-add_library(kairos_quote_codec src/quote/quote_codec.cpp ${CAPNP_SRCS})
-target_include_directories(kairos_quote_codec PUBLIC ${KAIROS_INC} ${CMAKE_CURRENT_BINARY_DIR})
-target_link_libraries(kairos_quote_codec PUBLIC CapnProto::capnp)
+# Generated Cap'n Proto code, compiled once and shared by both codecs (linking the generated symbols
+# into a single binary twice would collide).
+add_library(kairos_capnp ${CAPNP_SRCS})
+target_include_directories(kairos_capnp PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(kairos_capnp PUBLIC CapnProto::capnp)
+
+add_library(kairos_quote_codec src/quote/quote_codec.cpp)
+target_include_directories(kairos_quote_codec PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_quote_codec PUBLIC kairos_capnp)
+
+add_library(kairos_order_codec src/order/order_codec.cpp)
+target_include_directories(kairos_order_codec PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_order_codec PUBLIC kairos_capnp)
 
 add_library(kairos_uds src/quote/uds_quote_client.cpp)
 target_include_directories(kairos_uds PUBLIC ${KAIROS_INC})
@@ -102,6 +112,10 @@ add_test(NAME test_scenario COMMAND test_scenario)
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
 add_test(NAME test_quote_codec COMMAND test_quote_codec)
+
+add_executable(test_order_codec tests/test_order_codec.cpp)
+target_link_libraries(test_order_codec PRIVATE kairos_order_codec)
+add_test(NAME test_order_codec COMMAND test_order_codec)
 
 add_executable(test_uds tests/test_uds.cpp)
 target_link_libraries(test_uds PRIVATE kairos_uds)

@@ -50,3 +50,53 @@ struct Envelope {
     heartbeat   @5 :Void;
   }
 }
+
+# --- Order wire (scenario <-> concords order hub, separate UDS) ---
+
+enum Market { tse @0; otc @1; }
+enum Side   { buy @0; sell @1; }
+enum Board  { oddLot @0; roundLot @1; }
+
+struct OrderSubmit {
+  id          @0 :Text;    # user_defined_id (k<pid>-<seq>)
+  symbol      @1 :Text;
+  market      @2 :Market;
+  board       @3 :Board;
+  side        @4 :Side;
+  fundingType @5 :Text;    # parsed hub-side
+  timeInForce @6 :Text;    # parsed hub-side
+  priceCents  @7 :Int64;   # integer cents, formatted hub-side
+  shares      @8 :Int64;   # raw shares; hub converts by board
+}
+
+struct OrderCancel {
+  id @0 :Text;
+}
+
+struct OrderAck {
+  id           @0 :Text;
+  ok           @1 :Bool;
+  errorMessage @2 :Text;
+}
+
+struct OrderFill {
+  id         @0 :Text;
+  shares     @1 :Int64;
+  priceCents @2 :Int64;
+}
+
+struct OrderCancelResult {
+  id @0 :Text;
+  ok @1 :Bool;
+}
+
+struct OrderEnvelope {
+  union {
+    submit       @0 :OrderSubmit;
+    cancel       @1 :OrderCancel;
+    ack          @2 :OrderAck;
+    fill         @3 :OrderFill;
+    cancelResult @4 :OrderCancelResult;
+    heartbeat    @5 :Void;
+  }
+}
