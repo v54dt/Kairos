@@ -101,7 +101,7 @@ jobs:
       - name: cmake-format check
         run: cmake-format --check exec/scenario/CMakeLists.txt
       - name: clang-format check
-        run: clang-format --dry-run --Werror exec/scenario/src/*.h exec/scenario/src/*.cpp exec/scenario/tests/*.cpp
+        run: clang-format --dry-run --Werror exec/scenario/src/*/*.h exec/scenario/src/*/*.cpp exec/scenario/tests/*.cpp
       - name: Build + test
         run: |
           cmake -S exec/scenario -B exec/scenario/build -DCMAKE_BUILD_TYPE=Release

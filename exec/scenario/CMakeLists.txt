@@ -7,8 +7,11 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
-# Pure-logic self-tests (no broker SDK, no network) for the TW market + fee model. The execution
-# engine (concords order backend, UDS quote consumer) is added in later phases.
+set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# Sources are grouped into subdirs; includes stay flat (`#include "foo.h"`), so every target gets
+# all the subdirs on its include path.
+set(KAIROS_INC ${SRC}/market ${SRC}/quote ${SRC}/order ${SRC}/notify ${SRC}/engine)
+
 include(FetchContent)
 FetchContent_Declare(
   tomlplusplus
@@ -24,42 +27,44 @@ set(CAPNPC_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}")
 capnp_generate_cpp(CAPNP_SRCS CAPNP_HDRS "${CMAKE_CURRENT_SOURCE_DIR}/../../schema/kairos.capnp")
 
 find_package(CURL REQUIRED)
-add_library(kairos_transport src/http_poster.cpp)
-target_include_directories(kairos_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# --- libraries ---
+add_library(kairos_transport src/notify/http_poster.cpp)
+target_include_directories(kairos_transport PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_transport PUBLIC CURL::libcurl)
 
-add_library(kairos_notify src/ntfy_dispatcher.cpp)
-target_include_directories(kairos_notify PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_library(kairos_notify src/notify/ntfy_dispatcher.cpp)
+target_include_directories(kairos_notify PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_notify PUBLIC kairos_transport)
 
-add_library(kairos_dashboard src/dashboard_metrics.cpp)
-target_include_directories(kairos_dashboard PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_library(kairos_dashboard src/notify/dashboard_metrics.cpp)
+target_include_directories(kairos_dashboard PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_dashboard PUBLIC kairos_transport)
 
-add_library(kairos_quote_codec src/quote_codec.cpp ${CAPNP_SRCS})
-target_include_directories(kairos_quote_codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
-                                                     ${CMAKE_CURRENT_BINARY_DIR})
+add_library(kairos_quote_codec src/quote/quote_codec.cpp ${CAPNP_SRCS})
+target_include_directories(kairos_quote_codec PUBLIC ${KAIROS_INC} ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(kairos_quote_codec PUBLIC CapnProto::capnp)
 
-add_library(kairos_uds src/uds_quote_client.cpp)
-target_include_directories(kairos_uds PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_library(kairos_uds src/quote/uds_quote_client.cpp)
+target_include_directories(kairos_uds PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
 
-add_executable(kairos_quote_tap src/quote_tap_main.cpp)
-target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
+add_library(kairos_scenario src/engine/scenario.cpp)
+target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
 
-add_library(kairos_engine src/engine.cpp)
-target_include_directories(kairos_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_library(kairos_engine src/engine/engine.cpp)
+target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_engine PUBLIC kairos_uds kairos_scenario kairos_dashboard)
 
 # Live order backend: real concords StockClient when the stock SDK is present in exec/scenario/lib,
 # otherwise a stub so --live reports "no broker SDK". CI has no SDK and builds the stub.
 set(CONCORDS_STOCK_LIB ${CMAKE_CURRENT_SOURCE_DIR}/lib/concords_sdk.so)
 if(EXISTS ${CONCORDS_STOCK_LIB})
-  add_library(kairos_live src/concords_order_backend.cpp)
+  add_library(kairos_live src/order/concords_order_backend.cpp)
   target_include_directories(
     kairos_live
-    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PUBLIC ${KAIROS_INC}
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/lib)
   target_link_libraries(
     kairos_live
@@ -68,25 +73,26 @@ if(EXISTS ${CONCORDS_STOCK_LIB})
   set_target_properties(kairos_live PROPERTIES BUILD_RPATH ${CMAKE_CURRENT_SOURCE_DIR}/lib
                                                INSTALL_RPATH ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 else()
-  add_library(kairos_live src/live_backend_stub.cpp)
-  target_include_directories(kairos_live PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_library(kairos_live src/order/live_backend_stub.cpp)
+  target_include_directories(kairos_live PUBLIC ${KAIROS_INC})
   target_link_libraries(kairos_live PUBLIC kairos_scenario)
 endif()
 
-add_executable(kairos_scenario_trader src/scenario_trader_main.cpp)
+# --- executables ---
+add_executable(kairos_quote_tap src/bin/quote_tap_main.cpp)
+target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
+
+add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
 target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_live kairos_notify)
 
-add_library(kairos_scenario src/scenario.cpp)
-target_include_directories(kairos_scenario PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
-
+# --- tests ---
 enable_testing()
 add_executable(test_market_fees tests/test_market_fees.cpp)
-target_include_directories(test_market_fees PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(test_market_fees PRIVATE ${KAIROS_INC})
 add_test(NAME test_market_fees COMMAND test_market_fees)
 
 add_executable(test_pricing tests/test_pricing.cpp)
-target_include_directories(test_pricing PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(test_pricing PRIVATE ${KAIROS_INC})
 add_test(NAME test_pricing COMMAND test_pricing)
 
 add_executable(test_scenario tests/test_scenario.cpp)
@@ -102,15 +108,15 @@ target_link_libraries(test_uds PRIVATE kairos_uds)
 add_test(NAME test_uds COMMAND test_uds)
 
 add_executable(test_order_backend tests/test_order_backend.cpp)
-target_include_directories(test_order_backend PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(test_order_backend PRIVATE ${KAIROS_INC})
 add_test(NAME test_order_backend COMMAND test_order_backend)
 
 add_executable(test_engine_logic tests/test_engine_logic.cpp)
-target_include_directories(test_engine_logic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(test_engine_logic PRIVATE ${KAIROS_INC})
 add_test(NAME test_engine_logic COMMAND test_engine_logic)
 
 add_executable(test_event tests/test_event.cpp)
-target_include_directories(test_event PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(test_event PRIVATE ${KAIROS_INC})
 add_test(NAME test_event COMMAND test_event)
 
 add_executable(test_transport tests/test_transport.cpp)
