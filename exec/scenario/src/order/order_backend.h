@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 
+#include "order_codec.h"  // OrderSubmitMsg (the full order spec)
 #include "scenario.h"
 #include "tw_market.h"
 
@@ -27,9 +28,9 @@ class OrderBackend {
   virtual bool Connect() = 0;
   virtual void Disconnect() = 0;
   virtual bool IsConnected() const = 0;
-  // The engine supplies a correlation id (concords user_defined_id) so callbacks
-  // can be matched even when the backend fills synchronously.
-  virtual void Submit(const std::string& id, Side side, Cents price, long shares) = 0;
+  // Full order spec: order.id is the correlation id (concords user_defined_id) so
+  // callbacks match even on synchronous fills, and one backend can serve any symbol.
+  virtual void Submit(const OrderSubmitMsg& order) = 0;
   virtual void Cancel(const std::string& id) = 0;  // also used to re-peg (cancel + re-place)
 
   void SetCallbacks(AckFn ack, FillFn fill, CancelFn cancel) {
@@ -55,9 +56,9 @@ class PaperOrderBackend : public OrderBackend {
   void Disconnect() override { connected_ = false; }
   bool IsConnected() const override { return connected_; }
 
-  void Submit(const std::string& id, Side /*side*/, Cents price, long shares) override {
-    if (on_ack_) on_ack_(id, true, "");
-    if (on_fill_) on_fill_(id, Fill{shares, price});
+  void Submit(const OrderSubmitMsg& o) override {
+    if (on_ack_) on_ack_(o.id, true, "");
+    if (on_fill_) on_fill_(o.id, Fill{o.shares, o.price});
   }
 
   void Cancel(const std::string& id) override {

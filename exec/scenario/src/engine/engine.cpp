@@ -8,6 +8,7 @@
 #include <thread>
 #include <utility>
 
+#include "order_codec.h"
 #include "socket_path.h"
 #include "tw_market.h"
 
@@ -207,9 +208,12 @@ void ScenarioEngine::Run() {
           cancelling_ = false;
           resting_seq_ = seq;
         }
+        OrderSubmitMsg om{id,        s_.symbol,       s_.market,        s_.board,
+                          s_.side,   s_.funding_type, s_.time_in_force, act.price,
+                          act.shares};
         SdkGate();  // before t_start so the rate-limit sleep isn't counted as RTT
         auto t0 = std::chrono::steady_clock::now();
-        backend_->Submit(id, s_.side, act.price, act.shares);
+        backend_->Submit(om);
         auto t1 = std::chrono::steady_clock::now();
         {
           std::lock_guard<std::mutex> lock(mu_);

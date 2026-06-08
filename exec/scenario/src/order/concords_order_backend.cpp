@@ -81,15 +81,14 @@ void ConcordsOrderBackend::Disconnect() {
 
 bool ConcordsOrderBackend::IsConnected() const { return stock_ && stock_->IsConnected(); }
 
-void ConcordsOrderBackend::Submit(const std::string& id, Side side, Cents price, long shares) {
+void ConcordsOrderBackend::Submit(const OrderSubmitMsg& o) {
   std::string qty =
-      std::to_string(s_.IsOddLot() ? shares : shares / 1000);  // odd=shares, round=lots
+      std::to_string(o.board == Board::kOddLot ? o.shares : o.shares / 1000);  // odd=sh, round=lots
   concords_sdk::stock::OrderInfo order(
-      ToMarket(s_.market), ToBoard(s_.board),
-      concords_sdk::stock::parseFundingType(s_.funding_type), s_.symbol, ToSide(side),
-      concords_sdk::stock::OrderType::Limit,
-      concords_sdk::stock::parseTimeInForce(s_.time_in_force), qty, CentsToString(price),
-      concords_sdk::stock::DaytradeShortSell::False, id);
+      ToMarket(o.market), ToBoard(o.board), concords_sdk::stock::parseFundingType(o.funding_type),
+      o.symbol, ToSide(o.side), concords_sdk::stock::OrderType::Limit,
+      concords_sdk::stock::parseTimeInForce(o.time_in_force), qty, CentsToString(o.price),
+      concords_sdk::stock::DaytradeShortSell::False, o.id);
   Gate();
   stock_->SubmitOrder(order);
 }
