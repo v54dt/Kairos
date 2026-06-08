@@ -1,6 +1,7 @@
 #include "ntfy_dispatcher.h"
 
 #include <algorithm>
+#include <cctype>
 #include <utility>
 
 #include "json_util.h"
@@ -9,15 +10,16 @@ namespace kairos::exec {
 
 std::map<EventCategory, RouteConfig> DefaultRoutes() {
   return {
-      {EventCategory::kSubmit, {false, 2, {"outbox_tray"}, 0}},  // off by default (noisy)
-      {EventCategory::kFill, {true, 3, {"white_check_mark"}, 0}},
-      {EventCategory::kPartialFill, {true, 2, {"hourglass"}, 0}},
-      {EventCategory::kMilestone, {true, 4, {"checkered_flag"}, 0}},
-      {EventCategory::kComplete, {true, 4, {"tada"}, 0}},
-      {EventCategory::kError, {true, 5, {"rotating_light"}, 300}},
-      {EventCategory::kDisconnect, {true, 5, {"electric_plug"}, 300}},
-      {EventCategory::kReconnect, {true, 3, {"arrows_counterclockwise"}, 0}},
-      {EventCategory::kQuoteStall, {false, 2, {"mute"}, 600}},  // off by default
+      {EventCategory::kStart, {true, 3, {}, 0}},
+      {EventCategory::kSubmit, {false, 2, {}, 0}},  // off by default (noisy)
+      {EventCategory::kFill, {true, 3, {}, 0}},
+      {EventCategory::kPartialFill, {true, 2, {}, 0}},
+      {EventCategory::kMilestone, {true, 4, {}, 0}},
+      {EventCategory::kComplete, {true, 4, {}, 0}},
+      {EventCategory::kError, {true, 5, {}, 300}},
+      {EventCategory::kDisconnect, {true, 5, {}, 300}},
+      {EventCategory::kReconnect, {true, 3, {}, 0}},
+      {EventCategory::kQuoteStall, {false, 2, {}, 600}},  // off by default
   };
 }
 
@@ -25,7 +27,9 @@ namespace {
 
 std::string RenderTitle(const Event& ev) {
   std::string t = ev.symbol.empty() ? "" : ev.symbol + " ";
-  t += CategoryName(ev.category);
+  std::string name = CategoryName(ev.category);
+  if (!name.empty()) name[0] = static_cast<char>(std::toupper(name[0]));
+  t += name;
   return t;
 }
 

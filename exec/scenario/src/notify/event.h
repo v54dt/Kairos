@@ -8,6 +8,7 @@
 namespace kairos::exec {
 
 enum class EventCategory {
+  kStart,
   kSubmit,
   kFill,
   kPartialFill,
@@ -33,6 +34,8 @@ struct Event {
 
 inline const char* CategoryName(EventCategory c) {
   switch (c) {
+    case EventCategory::kStart:
+      return "start";
     case EventCategory::kSubmit:
       return "submit";
     case EventCategory::kFill:

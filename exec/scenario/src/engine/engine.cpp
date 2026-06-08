@@ -149,14 +149,11 @@ void ScenarioEngine::Run() {
   std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
               s_.budget_twd, PricePolicyName(s_.price_policy), s_.live ? "*** LIVE ***" : "PAPER");
   std::fflush(stdout);
-  sink_->Emit({EventCategory::kMilestone,
+  sink_->Emit({EventCategory::kStart,
                Severity::kInfo,
                s_.symbol,
                "",
-               {{"phase", "start"},
-                {"side", SideName(s_.side)},
-                {"budget", std::to_string(s_.budget_twd)},
-                {"mode", s_.live ? "LIVE" : "PAPER"}}});
+               {{"side", SideName(s_.side)}, {"budget", std::to_string(s_.budget_twd)}}});
 
   while (!stop_) {
     if (!ignore_window_) {
