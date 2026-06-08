@@ -65,6 +65,11 @@ add_library(kairos_order_hub_server src/order/order_hub_server.cpp)
 target_include_directories(kairos_order_hub_server PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_order_hub_server PUBLIC kairos_order_hub pthread)
 
+# Scenario-side client: an OrderBackend that talks to the hub over UDS (no SDK).
+add_library(kairos_hub_backend src/order/hub_order_backend.cpp)
+target_include_directories(kairos_hub_backend PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_hub_backend PUBLIC kairos_order_codec pthread)
+
 add_library(kairos_uds src/quote/uds_quote_client.cpp)
 target_include_directories(kairos_uds PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
@@ -103,7 +108,7 @@ add_executable(kairos_quote_tap src/bin/quote_tap_main.cpp)
 target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
-target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_live kairos_notify)
+target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_notify)
 
 add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
@@ -138,6 +143,10 @@ add_test(NAME test_order_hub COMMAND test_order_hub)
 add_executable(test_order_hub_server tests/test_order_hub_server.cpp)
 target_link_libraries(test_order_hub_server PRIVATE kairos_order_hub_server)
 add_test(NAME test_order_hub_server COMMAND test_order_hub_server)
+
+add_executable(test_hub_order_backend tests/test_hub_order_backend.cpp)
+target_link_libraries(test_hub_order_backend PRIVATE kairos_hub_backend kairos_order_hub_server)
+add_test(NAME test_hub_order_backend COMMAND test_hub_order_backend)
 
 add_executable(test_uds tests/test_uds.cpp)
 target_link_libraries(test_uds PRIVATE kairos_uds)
