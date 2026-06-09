@@ -267,7 +267,9 @@ void ScenarioEngine::Run() {
   std::printf("kairos-exec: end - filled %ld sh / NT$ %ld of %ld, fee NT$ %ld\n",
               acct_.filled_shares, acct_.FilledTwd(), s_.budget_twd, acct_.total_fee_twd);
   std::fflush(stdout);
-  sink_->Emit({EventCategory::kComplete,
+  // Interrupted (Ctrl+C / RequestStop) -> shutdown; budget reached / window end -> complete.
+  bool interrupted = stop_.load();
+  sink_->Emit({interrupted ? EventCategory::kShutdown : EventCategory::kComplete,
                Severity::kInfo,
                s_.symbol,
                "",
