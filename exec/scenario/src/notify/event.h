@@ -14,6 +14,7 @@ enum class EventCategory {
   kPartialFill,
   kMilestone,
   kComplete,
+  kShutdown,
   kError,
   kDisconnect,
   kReconnect,
@@ -46,6 +47,8 @@ inline const char* CategoryName(EventCategory c) {
       return "milestone";
     case EventCategory::kComplete:
       return "complete";
+    case EventCategory::kShutdown:
+      return "shutdown";
     case EventCategory::kError:
       return "error";
     case EventCategory::kDisconnect:
