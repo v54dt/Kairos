@@ -4,6 +4,7 @@
 // Length-prefixed framing matching core/src/uds/frame.rs: u32 little-endian
 // length + payload (max 1 MiB).
 
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <cstdint>
@@ -13,10 +14,12 @@ namespace kairos::exec {
 
 constexpr std::uint32_t kMaxFrameLen = 1u << 20;
 
+// MSG_NOSIGNAL: a peer that closed mid-write returns EPIPE instead of killing us
+// with SIGPIPE (a scenario disconnecting must never take down the hub).
 inline bool WriteAll(int fd, const std::uint8_t* data, std::size_t n) {
   std::size_t off = 0;
   while (off < n) {
-    ssize_t w = ::write(fd, data + off, n - off);
+    ssize_t w = ::send(fd, data + off, n - off, MSG_NOSIGNAL);
     if (w <= 0) return false;
     off += static_cast<std::size_t>(w);
   }
