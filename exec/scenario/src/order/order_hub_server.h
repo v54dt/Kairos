@@ -37,8 +37,8 @@ class OrderHubServer {
   std::atomic<bool> stop_{false};
   std::thread accept_thread_;
   std::mutex clients_mu_;
-  std::unordered_set<int> live_;  // open client fds (Send guard)
-  std::unordered_map<int, std::thread> client_threads_;
+  std::unordered_set<int> live_;        // open client fds (Send guard)
+  std::atomic<int> active_clients_{0};  // detached client threads in flight
 };
 
 }  // namespace kairos::exec

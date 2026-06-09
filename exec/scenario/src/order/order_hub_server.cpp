@@ -4,8 +4,10 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -50,9 +52,15 @@ void OrderHubServer::AcceptLoop() {
       if (stop_) break;
       continue;
     }
-    std::lock_guard<std::mutex> lock(clients_mu_);
-    live_.insert(fd);
-    client_threads_[fd] = std::thread([this, fd] { ClientLoop(fd); });
+    {
+      std::lock_guard<std::mutex> lock(clients_mu_);
+      live_.insert(fd);
+    }
+    ++active_clients_;
+    std::thread([this, fd] {
+      ClientLoop(fd);
+      --active_clients_;
+    }).detach();
   }
 }
 
@@ -91,15 +99,8 @@ void OrderHubServer::Stop() {
     fds.assign(live_.begin(), live_.end());
   }
   for (int fd : fds) ::shutdown(fd, SHUT_RDWR);  // unblock pending reads
-
-  std::unordered_map<int, std::thread> threads;
-  {
-    std::lock_guard<std::mutex> lock(clients_mu_);
-    threads = std::move(client_threads_);
-    client_threads_.clear();
-  }
-  for (auto& [fd, t] : threads) {
-    if (t.joinable()) t.join();
+  while (active_clients_.load() > 0) {           // wait for detached client threads to drain
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
   hub_.Stop();
   ::unlink(path_.c_str());

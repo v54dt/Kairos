@@ -77,6 +77,17 @@ int main() {
   CHECK(got_ack);
   CHECK(got_fill);
 
+  // reconnect churn: many sequential connect/submit/close must not crash. fd
+  // reuse used to reassign a still-joinable std::thread -> std::terminate.
+  for (int i = 0; i < 30; ++i) {
+    int c = ConnectClient(path);
+    CHECK(c >= 0);
+    if (c < 0) break;
+    WriteFrame(c, EncodeOrderSubmit({"churn", "2330", Market::kTse, Board::kOddLot, Side::kBuy,
+                                     "Cash", "ROD", 10000, 1000}));
+    ::close(c);
+  }
+
   ::close(fd);
   server.Stop();
 
