@@ -85,6 +85,33 @@ static void TestDecide() {
   CHECK(!skip.done);
 }
 
+static void TestPacing() {
+  Scenario s = PegScenario();  // pacing defaults to twap, budget 300000
+  auto book = MakeBook(500'00, 501'00);
+  RestingOrder none;
+  long budget = s.budget_twd;
+
+  // twap spreads budget across the window: behind schedule (filled 0, 50% in) -> place
+  CHECK(DecideAction(s, book, none, budget, 0.5).kind == ActionKind::kPlace);
+
+  // ahead of schedule (filled 60% but only 50% through the window) -> wait, not done
+  Action ahead = DecideAction(s, book, none, budget * 4 / 10, 0.5);  // remaining 40% => filled 60%
+  CHECK(ahead.kind == ActionKind::kNone);
+  CHECK(!ahead.done);
+
+  // at the schedule start (progress 0): place the first slice immediately, then space
+  CHECK(DecideAction(s, book, none, budget, 0.0).kind == ActionKind::kPlace);
+
+  // re-peg is never gated (chase the bid regardless of schedule)
+  RestingOrder resting{true, 500'00, 1000};
+  auto moved = MakeBook(501'00, 502'00);
+  CHECK(DecideAction(s, moved, resting, budget, 0.0).kind == ActionKind::kRepeg);
+
+  // asap -> no schedule gate, place to fill as fast as possible
+  s.pacing = Pacing::kAsap;
+  CHECK(DecideAction(s, book, none, budget, 0.0).kind == ActionKind::kPlace);
+}
+
 static void TestAccounting() {
   Scenario s = PegScenario();
   Accounting acct;
@@ -105,6 +132,7 @@ static void TestAccounting() {
 
 int main() {
   TestDecide();
+  TestPacing();
   TestAccounting();
   if (g_failures == 0) {
     std::printf("test_engine_logic: OK\n");
