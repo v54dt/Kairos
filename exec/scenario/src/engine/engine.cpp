@@ -250,7 +250,7 @@ void ScenarioEngine::Run() {
                  [this] { return stop_.load() || complete_; });
   }
 
-  // Wind down: cancel the working order only if the broker acked it (ArbX-aligned).
+  // Wind down: cancel the working order only if the broker acked it.
   std::string rid;
   {
     std::lock_guard<std::mutex> lock(mu_);
