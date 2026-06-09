@@ -33,8 +33,13 @@ struct RestingOrder {
 // Quantity is the fee-optimal slice (only the PRICE is dynamic). With no resting
 // order, place a slice at the target; with one resting, re-peg its price when the
 // target tick moves; otherwise do nothing.
+//
+// window_progress: linear position through [window_start, window_end], 0..1. twap
+// spreads the budget evenly across the window: only place while filled is behind
+// the schedule (budget * progress), wait once on/ahead of it. Re-peg of the
+// current slice is never gated (the scenario owns the cadence, the hub is a gateway).
 inline Action DecideAction(const Scenario& s, const TopOfBook& tob, const RestingOrder& resting,
-                           long remaining_twd) {
+                           long remaining_twd, double window_progress = 1.0) {
   Action a;
   if (remaining_twd <= 0) {
     a.reason = "budget reached";
@@ -48,6 +53,14 @@ inline Action DecideAction(const Scenario& s, const TopOfBook& tob, const Restin
     return a;
   }
   if (!resting.active) {
+    if (s.pacing == Pacing::kTwap) {
+      long filled = s.budget_twd - remaining_twd;
+      long scheduled = static_cast<long>(s.budget_twd * window_progress);
+      if (filled > scheduled) {
+        a.reason = "twap: ahead of schedule";  // wait for the schedule to advance
+        return a;
+      }
+    }
     long shares = DecideOrderShares(s, target, remaining_twd);
     if (shares <= 0) {
       a.reason = "remaining below one slice";

@@ -35,6 +35,8 @@ LocalNow NowUtc8() {
   return {hhmm, weekday};
 }
 
+int HhmmToMin(int hhmm) { return (hhmm / 100) * 60 + hhmm % 100; }
+
 }  // namespace
 
 ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink)
@@ -157,6 +159,7 @@ void ScenarioEngine::Run() {
                {{"side", SideName(s_.side)}, {"budget", std::to_string(s_.budget_twd)}}});
 
   while (!stop_) {
+    double window_progress = 1.0;  // ignore-window => no twap throttle
     if (!ignore_window_) {
       LocalNow n = NowUtc8();
       bool past_end = n.hhmm >= s_.window_end_hhmm;
@@ -168,6 +171,16 @@ void ScenarioEngine::Run() {
         cv_.wait_for(lock, std::chrono::seconds(1));
         continue;
       }
+      int now_min = HhmmToMin(n.hhmm);
+      if (schedule_start_min_ < 0)
+        schedule_start_min_ = now_min;  // spread from first in-window tick
+      int end_min = HhmmToMin(s_.window_end_hhmm);
+      window_progress =
+          end_min > schedule_start_min_
+              ? static_cast<double>(now_min - schedule_start_min_) / (end_min - schedule_start_min_)
+              : 1.0;
+      if (window_progress < 0.0) window_progress = 0.0;
+      if (window_progress > 1.0) window_progress = 1.0;
     }
 
     TopOfBook tob = book_.Snapshot();
@@ -190,7 +203,7 @@ void ScenarioEngine::Run() {
     if (remaining <= 0) break;
 
     if (!stale) {
-      Action act = DecideAction(s_, tob, resting, remaining);
+      Action act = DecideAction(s_, tob, resting, remaining, window_progress);
       if (act.done && !resting.active) {
         std::lock_guard<std::mutex> lock(mu_);
         complete_ = true;

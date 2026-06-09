@@ -59,6 +59,8 @@ class ScenarioEngine {
   bool complete_ = false;
   std::atomic<bool> stop_{false};
   bool ignore_window_ = false;
+  int schedule_start_min_ =
+      -1;  // first in-window minute => twap spreads from here, not window_start
 
   std::mutex sdk_mu_;
   std::chrono::steady_clock::time_point last_sdk_{};
