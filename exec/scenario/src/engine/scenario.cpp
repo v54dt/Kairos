@@ -120,12 +120,7 @@ Scenario LoadScenario(const std::string& path) {
 
   Scenario s;
 
-  // [user]
-  s.creds.user_id = Required<std::string>(t, "user", "user_id");
-  s.creds.password = Required<std::string>(t, "user", "password");
-  s.creds.account = Required<std::string>(t, "user", "account");
-  s.creds.pfx_filepath = Required<std::string>(t, "user", "pfx_filepath");
-  s.creds.pfx_password = Required<std::string>(t, "user", "pfx_password");
+  // Broker creds live in the order hub config now, not the scenario.
 
   // [scenario]
   s.name = t["scenario"]["name"].value_or<std::string>("scenario");
@@ -137,7 +132,6 @@ Scenario LoadScenario(const std::string& path) {
   s.funding_type = t["scenario"]["funding_type"].value_or<std::string>("Cash");
   s.time_in_force = t["scenario"]["time_in_force"].value_or<std::string>("ROD");
   s.budget_twd = t["scenario"]["budget_twd"].value_or<long>(0);
-  s.interval_seconds = t["scenario"]["interval_seconds"].value_or<int>(30);
   s.shares_per_order = t["scenario"]["shares_per_order"].value_or<long>(0);
   s.pacing = ParsePacing(t["scenario"]["pacing"].value_or<std::string>("twap"));
 
@@ -203,7 +197,6 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
 
   if (s.symbol.empty()) errs.push_back("scenario.symbol is empty");
   if (s.budget_twd <= 0) errs.push_back("scenario.budget_twd must be > 0");
-  if (s.interval_seconds <= 0) errs.push_back("scenario.interval_seconds must be > 0");
   if (s.shares_per_order < 0) errs.push_back("scenario.shares_per_order must be >= 0");
   if (s.board == Board::kRoundLot && s.shares_per_order > 0 && s.shares_per_order % 1000 != 0) {
     errs.push_back("RoundLot shares_per_order must be a multiple of 1000");
@@ -215,9 +208,6 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
     errs.push_back("pricing.max_deviation_pct must be in (0,10] (TWSE daily band is 10%)");
   if (s.window_start_hhmm >= s.window_end_hhmm)
     errs.push_back("window.start_time must be before window.end_time");
-  if (s.creds.user_id.empty() || s.creds.password.empty())
-    errs.push_back("user credentials are incomplete");
-  if (s.creds.pfx_filepath.empty()) errs.push_back("user.pfx_filepath is empty");
   if (s.notify.enabled && (s.notify.base_url.empty() || s.notify.topic.empty()))
     errs.push_back("notify.enabled but notify.base_url/topic is empty");
   if (s.dashboard.enabled && s.dashboard.api_url.empty())
@@ -234,7 +224,7 @@ std::string SummarizeScenario(const Scenario& s) {
                      BoardName(s.board), ProductName(s.product));
   out +=
       std::format("  side/cond: {} / {} / {}\n", SideName(s.side), s.funding_type, s.time_in_force);
-  out += std::format("  budget   : NT$ {}  every {}s\n", s.budget_twd, s.interval_seconds);
+  out += std::format("  budget   : NT$ {}\n", s.budget_twd);
   out += std::format("  pacing   : {}\n", PacingName(s.pacing));
   if (s.shares_per_order > 0) {
     out += std::format("  per order: {} shares (fixed)\n", s.shares_per_order);

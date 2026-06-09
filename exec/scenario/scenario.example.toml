@@ -1,11 +1,5 @@
-# Kairos scenario (劇本) template — copy, fill creds, run. Real configs (with creds) go in scenarios/ (gitignored).
-
-[user]
-user_id = ""
-password = ""
-account = ""
-pfx_filepath = ""
-pfx_password = ""
+# Kairos scenario (劇本) template — copy and run. Broker creds live in the order
+# hub config (hub.toml), not here; --live connects to kairos_order_hubd over UDS.
 
 [scenario]
 name = "2330-accumulate"
@@ -17,7 +11,6 @@ product = "stock"
 funding_type = "Cash"
 time_in_force = "ROD"
 budget_twd = 300000
-interval_seconds = 30
 shares_per_order = 0
 pacing = "twap"
 

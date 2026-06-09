@@ -39,13 +39,6 @@ static std::string WriteTemp(const std::string& body) {
 
 int main() {
   const std::string body = R"(
-[user]
-user_id = "A123456789"
-password = "pw"
-account = "1234-5678901"
-pfx_filepath = "/tmp/a.pfx"
-pfx_password = "pfxpw"
-
 [scenario]
 name = "test-etf"
 symbol = "0050"
@@ -54,7 +47,6 @@ board = "OddLot"
 side = "Buy"
 product = "etf"
 budget_twd = 300000
-interval_seconds = 30
 pacing = "twap"
 
 [pricing]
@@ -96,9 +88,6 @@ quote_max_age_ms = 70000
   CHECK(!ValidateScenario(bad).empty());
   bad = s;
   bad.window_start_hhmm = 1400;  // after end
-  CHECK(!ValidateScenario(bad).empty());
-  bad = s;
-  bad.creds.pfx_filepath = "";
   CHECK(!ValidateScenario(bad).empty());
 
   // summary renders without crashing and mentions the symbol

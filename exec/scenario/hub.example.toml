@@ -1,0 +1,14 @@
+# Kairos order hub config template — copy to hub.toml, fill creds, run:
+#   kairos_order_hubd hub.toml
+# One hub per broker account serves all scenarios (one concords connection + one
+# 1 req/s gate). Scenarios connect over UDS and carry no creds.
+
+[user]
+user_id = ""
+password = ""
+account = ""
+pfx_filepath = ""   # absolute path recommended (resolved from the hub's CWD)
+pfx_password = ""
+
+# [hub]
+# socket_path = ""   # omit -> default $XDG_RUNTIME_DIR/kairos-orders.sock or /tmp
