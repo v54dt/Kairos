@@ -39,7 +39,6 @@ struct Scenario {
   std::string time_in_force = "ROD";
 
   long budget_twd = 0;
-  int interval_seconds = 30;
   long shares_per_order = 0;  // 0 => auto fee-optimal
   Pacing pacing = Pacing::kTwap;
 
@@ -72,8 +71,6 @@ struct Scenario {
 
   NotifyConfig notify;
   DashboardConfig dashboard;
-
-  UserCreds creds;
 
   bool IsOddLot() const { return board == Board::kOddLot; }
   long EffectiveMaxNotional() const { return max_notional_twd > 0 ? max_notional_twd : budget_twd; }
