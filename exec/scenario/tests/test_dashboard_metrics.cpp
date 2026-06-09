@@ -35,7 +35,7 @@ int main() {
   // disabled -> nothing
   {
     RecordingTransport tr;
-    DashboardMetrics d({false, "https://x/api", "concords-scenario"}, &tr);
+    DashboardMetrics d({false, "https://x/api", "scenario-trader"}, &tr);
     d.ReportOrder(1, "success", "", 12.5, 1.0, 11.5);
     CHECK(tr.reqs.empty());
   }
@@ -43,13 +43,13 @@ int main() {
   // enabled -> POST to /order-metrics with the expected fields (no metric_type)
   {
     RecordingTransport tr;
-    DashboardMetrics d({true, "https://x/api", "concords-scenario"}, &tr);
+    DashboardMetrics d({true, "https://x/api", "scenario-trader"}, &tr);
     d.ReportOrder(7, "success", "", 12.5, 1.25, 11.25);
     CHECK(tr.reqs.size() == 1);
     CHECK(tr.reqs[0].url == "https://x/api/order-metrics");
     const std::string& b = tr.reqs[0].body;
     CHECK(Contains(b, "\"iteration_id\":7"));
-    CHECK(Contains(b, "\"broker\":\"concords-scenario\""));
+    CHECK(Contains(b, "\"broker\":\"scenario-trader\""));
     CHECK(Contains(b, "\"outcome\":\"success\""));
     CHECK(Contains(b, "\"total_ms\":12.500"));
     CHECK(Contains(b, "\"sdk_local_ms\":1.250"));
@@ -62,7 +62,7 @@ int main() {
   // reject with error + null timings
   {
     RecordingTransport tr;
-    DashboardMetrics d({true, "https://x/api", "concords-scenario"}, &tr);
+    DashboardMetrics d({true, "https://x/api", "scenario-trader"}, &tr);
     d.ReportOrder(3, "submit_error", "rejected by broker", std::nullopt, 0.9, std::nullopt);
     CHECK(tr.reqs.size() == 1);
     const std::string& b = tr.reqs[0].body;

@@ -14,8 +14,8 @@ namespace kairos::exec {
 
 struct DashboardConfig {
   bool enabled = false;
-  std::string api_url;  // e.g. "https://latency-api.v54dt.uk/api"
-  std::string broker_name = "concords-scenario";
+  std::string api_url;  // e.g. "https://metrics.example.com/api"
+  std::string broker_name = "scenario-trader";
 };
 
 class DashboardMetrics {
