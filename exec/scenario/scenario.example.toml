@@ -62,4 +62,4 @@ rate_refill_per_h = 20.0
 [dashboard]
 enabled = false
 api_url = ""
-broker_name = "concords-scenario"
+broker_name = "scenario-trader"

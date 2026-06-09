@@ -19,7 +19,7 @@ struct RouteConfig {
 
 struct NotifyConfig {
   bool enabled = false;
-  std::string base_url;  // self-hosted ntfy, e.g. https://notify.v54dt.uk
+  std::string base_url;  // self-hosted ntfy base URL, e.g. https://ntfy.example.com
   std::string topic;
   std::string token;  // ntfy access token (Bearer)
   Severity min_severity = Severity::kInfo;

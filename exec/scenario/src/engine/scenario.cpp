@@ -186,8 +186,7 @@ Scenario LoadScenario(const std::string& path) {
   // [dashboard]
   s.dashboard.enabled = t["dashboard"]["enabled"].value_or<bool>(false);
   s.dashboard.api_url = t["dashboard"]["api_url"].value_or<std::string>("");
-  s.dashboard.broker_name =
-      t["dashboard"]["broker_name"].value_or<std::string>("concords-scenario");
+  s.dashboard.broker_name = t["dashboard"]["broker_name"].value_or<std::string>("scenario-trader");
 
   return s;
 }
