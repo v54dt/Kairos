@@ -14,6 +14,25 @@
 
 namespace kairos::exec {
 
+// Window phase for a trading day. end_time is a SOFT twap horizon: past it we keep
+// filling at full pace until the market close, which is the hard stop.
+enum class WindowPhase {
+  kWaitForOpen,    // before window start, or not a trading day
+  kInWindow,       // within [start, end): twap-paced
+  kFillRemainder,  // past end_time but before close: fill the rest at full pace
+  kClosed,         // at/after market close: stop (budget may be unfilled)
+};
+
+// now/start/end/close are HHMM ints (e.g. 930, 1330); trading_day folds in the
+// weekday check. Close is checked first so an afternoon launch never spins.
+inline WindowPhase ClassifyWindow(int now_hhmm, bool trading_day, int start_hhmm, int end_hhmm,
+                                  int close_hhmm) {
+  if (now_hhmm >= close_hhmm) return WindowPhase::kClosed;
+  if (!trading_day || now_hhmm < start_hhmm) return WindowPhase::kWaitForOpen;
+  if (now_hhmm >= end_hhmm) return WindowPhase::kFillRemainder;
+  return WindowPhase::kInWindow;
+}
+
 enum class ActionKind { kNone, kPlace, kRepeg };
 
 struct Action {

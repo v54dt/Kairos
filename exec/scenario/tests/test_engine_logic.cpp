@@ -130,9 +130,28 @@ static void TestAccounting() {
   CHECK_EQ(acct.RemainingTwd(s), 0);
 }
 
+static void TestWindow() {
+  const int start = 900, end = 1325, close = 1330;
+  // before start -> wait; inside -> twap; past end pre-close -> fill remainder; close -> stop
+  CHECK(ClassifyWindow(830, true, start, end, close) == WindowPhase::kWaitForOpen);
+  CHECK(ClassifyWindow(1000, true, start, end, close) == WindowPhase::kInWindow);
+  CHECK(ClassifyWindow(1327, true, start, end, close) == WindowPhase::kFillRemainder);
+  CHECK(ClassifyWindow(1330, true, start, end, close) == WindowPhase::kClosed);
+  CHECK(ClassifyWindow(1400, true, start, end, close) == WindowPhase::kClosed);
+
+  // non-trading day: wait before close, hard-stop after (never spins all afternoon)
+  CHECK(ClassifyWindow(1000, false, start, end, close) == WindowPhase::kWaitForOpen);
+  CHECK(ClassifyWindow(1340, false, start, end, close) == WindowPhase::kClosed);
+
+  // pre-market window (0050 case): not filled by 09:00 -> keep filling into the session
+  CHECK(ClassifyWindow(845, true, 830, 900, close) == WindowPhase::kInWindow);
+  CHECK(ClassifyWindow(1000, true, 830, 900, close) == WindowPhase::kFillRemainder);
+}
+
 int main() {
   TestDecide();
   TestPacing();
+  TestWindow();
   TestAccounting();
   if (g_failures == 0) {
     std::printf("test_engine_logic: OK\n");
