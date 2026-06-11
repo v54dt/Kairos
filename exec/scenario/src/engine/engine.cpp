@@ -37,6 +37,8 @@ LocalNow NowUtc8() {
 
 int HhmmToMin(int hhmm) { return (hhmm / 100) * 60 + hhmm % 100; }
 
+constexpr int kMarketCloseHhmm = 1330;  // TWSE regular session close; hard stop
+
 }  // namespace
 
 ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink)
@@ -162,25 +164,29 @@ void ScenarioEngine::Run() {
     double window_progress = 1.0;  // ignore-window => no twap throttle
     if (!ignore_window_) {
       LocalNow n = NowUtc8();
-      bool past_end = n.hhmm >= s_.window_end_hhmm;
-      bool in_window =
-          n.hhmm >= s_.window_start_hhmm && !past_end && (!s_.weekdays_only || n.weekday);
-      if (past_end) break;
-      if (!in_window) {
+      WindowPhase phase =
+          ClassifyWindow(n.hhmm, !s_.weekdays_only || n.weekday, s_.window_start_hhmm,
+                         s_.window_end_hhmm, kMarketCloseHhmm);
+      if (phase == WindowPhase::kClosed) break;  // hard stop at close (budget may be unfilled)
+      if (phase == WindowPhase::kWaitForOpen) {
         std::unique_lock<std::mutex> lock(mu_);
         cv_.wait_for(lock, std::chrono::seconds(1));
         continue;
       }
-      int now_min = HhmmToMin(n.hhmm);
-      if (schedule_start_min_ < 0)
-        schedule_start_min_ = now_min;  // spread from first in-window tick
-      int end_min = HhmmToMin(s_.window_end_hhmm);
-      window_progress =
-          end_min > schedule_start_min_
-              ? static_cast<double>(now_min - schedule_start_min_) / (end_min - schedule_start_min_)
-              : 1.0;
-      if (window_progress < 0.0) window_progress = 0.0;
-      if (window_progress > 1.0) window_progress = 1.0;
+      // kInWindow: twap-pace by progress. kFillRemainder (past end_time, pre-close):
+      // leave window_progress at 1.0 so the remainder fills at full pace.
+      if (phase == WindowPhase::kInWindow) {
+        int now_min = HhmmToMin(n.hhmm);
+        if (schedule_start_min_ < 0)
+          schedule_start_min_ = now_min;  // spread from first in-window tick
+        int end_min = HhmmToMin(s_.window_end_hhmm);
+        window_progress = end_min > schedule_start_min_
+                              ? static_cast<double>(now_min - schedule_start_min_) /
+                                    (end_min - schedule_start_min_)
+                              : 1.0;
+        if (window_progress < 0.0) window_progress = 0.0;
+        if (window_progress > 1.0) window_progress = 1.0;
+      }
     }
 
     TopOfBook tob = book_.Snapshot();
@@ -267,10 +273,16 @@ void ScenarioEngine::Run() {
   std::printf("kairos-exec: end - filled %ld sh / NT$ %ld of %ld, fee NT$ %ld\n",
               acct_.filled_shares, acct_.FilledTwd(), s_.budget_twd, acct_.total_fee_twd);
   std::fflush(stdout);
-  // Interrupted (Ctrl+C / RequestStop) -> shutdown; budget reached / window end -> complete.
+  // Outcome: Ctrl+C -> shutdown; budget filled -> complete; reached market close with
+  // budget unfilled -> incomplete (don't silently "complete" an unfinished run).
   bool interrupted = stop_.load();
-  sink_->Emit({interrupted ? EventCategory::kShutdown : EventCategory::kComplete,
-               Severity::kInfo,
+  bool filled = acct_.BudgetReached(s_);
+  EventCategory cat = interrupted ? EventCategory::kShutdown
+                      : filled    ? EventCategory::kComplete
+                                  : EventCategory::kIncomplete;
+  Severity sev = (!interrupted && !filled) ? Severity::kWarning : Severity::kInfo;
+  sink_->Emit({cat,
+               sev,
                s_.symbol,
                "",
                {{"filled_sh", std::to_string(acct_.filled_shares)},

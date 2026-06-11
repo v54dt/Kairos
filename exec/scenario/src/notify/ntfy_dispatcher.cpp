@@ -17,6 +17,7 @@ std::map<EventCategory, RouteConfig> DefaultRoutes() {
       {EventCategory::kMilestone, {true, 4, {}, 0}},
       {EventCategory::kComplete, {true, 4, {}, 0}},
       {EventCategory::kShutdown, {true, 4, {}, 0}},
+      {EventCategory::kIncomplete, {true, 4, {}, 0}},
       {EventCategory::kError, {true, 5, {}, 300}},
       {EventCategory::kDisconnect, {true, 5, {}, 300}},
       {EventCategory::kReconnect, {true, 3, {}, 0}},
