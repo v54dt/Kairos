@@ -52,8 +52,7 @@ inline Cents DecideLimitPrice(const Scenario& s, const TopOfBook& tob, Cents fix
   }
 
   if (s.tick_offset != 0) {
-    Cents tick = TickSizeCents(base, s.product);
-    base += static_cast<Cents>(s.tick_offset) * tick * (buy ? 1 : -1);
+    base = TickStep(base, s.tick_offset * (buy ? 1 : -1), s.product);
   }
   Cents price = RoundNearestTick(base, s.product);
   if (price <= 0) {

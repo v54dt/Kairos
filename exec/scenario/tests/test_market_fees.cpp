@@ -86,6 +86,26 @@ static void TestProductTicks() {
   CHECK(!TickAligned(190'05, Product::kStock));  // off the 0.50 stock grid
 }
 
+static void TestTickStep() {
+  // 100.00 is asymmetric: down enters the 0.10 tier (50-100), up uses 0.50.
+  CHECK_EQ(TickStep(100'00, -1), 99'90);
+  CHECK_EQ(TickStep(100'00, -2), 99'80);
+  CHECK_EQ(TickStep(99'90, 1), 100'00);
+  CHECK_EQ(TickStep(100'00, 1), 100'50);
+  // other boundaries
+  CHECK_EQ(TickStep(500'00, -1), 499'50);
+  CHECK_EQ(TickStep(500'00, 1), 501'00);
+  CHECK_EQ(TickStep(50'00, -1), 49'95);
+  CHECK_EQ(TickStep(50'00, 1), 50'10);
+  // within one tier, multi-step
+  CHECK_EQ(TickStep(200'00, -2), 199'00);
+  CHECK_EQ(TickStep(200'00, 2), 201'00);
+  CHECK_EQ(TickStep(100'00, 0), 100'00);
+  // ETF tick is constant 0.05 at >=50 (no asymmetry at 100)
+  CHECK_EQ(TickStep(100'00, -1, Product::kEtf), 99'95);
+  CHECK_EQ(TickStep(100'00, 1, Product::kEtf), 100'05);
+}
+
 static void TestRounding() {
   // 2330 ~ 1005.0 sits on the 5.00 grid.
   CHECK_EQ(RoundNearestTick(1003'00), 1005'00);
@@ -162,6 +182,7 @@ static void TestSizing() {
 int main() {
   TestTickTable();
   TestProductTicks();
+  TestTickStep();
   TestRounding();
   TestFormat();
   TestFees();
