@@ -74,6 +74,15 @@ inline Cents RoundNearestTick(Cents price_cents, Product product = Product::kSto
   return (price_cents - down) < (up - price_cents) ? down : up;
 }
 
+// Walk `steps` ticks (+up / -down), one at a time so each step uses the tick of
+// the tier it lands in (down from 100.00 is 99.90, not 99.50).
+inline Cents TickStep(Cents price_cents, int steps, Product product = Product::kStock) {
+  Cents p = price_cents;
+  for (; steps > 0; --steps) p += TickSizeCents(p, product);
+  for (; steps < 0 && p > 1; ++steps) p -= TickSizeCents(p - 1, product);
+  return p;
+}
+
 inline Cents FloatToCents(double price) { return static_cast<Cents>(std::llround(price * 100.0)); }
 
 inline double CentsToDouble(Cents c) { return static_cast<double>(c) / 100.0; }
