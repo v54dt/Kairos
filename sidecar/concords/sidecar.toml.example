@@ -5,6 +5,7 @@ pfx_filepath = ""
 
 [feed]
 symbols = ["2330", "2317"]
+stale_restart_s = 30   # rebuild if no quote for N s in 08:30-13:30 (0 = off)
 
 [reconnect]
 daily_at = "07:05"
