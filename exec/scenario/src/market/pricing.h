@@ -51,6 +51,9 @@ inline Cents DecideLimitPrice(const Scenario& s, const TopOfBook& tob, Cents fix
     return 0;
   }
 
+  if (s.price_policy == PricePolicy::kJoin && s.peg_level > 1) {
+    base = TickStep(base, (s.peg_level - 1) * (buy ? -1 : 1), s.product);
+  }
   if (s.tick_offset != 0) {
     base = TickStep(base, s.tick_offset * (buy ? 1 : -1), s.product);
   }

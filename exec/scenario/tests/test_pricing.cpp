@@ -108,9 +108,42 @@ static void TestOrderSizing() {
   CHECK_EQ(DecideOrderShares(r, 50'00, 300000), 2000);
 }
 
+static void TestPegLevel() {
+  std::string reason;
+  Scenario s;
+  s.price_policy = PricePolicy::kJoin;
+  s.side = Side::kBuy;
+  auto book = MakeBook(100'00, 100'50, 100'00);  // stock, across the 100 boundary
+
+  s.peg_level = 1;
+  CHECK_EQ(DecideLimitPrice(s, book, 0, reason), 100'00);  // best bid
+  s.peg_level = 2;
+  CHECK_EQ(DecideLimitPrice(s, book, 0, reason), 99'90);  // 1 tick deeper (0.10 tier)
+  s.peg_level = 3;
+  CHECK_EQ(DecideLimitPrice(s, book, 0, reason), 99'80);
+
+  // peg_level applies to join only, not cross
+  s.price_policy = PricePolicy::kCross;
+  s.peg_level = 2;
+  CHECK_EQ(DecideLimitPrice(s, book, 0, reason), 100'50);  // still best ask
+
+  // sell join steps deeper = up
+  s.price_policy = PricePolicy::kJoin;
+  s.side = Side::kSell;
+  s.peg_level = 2;
+  CHECK_EQ(DecideLimitPrice(s, book, 0, reason), 101'00);  // ask + 1 tick (0.50)
+
+  // composes with tick_offset
+  s.side = Side::kBuy;
+  s.peg_level = 2;    // -> 99.90
+  s.tick_offset = 1;  // +1 tick more aggressive -> 100.00
+  CHECK_EQ(DecideLimitPrice(s, book, 0, reason), 100'00);
+}
+
 int main() {
   TestPricing();
   TestEtfPricing();
+  TestPegLevel();
   TestOrderSizing();
   if (g_failures == 0) {
     std::printf("test_pricing: OK\n");

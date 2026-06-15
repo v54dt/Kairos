@@ -46,6 +46,7 @@ struct Scenario {
 
   PricePolicy price_policy = PricePolicy::kCross;
   int tick_offset = 0;
+  int peg_level = 1;  // join only: 1 = best, N = (N-1) ticks deeper
   double reference_price = 0.0;
   double max_deviation_pct = 9.0;
   bool use_trial_quotes = false;

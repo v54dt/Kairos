@@ -26,6 +26,7 @@ max_order_value_twd = 0
 [pricing]
 policy = "cross"
 tick_offset = 0
+peg_level = 1   # join only: 1 = best, 2 = 1 tick deeper, ...
 reference_price = 0.0
 max_deviation_pct = 9.0
 use_trial_quotes = false
