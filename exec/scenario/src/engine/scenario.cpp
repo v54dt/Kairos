@@ -147,6 +147,7 @@ Scenario LoadScenario(const std::string& path) {
   // [pricing]
   s.price_policy = ParsePolicy(t["pricing"]["policy"].value_or<std::string>("cross"));
   s.tick_offset = t["pricing"]["tick_offset"].value_or<int>(0);
+  s.peg_level = t["pricing"]["peg_level"].value_or<int>(1);
   s.reference_price = t["pricing"]["reference_price"].value_or<double>(0.0);
   s.max_deviation_pct = t["pricing"]["max_deviation_pct"].value_or<double>(9.0);
   s.use_trial_quotes = t["pricing"]["use_trial_quotes"].value_or<bool>(false);
@@ -205,6 +206,7 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
     errs.push_back("fees.discount must be in (0,1]");
   if (s.max_deviation_pct <= 0 || s.max_deviation_pct > 10.0)
     errs.push_back("pricing.max_deviation_pct must be in (0,10] (TWSE daily band is 10%)");
+  if (s.peg_level < 1 || s.peg_level > 5) errs.push_back("pricing.peg_level must be 1..5");
   if (s.window_start_hhmm >= s.window_end_hhmm)
     errs.push_back("window.start_time must be before window.end_time");
   if (s.notify.enabled && (s.notify.base_url.empty() || s.notify.topic.empty()))
@@ -230,8 +232,9 @@ std::string SummarizeScenario(const Scenario& s) {
   } else {
     out += std::format("  per order: auto (fee-optimal, <= NT$ {})\n", cap);
   }
-  out += std::format("  pricing  : {} (offset {} ticks, max dev {:.1f}%)\n",
-                     PricePolicyName(s.price_policy), s.tick_offset, s.max_deviation_pct);
+  out +=
+      std::format("  pricing  : {} (peg L{}, offset {} ticks, max dev {:.1f}%)\n",
+                  PricePolicyName(s.price_policy), s.peg_level, s.tick_offset, s.max_deviation_pct);
   out += std::format("  window   : {} ~ {} {}\n", s.window_start, s.window_end,
                      s.weekdays_only ? "(weekdays)" : "");
   out += std::format("  mode     : {}\n", s.live ? "*** LIVE ***" : "PAPER");
