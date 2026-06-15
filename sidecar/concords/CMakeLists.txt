@@ -29,6 +29,10 @@ add_executable(test_decode tests/test_decode.cpp)
 target_link_libraries(test_decode PRIVATE kairos_quote_encode)
 add_test(NAME test_decode COMMAND test_decode)
 
+add_executable(test_feed_window tests/test_feed_window.cpp)
+target_include_directories(test_feed_window PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+add_test(NAME test_feed_window COMMAND test_feed_window)
+
 # The concords feed executable links the broker SDK + Aeron; built only where the SDK is present in
 # concords/lib (CI has none, so it builds just the encode lib + test).
 set(CONCORDS_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")

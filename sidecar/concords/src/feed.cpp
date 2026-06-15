@@ -65,6 +65,12 @@ bool DailyReconnectDue(int reconnect_hhmm, std::int64_t& last_day) {
   return false;
 }
 
+long long SteadyMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
 Exchange MapExchange(concords_sdk::ticker::Exchange e) {
   switch (e) {
     case concords_sdk::ticker::Exchange::kTWSE:
@@ -119,6 +125,7 @@ int RunFeed(const std::string& config_path) {
   std::string user_id, password, pfx, aeron_dir;
   std::vector<std::string> symbols;
   int reconnect_hhmm = 705;
+  int stale_restart_s = 30;
   std::int32_t stream_id = 1001;
   try {
     auto t = toml::parse_file(config_path);
@@ -126,6 +133,7 @@ int RunFeed(const std::string& config_path) {
     password = t["user"]["password"].value_or<std::string>("");
     pfx = t["user"]["pfx_filepath"].value_or<std::string>("");
     reconnect_hhmm = ParseHhmm(t["reconnect"]["daily_at"].value_or<std::string>("07:05"), 705);
+    stale_restart_s = static_cast<int>(t["feed"]["stale_restart_s"].value_or<std::int64_t>(30));
     stream_id = static_cast<std::int32_t>(t["aeron"]["stream_id"].value_or<std::int64_t>(1001));
     aeron_dir = t["aeron"]["dir"].value_or<std::string>("");
     if (auto arr = t["feed"]["symbols"].as_array()) {
@@ -163,6 +171,7 @@ int RunFeed(const std::string& config_path) {
   std::set<std::string> warm(symbols.begin(), symbols.end());
   std::set<std::string> subscribed;    // what we currently hold on concords
   std::set<std::string> core_desired;  // latest on-demand set from core
+  std::atomic<long long> last_quote_ms{0};
 
   auto build = [&]() -> bool {
     TickerGate();
@@ -178,6 +187,7 @@ int RunFeed(const std::string& config_path) {
       const char* pid = q.GetProductId();
       if (!pid) return;
       publisher->Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
+      last_quote_ms.store(SteadyMs());
     });
     subscribed.clear();
     for (const auto& s : warm) {
@@ -185,6 +195,7 @@ int RunFeed(const std::string& config_path) {
       ticker->Subscribe(s.c_str());
       subscribed.insert(s);
     }
+    last_quote_ms.store(SteadyMs());  // start the staleness clock fresh
     return true;
   };
 
@@ -212,6 +223,27 @@ int RunFeed(const std::string& config_path) {
     }
   };
 
+  // Tear down the (possibly idle/frozen) ticker and rebuild, retrying with backoff.
+  auto reconnect = [&]() {
+    if (ticker) {
+      ticker->ClearQuotationCallback();
+      for (const auto& s : subscribed) {
+        TickerGate();
+        ticker->Unsubscribe(s.c_str());
+      }
+    }
+    auto backoff = std::chrono::seconds(1);
+    while (!build() && !g_stop) {
+      std::cerr << "kairos-sidecar: concords reconnect failed; retrying in " << backoff.count()
+                << "s\n";
+      auto until = std::chrono::steady_clock::now() + backoff;
+      while (std::chrono::steady_clock::now() < until && !g_stop) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+      backoff = std::min(backoff * 2, std::chrono::seconds(30));
+    }
+  };
+
   if (!build()) return 1;
   std::signal(SIGINT, OnSig);
   std::signal(SIGTERM, OnSig);
@@ -223,23 +255,15 @@ int RunFeed(const std::string& config_path) {
   while (!g_stop) {
     if (DailyReconnectDue(reconnect_hhmm, last_reconnect_day)) {
       std::cout << "kairos-sidecar: daily reconnect\n";
-      if (ticker) {
-        ticker->ClearQuotationCallback();
-        for (const auto& s : subscribed) {
-          TickerGate();
-          ticker->Unsubscribe(s.c_str());
-        }
-      }
-      auto backoff = std::chrono::seconds(1);
-      while (!build() && !g_stop) {
-        std::cerr << "kairos-sidecar: concords reconnect failed; retrying in " << backoff.count()
-                  << "s\n";
-        auto until = std::chrono::steady_clock::now() + backoff;
-        while (std::chrono::steady_clock::now() < until && !g_stop) {
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        backoff = std::min(backoff * 2, std::chrono::seconds(30));
-      }
+      reconnect();
+    }
+    LocalNow watch = NowUtc8();
+    long long stale_s = (SteadyMs() - last_quote_ms.load()) / 1000;
+    if (FeedStale(watch.hhmm, stale_s, stale_restart_s)) {
+      std::cout << "kairos-sidecar: quote feed stale " << stale_s << "s, reconnecting\n";
+      reconnect();
+    } else if (watch.hhmm < 830 || watch.hhmm >= 1330) {
+      last_quote_ms.store(SteadyMs());  // off-hours: no quotes expected, keep the clock fresh
     }
     std::vector<std::string> latest;
     if (control->Poll(&latest)) {
