@@ -1,6 +1,7 @@
 #include "order_hub_server.h"
 
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -52,6 +53,8 @@ void OrderHubServer::AcceptLoop() {
       if (stop_) break;
       continue;
     }
+    timeval tv{5, 0};  // bound writes: a stuck reader can't wedge the hub forever
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     {
       std::lock_guard<std::mutex> lock(clients_mu_);
       live_.insert(fd);
@@ -80,8 +83,15 @@ void OrderHubServer::ClientLoop(int fd) {
 }
 
 void OrderHubServer::Send(int client, const std::vector<std::uint8_t>& bytes) {
-  std::lock_guard<std::mutex> lock(clients_mu_);
-  if (live_.count(client)) WriteFrame(client, bytes);
+  int dupfd = -1;
+  {
+    std::lock_guard<std::mutex> lock(clients_mu_);
+    if (live_.count(client))
+      dupfd = ::dup(client);  // keep the socket alive past a concurrent close
+  }
+  if (dupfd < 0) return;
+  WriteFrame(dupfd, bytes);  // outside the lock: a slow client can't stall accept/disconnect/Stop
+  ::close(dupfd);
 }
 
 void OrderHubServer::Stop() {
