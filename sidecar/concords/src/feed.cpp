@@ -172,6 +172,8 @@ int RunFeed(const std::string& config_path) {
   std::set<std::string> subscribed;    // what we currently hold on concords
   std::set<std::string> core_desired;  // latest on-demand set from core
   std::atomic<long long> last_quote_ms{0};
+  long long offer_dropped = 0;  // Aeron-dropped quotes (touched only on the SDK callback thread)
+  long long offer_warn_ms = 0;
 
   auto build = [&]() -> bool {
     TickerGate();
@@ -186,13 +188,24 @@ int RunFeed(const std::string& config_path) {
     ticker->SetQuotationCallback([&](const concords_sdk::ticker::Quotation& q) {
       const char* pid = q.GetProductId();
       if (!pid) return;
-      publisher->Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
-      last_quote_ms.store(SteadyMs());
+      last_quote_ms.store(SteadyMs());  // SDK delivered (alive); update before the Aeron offer
+      std::int64_t r = publisher->Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
+      if (r < 0) {
+        ++offer_dropped;
+        long long nowms = SteadyMs();
+        if (nowms - offer_warn_ms > 5000) {  // throttle: at most once / 5s
+          std::cerr << "kairos-sidecar: dropped " << offer_dropped << " quotes (aeron offer=" << r
+                    << "; core not connected / publication issue)\n";
+          offer_warn_ms = nowms;
+        }
+      }
     });
     subscribed.clear();
     for (const auto& s : warm) {
       TickerGate();
-      ticker->Subscribe(s.c_str());
+      if (!ticker->Subscribe(s.c_str())) {
+        std::cerr << "kairos-sidecar: warm subscribe failed: " << s << " (limit / bad symbol?)\n";
+      }
       subscribed.insert(s);
     }
     last_quote_ms.store(SteadyMs());  // start the staleness clock fresh
@@ -207,8 +220,11 @@ int RunFeed(const std::string& config_path) {
     for (const auto& s : target) {
       if (subscribed.insert(s).second) {
         TickerGate();
-        ticker->Subscribe(s.c_str());
-        std::cout << "kairos-sidecar: subscribe " << s << " (on demand)\n";
+        if (ticker->Subscribe(s.c_str())) {
+          std::cout << "kairos-sidecar: subscribe " << s << " (on demand)\n";
+        } else {
+          std::cerr << "kairos-sidecar: subscribe failed: " << s << " (limit / bad symbol?)\n";
+        }
       }
     }
     for (auto it = subscribed.begin(); it != subscribed.end();) {
@@ -223,9 +239,14 @@ int RunFeed(const std::string& config_path) {
     }
   };
 
-  // Tear down the (possibly idle/frozen) ticker and rebuild, retrying with backoff.
-  auto reconnect = [&]() {
-    if (ticker) {
+  // Tear down the old ticker and rebuild, retrying with backoff. drop_stuck=true
+  // (staleness-triggered) means the SDK is frozen: calling Unsubscribe or running
+  // its destructor would deadlock, so we release (leak) it and never touch it again
+  // — its connection drops on the broker's idle timeout, freeing the account.
+  auto reconnect = [&](bool drop_stuck) {
+    if (drop_stuck) {
+      (void)ticker.release();
+    } else if (ticker) {
       ticker->ClearQuotationCallback();
       for (const auto& s : subscribed) {
         TickerGate();
@@ -255,13 +276,13 @@ int RunFeed(const std::string& config_path) {
   while (!g_stop) {
     if (DailyReconnectDue(reconnect_hhmm, last_reconnect_day)) {
       std::cout << "kairos-sidecar: daily reconnect\n";
-      reconnect();
+      reconnect(false);
     }
     LocalNow watch = NowUtc8();
     long long stale_s = (SteadyMs() - last_quote_ms.load()) / 1000;
     if (FeedStale(watch.hhmm, stale_s, stale_restart_s)) {
       std::cout << "kairos-sidecar: quote feed stale " << stale_s << "s, reconnecting\n";
-      reconnect();
+      reconnect(true);
     } else if (watch.hhmm < 830 || watch.hhmm >= 1330) {
       last_quote_ms.store(SteadyMs());  // off-hours: no quotes expected, keep the clock fresh
     }
