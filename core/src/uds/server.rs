@@ -13,6 +13,8 @@ use crate::model::Quote;
 use crate::subreg::SubRegistry;
 use crate::uds::frame::{read_frame, write_frame};
 
+const SNAPSHOT_CHANNEL: usize = 256;
+
 pub async fn run_server(
     socket_path: &str,
     book: Arc<RwLock<Book>>,
@@ -43,7 +45,7 @@ async fn handle_client(
 ) {
     let (read_half, write_half) = stream.into_split();
     let subs = Arc::new(Mutex::new(HashSet::<String>::new()));
-    let (snap_tx, snap_rx) = mpsc::unbounded_channel::<Quote>();
+    let (snap_tx, snap_rx) = mpsc::channel::<Quote>(SNAPSHOT_CHANNEL);
     let writer = tokio::spawn(writer_loop(
         write_half,
         quotes.subscribe(),
@@ -58,7 +60,7 @@ async fn reader_loop(
     mut read_half: OwnedReadHalf,
     book: Arc<RwLock<Book>>,
     subs: Arc<Mutex<HashSet<String>>>,
-    snap_tx: mpsc::UnboundedSender<Quote>,
+    snap_tx: mpsc::Sender<Quote>,
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
 ) {
@@ -83,7 +85,7 @@ async fn reader_loop(
                     syms.iter().filter_map(|sym| b.get(sym).cloned()).collect()
                 };
                 for q in snapshots {
-                    let _ = snap_tx.send(q);
+                    let _ = snap_tx.send(q).await;
                 }
             }
             Ok(Message::Unsubscribe(syms)) => {
@@ -122,7 +124,7 @@ async fn writer_loop(
     mut write_half: OwnedWriteHalf,
     mut quotes: broadcast::Receiver<Quote>,
     subs: Arc<Mutex<HashSet<String>>>,
-    mut snap_rx: mpsc::UnboundedReceiver<Quote>,
+    mut snap_rx: mpsc::Receiver<Quote>,
 ) {
     loop {
         tokio::select! {
