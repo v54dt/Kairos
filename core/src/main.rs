@@ -1,7 +1,7 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use kairos_core::book::Book;
 use kairos_core::decode::decode_quote_bytes;
@@ -44,8 +44,8 @@ fn control_publish_loop(registry: Arc<Mutex<SubRegistry>>, change_rx: mpsc::Rece
     let publisher = match AeronPub::connect(None, CONTROL_STREAM_ID) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("kairos-core: control aeron connect failed: {e:?}");
-            return;
+            eprintln!("kairos-core: FATAL control aeron connect failed: {e:?}");
+            std::process::exit(1);
         }
     };
     eprintln!("kairos-core: subscription control publisher on stream {CONTROL_STREAM_ID}");
@@ -65,12 +65,14 @@ fn aeron_poll_loop(book: Arc<RwLock<Book>>, tx: broadcast::Sender<Quote>) {
     let sub = match AeronSub::connect(None, DEFAULT_STREAM_ID) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("kairos-core: aeron connect failed: {e:?}");
-            return;
+            eprintln!("kairos-core: FATAL aeron connect failed: {e:?}");
+            std::process::exit(1);
         }
     };
+    let mut idle: u32 = 0;
+    let mut last_err: Option<Instant> = None;
     loop {
-        let _ = sub.poll(
+        match sub.poll(
             |data| {
                 if let Ok(q) = decode_quote_bytes(data) {
                     book.write().unwrap().update(q.clone());
@@ -78,6 +80,28 @@ fn aeron_poll_loop(book: Arc<RwLock<Book>>, tx: broadcast::Sender<Quote>) {
                 }
             },
             64,
-        );
+        ) {
+            Ok(n) if n > 0 => idle = 0,
+            Ok(_) => idle_backoff(&mut idle),
+            Err(e) => {
+                if last_err.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
+                    eprintln!("kairos-core: aeron poll error: {e:?}");
+                    last_err = Some(Instant::now());
+                }
+                idle_backoff(&mut idle);
+            }
+        }
+    }
+}
+
+// Spin → yield → park so an idle feed doesn't burn a core.
+fn idle_backoff(idle: &mut u32) {
+    *idle = idle.saturating_add(1);
+    if *idle < 10 {
+        std::hint::spin_loop();
+    } else if *idle < 20 {
+        std::thread::yield_now();
+    } else {
+        std::thread::sleep(Duration::from_micros(50));
     }
 }
