@@ -11,4 +11,6 @@ pfx_filepath = ""   # absolute path recommended (resolved from the hub's CWD)
 pfx_password = ""
 
 # [hub]
-# socket_path = ""   # omit -> default $XDG_RUNTIME_DIR/kairos-orders.sock or /tmp
+# socket_path = ""   # order UDS path. Omit to auto-resolve (same as scenarios):
+#                    #   $KAIROS_ORDER_SOCK, else $XDG_RUNTIME_DIR, else
+#                    #   /run/user/<uid>/kairos-orders.sock.  Never /tmp.

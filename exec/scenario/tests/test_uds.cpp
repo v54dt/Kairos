@@ -24,15 +24,19 @@ static int g_failures = 0;
   } while (0)
 
 static void TestSocketPath() {
-  CHECK(ResolveSocketPath("/run/k.sock", "/run/user/1001") == "/run/k.sock");
-  CHECK(ResolveSocketPath(nullptr, "/run/user/1001") == "/run/user/1001/kairos-quotes.sock");
-  CHECK(ResolveSocketPath(nullptr, nullptr) == "/tmp/kairos-quotes.sock");
-  CHECK(ResolveSocketPath("", "") == "/tmp/kairos-quotes.sock");
-  CHECK(ResolveSocketPath("", "/run/user/1001") == "/run/user/1001/kairos-quotes.sock");
-
-  CHECK(ResolveOrderSocketPath("/run/o.sock", "/run/user/1001") == "/run/o.sock");
-  CHECK(ResolveOrderSocketPath(nullptr, "/run/user/1001") == "/run/user/1001/kairos-orders.sock");
-  CHECK(ResolveOrderSocketPath(nullptr, nullptr) == "/tmp/kairos-orders.sock");
+  const char* q = "kairos-quotes.sock";
+  // explicit env wins
+  CHECK(ResolveSock("/run/k.sock", "/run/user/1001", "/run/user/1001", q) == "/run/k.sock");
+  // XDG preferred over /run/user
+  CHECK(ResolveSock(nullptr, "/run/user/1001", "/run/user/1001", q) ==
+        "/run/user/1001/kairos-quotes.sock");
+  // /run/user used when XDG is unset
+  CHECK(ResolveSock(nullptr, nullptr, "/run/user/1001", q) == "/run/user/1001/kairos-quotes.sock");
+  // nothing usable -> empty (never /tmp)
+  CHECK(ResolveSock(nullptr, nullptr, "", q).empty());
+  CHECK(ResolveSock("", "", "", q).empty());
+  // empty values skip to the next candidate
+  CHECK(ResolveSock("", nullptr, "/run/user/1001", q) == "/run/user/1001/kairos-quotes.sock");
 }
 
 static void TestFraming() {

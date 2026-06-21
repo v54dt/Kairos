@@ -215,6 +215,7 @@ dependencies = [
  "anyhow",
  "capnp",
  "capnpc",
+ "libc",
  "rusteron-client",
  "rusteron-media-driver",
  "tokio",
