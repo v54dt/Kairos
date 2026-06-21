@@ -142,14 +142,16 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
 }
 
 void ScenarioEngine::Run() {
-  if (!backend_->Connect()) {
-    std::fprintf(stderr, "kairos-exec: order backend connect failed\n");
-    return;
-  }
+  // Wire callbacks before Connect: a backend may start its reader thread inside
+  // Connect (HubOrderBackend), so the callbacks must already be in place.
   backend_->SetCallbacks(
       [this](const std::string& id, bool ok, const std::string& e) { OnAck(id, ok, e); },
       [this](const std::string& id, const Fill& f) { OnFill(id, f); },
       [this](const std::string& id, bool ok) { OnCancel(id, ok); });
+  if (!backend_->Connect()) {
+    std::fprintf(stderr, "kairos-exec: order backend connect failed\n");
+    return;
+  }
   quotes_->Start();
   std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
               s_.budget_twd, PricePolicyName(s_.price_policy), s_.live ? "*** LIVE ***" : "PAPER");
