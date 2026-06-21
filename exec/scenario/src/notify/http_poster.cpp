@@ -2,6 +2,7 @@
 
 #include <curl/curl.h>
 
+#include <cstddef>
 #include <cstdio>
 #include <mutex>
 #include <utility>
@@ -9,6 +10,8 @@
 namespace kairos::exec {
 
 namespace {
+constexpr std::size_t kMaxQueue = 1024;
+
 std::once_flag g_curl_once;
 void EnsureCurlGlobal() {
   std::call_once(g_curl_once, [] { curl_global_init(CURL_GLOBAL_DEFAULT); });
@@ -32,6 +35,11 @@ HttpPoster::~HttpPoster() {
 void HttpPoster::Post(HttpRequest req) {
   {
     std::lock_guard<std::mutex> lock(mu_);
+    if (queue_.size() >= kMaxQueue) {
+      std::fprintf(stderr, "kairos-exec: http queue full (%zu), dropping POST %s\n", queue_.size(),
+                   req.url.c_str());
+      return;
+    }
     queue_.push(std::move(req));
   }
   cv_.notify_one();

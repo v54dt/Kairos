@@ -1,9 +1,12 @@
 #include "uds_quote_client.h"
 
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -51,10 +54,41 @@ int UdsQuoteClient::ConnectAndSubscribe() {
   sockaddr_un addr{};
   addr.sun_family = AF_UNIX;
   std::strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+
+  // Non-blocking connect so Stop() can abort a server that is slow to accept.
+  int flags = ::fcntl(fd, F_GETFL, 0);
+  ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
   if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-    ::close(fd);
-    return -1;
+    if (errno != EINPROGRESS) {
+      ::close(fd);
+      return -1;
+    }
+    pollfd pfd{fd, POLLOUT, 0};
+    bool connected = false;
+    while (!stop_ && !connected) {
+      int p = ::poll(&pfd, 1, 100);
+      if (p < 0) {
+        if (errno == EINTR) continue;
+        ::close(fd);
+        return -1;
+      }
+      if (p == 0) continue;  // 100ms tick: re-check stop_
+      int err = 0;
+      socklen_t len = sizeof(err);
+      ::getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+      if (err != 0) {
+        ::close(fd);
+        return -1;
+      }
+      connected = true;
+    }
+    if (!connected) {  // stop_ requested mid-connect
+      ::close(fd);
+      return -1;
+    }
   }
+  ::fcntl(fd, F_SETFL, flags);  // restore blocking for WriteFrame + the read loop
+
   if (!WriteFrame(fd, EncodeSubscribe(symbols_))) {
     ::close(fd);
     return -1;
