@@ -1,5 +1,11 @@
 # Kairos scenario (劇本) template — copy and run. Broker creds live in the order
 # hub config (hub.toml), not here; --live connects to kairos_order_hubd over UDS.
+#
+# Sockets are auto-resolved (no config needed): quotes from
+#   $KAIROS_QUOTE_SOCK, else $XDG_RUNTIME_DIR/.., else /run/user/<uid>/kairos-quotes.sock;
+# orders to the hub via the same rule with kairos-orders.sock ($KAIROS_ORDER_SOCK).
+# Set those env vars only to override. Never /tmp (world-writable). core, sidecar,
+# the hub and scenarios must all agree, so override them together.
 
 [scenario]
 name = "2330-accumulate"
