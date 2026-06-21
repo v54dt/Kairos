@@ -89,14 +89,20 @@ int main() {
     std::string symbol;
     CHECK(DecodeQuote(bytes.data(), bytes.size(), &tob, &symbol));
     CHECK(symbol == "2330");
-    CHECK_EQ(tob.best_bid, 58000);
-    CHECK_EQ(tob.best_bid_vol, 100);
-    CHECK_EQ(tob.best_ask, 58100);
-    CHECK_EQ(tob.best_ask_vol, 80);
+    CHECK_EQ(tob.best_bid(), 58000);
+    CHECK_EQ(tob.best_ask(), 58100);
     CHECK_EQ(tob.last_trade, 58050);
+    CHECK_EQ(tob.last_vol, 10);
     CHECK(tob.is_trial);
     CHECK(tob.valid);
     CHECK(tob.HasTwoSided());
+    CHECK_EQ(tob.n_bids, 2);
+    CHECK_EQ(tob.bids[0].price, 58000);
+    CHECK_EQ(tob.bids[0].volume, 100);
+    CHECK_EQ(tob.bids[1].price, 57950);
+    CHECK_EQ(tob.bids[1].volume, 50);
+    CHECK_EQ(tob.n_asks, 1);
+    CHECK_EQ(tob.asks[0].price, 58100);
   }
 
   // A subscribe envelope is not a quote

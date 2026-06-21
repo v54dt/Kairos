@@ -48,20 +48,19 @@ bool DecodeQuote(const std::uint8_t* data, std::size_t len, TopOfBook* tob, std:
     auto q = env.getQuote();
 
     TopOfBook t;
-    if (q.getBids().size() > 0) {
-      auto b = q.getBids()[0];
-      t.best_bid = MantissaScaleToCents(b.getPriceMantissa(), b.getPriceScale());
-      t.best_bid_vol = b.getVolume();
+    for (auto b : q.getBids()) {
+      if (t.n_bids >= TopOfBook::kMaxLevels) break;
+      t.bids[t.n_bids++] = {MantissaScaleToCents(b.getPriceMantissa(), b.getPriceScale()),
+                            static_cast<long>(b.getVolume())};
     }
-    if (q.getAsks().size() > 0) {
-      auto a = q.getAsks()[0];
-      t.best_ask = MantissaScaleToCents(a.getPriceMantissa(), a.getPriceScale());
-      t.best_ask_vol = a.getVolume();
+    for (auto a : q.getAsks()) {
+      if (t.n_asks >= TopOfBook::kMaxLevels) break;
+      t.asks[t.n_asks++] = {MantissaScaleToCents(a.getPriceMantissa(), a.getPriceScale()),
+                            static_cast<long>(a.getVolume())};
     }
     t.last_trade = MantissaScaleToCents(q.getLastPrice(), q.getLastScale());
-    t.last_vol = q.getLastVolume();
+    t.last_vol = static_cast<long>(q.getLastVolume());
     t.is_trial = q.getIsTrial();
-    t.quote_ts = std::chrono::system_clock::time_point(std::chrono::microseconds(q.getQuoteTsUs()));
     t.recv_ts = std::chrono::steady_clock::now();
     t.valid = true;
 

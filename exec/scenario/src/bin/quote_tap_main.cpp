@@ -29,9 +29,17 @@ int main(int argc, char** argv) {
 
   std::string path = QuoteSocketPath();
   UdsQuoteClient client(path, symbols, [](const std::string& sym, const TopOfBook& t) {
-    std::printf("%-8s bid=%s ask=%s last=%s%s\n", sym.c_str(), CentsToString(t.best_bid).c_str(),
-                CentsToString(t.best_ask).c_str(), CentsToString(t.last_trade).c_str(),
-                t.is_trial ? " (試撮)" : "");
+    std::string s = sym;
+    s.resize(8, ' ');
+    if (t.is_trial) s += " 試撮";
+    s += "  bid:";
+    for (int i = 0; i < t.n_bids; ++i)
+      s += " " + CentsToString(t.bids[i].price) + "x" + std::to_string(t.bids[i].volume);
+    s += "  ask:";
+    for (int i = 0; i < t.n_asks; ++i)
+      s += " " + CentsToString(t.asks[i].price) + "x" + std::to_string(t.asks[i].volume);
+    s += "  last=" + CentsToString(t.last_trade) + "x" + std::to_string(t.last_vol);
+    std::printf("%s\n", s.c_str());
     std::fflush(stdout);
   });
 

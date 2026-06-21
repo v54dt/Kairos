@@ -1,6 +1,7 @@
 #ifndef KAIROS_EXEC_QUOTE_BOOK_H_
 #define KAIROS_EXEC_QUOTE_BOOK_H_
 
+#include <array>
 #include <chrono>
 #include <mutex>
 
@@ -8,21 +9,28 @@
 
 namespace kairos::exec {
 
+struct Level {
+  Cents price = 0;
+  long volume = 0;
+};
+
 struct TopOfBook {
-  Cents best_bid = 0;
-  long best_bid_vol = 0;
-  Cents best_ask = 0;
-  long best_ask_vol = 0;
+  static constexpr int kMaxLevels = 5;
+  std::array<Level, kMaxLevels> bids{};  // [0, n_bids): best -> deep, descending price
+  std::array<Level, kMaxLevels> asks{};  // [0, n_asks): best -> deep, ascending price
+  int n_bids = 0;
+  int n_asks = 0;
   Cents last_trade = 0;
   long last_vol = 0;
   bool is_trial = false;  // 試撮
-  std::chrono::system_clock::time_point quote_ts{};
   std::chrono::steady_clock::time_point recv_ts{};
   bool valid = false;
 
-  bool HasTwoSided() const { return best_bid > 0 && best_ask > 0; }
+  Cents best_bid() const { return n_bids > 0 ? bids[0].price : 0; }
+  Cents best_ask() const { return n_asks > 0 ? asks[0].price : 0; }
+  bool HasTwoSided() const { return n_bids > 0 && n_asks > 0; }
   // Unrounded midpoint; the caller rounds to the product tick.
-  Cents Mid() const { return HasTwoSided() ? (best_bid + best_ask) / 2 : 0; }
+  Cents Mid() const { return HasTwoSided() ? (bids[0].price + asks[0].price) / 2 : 0; }
 };
 
 // Thread-safe latest snapshot: the quote feed writes on its own thread, the
