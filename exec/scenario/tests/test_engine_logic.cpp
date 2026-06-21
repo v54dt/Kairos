@@ -29,10 +29,14 @@ static int g_failures = 0;
 
 static TopOfBook MakeBook(Cents bid, Cents ask) {
   TopOfBook t;
-  t.best_bid = bid;
-  t.best_bid_vol = 10;
-  t.best_ask = ask;
-  t.best_ask_vol = 10;
+  if (bid > 0) {
+    t.bids[0] = {bid, 10};
+    t.n_bids = 1;
+  }
+  if (ask > 0) {
+    t.asks[0] = {ask, 10};
+    t.n_asks = 1;
+  }
   t.last_trade = bid;
   t.valid = true;
   return t;

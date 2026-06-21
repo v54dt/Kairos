@@ -34,10 +34,10 @@ inline Cents DecideLimitPrice(const Scenario& s, const TopOfBook& tob, Cents fix
   Cents base = 0;
   switch (s.price_policy) {
     case PricePolicy::kCross:
-      base = buy ? tob.best_ask : tob.best_bid;
+      base = buy ? tob.best_ask() : tob.best_bid();
       break;
     case PricePolicy::kJoin:
-      base = buy ? tob.best_bid : tob.best_ask;
+      base = buy ? tob.best_bid() : tob.best_ask();
       break;
     case PricePolicy::kMid:
       base = tob.Mid();

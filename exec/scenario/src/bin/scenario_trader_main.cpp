@@ -60,7 +60,7 @@ int RunQuotes(const Scenario& s, int secs) {
       QuoteSocketPath(), {s.symbol}, [&](const std::string& sym, const TopOfBook& t) {
         got = true;
         std::printf("%-8s bid=%s ask=%s last=%s%s\n", sym.c_str(),
-                    CentsToString(t.best_bid).c_str(), CentsToString(t.best_ask).c_str(),
+                    CentsToString(t.best_bid()).c_str(), CentsToString(t.best_ask()).c_str(),
                     CentsToString(t.last_trade).c_str(), t.is_trial ? " (trial)" : "");
         std::fflush(stdout);
       });
