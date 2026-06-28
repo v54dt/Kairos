@@ -84,8 +84,11 @@ async fn reader_loop(
                     let b = book.read().unwrap();
                     syms.iter().filter_map(|sym| b.get(sym).cloned()).collect()
                 };
+                // try_send (not await): drop the snapshot if the channel is full
+                // rather than stalling the reader on a slow consumer — the live
+                // broadcast refreshes it on the symbol's next tick.
                 for q in snapshots {
-                    let _ = snap_tx.send(q).await;
+                    let _ = snap_tx.try_send(q);
                 }
             }
             Ok(Message::Unsubscribe(syms)) => {
