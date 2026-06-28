@@ -111,13 +111,16 @@ void ScenarioEngine::OnCancel(const std::string& id, bool /*ok*/) {
 
 void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
   std::lock_guard<std::mutex> lock(mu_);
-  if (id != resting_id_) return;
-  resting_filled_ += f.shares;
+  // Fills are routed to us by id, so always count one — even a late fill that lands
+  // after a re-peg cancel cleared the resting order — else the budget overshoots.
   acct_.RecordFill(s_, f.price, f.shares);
+  if (id == resting_id_) {
+    resting_filled_ += f.shares;
+    if (resting_filled_ >= resting_.shares) ClearResting();
+  }
   std::printf("kairos-exec: fill %s %ld @ %s  (cum %ld sh / NT$ %ld, fee %ld)\n", id.c_str(),
               f.shares, CentsToString(f.price).c_str(), acct_.filled_shares, acct_.FilledTwd(),
               acct_.total_fee_twd);
-  if (resting_filled_ >= resting_.shares) ClearResting();
   sink_->Emit({EventCategory::kFill,
                Severity::kInfo,
                s_.symbol,
