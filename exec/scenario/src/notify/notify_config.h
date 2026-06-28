@@ -14,7 +14,8 @@ struct RouteConfig {
   bool enabled = true;
   int priority = 3;  // ntfy 1..5
   std::vector<std::string> tags;
-  long dedup_window_s = 0;  // 0 = no dedupe
+  long dedup_window_s = 0;         // 0 = no dedupe
+  bool bypass_rate_limit = false;  // one-shot terminal events always send
 };
 
 struct NotifyConfig {

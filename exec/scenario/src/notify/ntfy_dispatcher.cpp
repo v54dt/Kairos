@@ -15,10 +15,10 @@ std::map<EventCategory, RouteConfig> DefaultRoutes() {
       {EventCategory::kFill, {true, 3, {}, 0}},
       {EventCategory::kPartialFill, {true, 2, {}, 0}},
       {EventCategory::kMilestone, {true, 4, {}, 0}},
-      {EventCategory::kComplete, {true, 4, {}, 0}},
-      {EventCategory::kShutdown, {true, 4, {}, 0}},
-      {EventCategory::kIncomplete, {true, 4, {}, 0}},
-      {EventCategory::kError, {true, 5, {}, 300}},
+      {EventCategory::kComplete, {true, 4, {}, 0, true}},
+      {EventCategory::kShutdown, {true, 4, {}, 0, true}},
+      {EventCategory::kIncomplete, {true, 4, {}, 0, true}},
+      {EventCategory::kError, {true, 5, {}, 300, true}},
       {EventCategory::kDisconnect, {true, 5, {}, 300}},
       {EventCategory::kReconnect, {true, 3, {}, 0}},
       {EventCategory::kQuoteStall, {false, 2, {}, 600}},  // off by default
@@ -85,8 +85,10 @@ void NtfyDispatcher::Emit(const Event& ev) {
     tokens_ =
         std::min(static_cast<double>(cfg_.rate_capacity), tokens_ + hours * cfg_.rate_refill_per_h);
     last_refill_ = now;
-    if (tokens_ < 1.0) return;  // upstream rate cap — drop
-    tokens_ -= 1.0;
+    if (!route.bypass_rate_limit) {
+      if (tokens_ < 1.0) return;  // upstream rate cap — drop
+      tokens_ -= 1.0;
+    }
   }
 
   HttpRequest req;
