@@ -116,6 +116,20 @@ int main() {
     CHECK(tr.reqs.size() == 2);
   }
 
+  // terminal events bypass the bucket: empty bucket still sends complete
+  {
+    RecordingTransport tr;
+    NotifyConfig c = BaseCfg();
+    c.rate_capacity = 1;
+    c.rate_refill_per_h = 0.0;
+    NtfyDispatcher d(c, &tr, clock);
+    d.Emit(Fill());  // consumes the only token
+    d.Emit(Fill());  // dropped: bucket empty
+    CHECK(tr.reqs.size() == 1);
+    d.Emit(Event{EventCategory::kComplete, Severity::kInfo, "2330", "", {}});
+    CHECK(tr.reqs.size() == 2);
+  }
+
   if (g_failures == 0) {
     std::printf("test_ntfy_dispatcher: OK\n");
     return 0;
