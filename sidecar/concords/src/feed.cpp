@@ -119,6 +119,16 @@ Quote ToQuote(const concords_sdk::ticker::Quotation& q, const char* pid) {
   return out;
 }
 
+// Per-connection state captured by value into the ticker callback, so a leaked
+// frozen ticker writes to its own orphaned session instead of racing the rebuilt
+// one's counters / staleness clock.
+struct FeedSession {
+  Publisher* publisher = nullptr;
+  std::atomic<long long> last_quote_ms{0};
+  long long offer_dropped = 0;  // touched only by this session's callback thread
+  long long offer_warn_ms = 0;
+};
+
 }  // namespace
 
 int RunFeed(const std::string& config_path) {
@@ -171,9 +181,7 @@ int RunFeed(const std::string& config_path) {
   std::set<std::string> warm(symbols.begin(), symbols.end());
   std::set<std::string> subscribed;    // what we currently hold on concords
   std::set<std::string> core_desired;  // latest on-demand set from core
-  std::atomic<long long> last_quote_ms{0};
-  long long offer_dropped = 0;  // Aeron-dropped quotes (touched only on the SDK callback thread)
-  long long offer_warn_ms = 0;
+  std::shared_ptr<FeedSession> session;
 
   auto build = [&]() -> bool {
     TickerGate();
@@ -185,18 +193,22 @@ int RunFeed(const std::string& config_path) {
     ticker->SetErrorCallback([](const std::string& e) {
       std::cerr << "kairos-sidecar: concords ticker error: " << e << "\n";
     });
-    ticker->SetQuotationCallback([&](const concords_sdk::ticker::Quotation& q) {
+    auto sess = std::make_shared<FeedSession>();
+    sess->publisher = publisher.get();
+    ticker->SetQuotationCallback([sess](const concords_sdk::ticker::Quotation& q) {
       const char* pid = q.GetProductId();
       if (!pid) return;
-      last_quote_ms.store(SteadyMs());  // SDK delivered (alive); update before the Aeron offer
-      std::int64_t r = publisher->Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
+      sess->last_quote_ms.store(
+          SteadyMs());  // SDK delivered (alive); update before the Aeron offer
+      std::int64_t r = sess->publisher->Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
       if (r < 0) {
-        ++offer_dropped;
+        ++sess->offer_dropped;
         long long nowms = SteadyMs();
-        if (nowms - offer_warn_ms > 5000) {  // throttle: at most once / 5s
-          std::cerr << "kairos-sidecar: dropped " << offer_dropped << " quotes (aeron offer=" << r
+        if (nowms - sess->offer_warn_ms > 5000) {  // throttle: at most once / 5s
+          std::cerr << "kairos-sidecar: dropped " << sess->offer_dropped
+                    << " quotes (aeron offer=" << r
                     << "; core not connected / publication issue)\n";
-          offer_warn_ms = nowms;
+          sess->offer_warn_ms = nowms;
         }
       }
     });
@@ -208,7 +220,8 @@ int RunFeed(const std::string& config_path) {
       }
       subscribed.insert(s);
     }
-    last_quote_ms.store(SteadyMs());  // start the staleness clock fresh
+    sess->last_quote_ms.store(SteadyMs());  // start the staleness clock after the warm burst
+    session = sess;  // publish to the main loop only after the ticker is fully wired
     return true;
   };
 
@@ -279,12 +292,12 @@ int RunFeed(const std::string& config_path) {
       reconnect(false);
     }
     LocalNow watch = NowUtc8();
-    long long stale_s = (SteadyMs() - last_quote_ms.load()) / 1000;
+    long long stale_s = (SteadyMs() - session->last_quote_ms.load()) / 1000;
     if (FeedStale(watch.hhmm, stale_s, stale_restart_s)) {
       std::cout << "kairos-sidecar: quote feed stale " << stale_s << "s, reconnecting\n";
       reconnect(true);
     } else if (watch.hhmm < 830 || watch.hhmm >= 1330) {
-      last_quote_ms.store(SteadyMs());  // off-hours: no quotes expected, keep the clock fresh
+      session->last_quote_ms.store(SteadyMs());  // off-hours: no quotes expected, keep clock fresh
     }
     std::vector<std::string> latest;
     if (control->Poll(&latest)) {
