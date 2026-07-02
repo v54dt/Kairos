@@ -89,7 +89,9 @@ int UdsQuoteClient::ConnectAndSubscribe() {
   }
   ::fcntl(fd, F_SETFL, flags);  // restore blocking for WriteFrame + the read loop
 
+  fd_ = fd;  // publish before the blocking write so Stop() can shutdown() it
   if (!WriteFrame(fd, EncodeSubscribe(symbols_))) {
+    fd_.store(-1);
     ::close(fd);
     return -1;
   }
@@ -106,7 +108,7 @@ void UdsQuoteClient::Run() {
           std::min(backoff * 2, std::chrono::duration_cast<std::chrono::milliseconds>(kBackoffMax));
       continue;
     }
-    fd_ = fd;
+    // fd_ was published inside ConnectAndSubscribe (before the subscribe write)
     backoff = kBackoffMin;
 
     std::vector<std::uint8_t> frame;
