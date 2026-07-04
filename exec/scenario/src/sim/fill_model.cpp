@@ -18,17 +18,18 @@ long DisplayedAt(const TopOfBook& b, Side side, Cents price) {
   return 0;
 }
 
-// Total opposite-side displayed volume strictly through a resting order's limit.
-long CrossingVolume(const TopOfBook& b, Side side, Cents limit) {
-  long total = 0;
-  if (side == Side::kBuy) {
-    for (int i = 0; i < b.n_asks; ++i)
-      if (b.asks[i].price < limit) total += b.asks[i].volume;
-  } else {
-    for (int i = 0; i < b.n_bids; ++i)
-      if (b.bids[i].price > limit) total += b.bids[i].volume;
+// Drop consumed-liquidity entries for levels no longer displayed and clamp the rest to the current
+// display, keying by ask/bid `side` (Side::kSell => ask levels, Side::kBuy => bid levels).
+void PruneTaken(std::map<Cents, long>* taken, const TopOfBook& b, Side side) {
+  for (auto it = taken->begin(); it != taken->end();) {
+    long disp = DisplayedAt(b, side, it->first);
+    if (disp <= 0) {
+      it = taken->erase(it);
+    } else {
+      it->second = std::min(it->second, disp);
+      ++it;
+    }
   }
-  return total;
 }
 
 }  // namespace
@@ -58,21 +59,58 @@ void SymbolFillModel::MarketableWalk(SimOrder* order) {
     for (int i = 0; i < book_.n_asks && order->remaining() > 0; ++i) {
       const Level& lvl = book_.asks[i];
       if (lvl.price > order->price) break;  // levels are ascending; nothing deeper crosses
-      long take = std::min(order->remaining(), lvl.volume);
+      long take = std::min(order->remaining(), lvl.volume - ask_taken_[lvl.price]);
       if (take <= 0) continue;
       order->filled += take;
+      ask_taken_[lvl.price] += take;
       if (on_fill_) on_fill_(order->id, Fill{take, lvl.price});
     }
   } else {
     for (int i = 0; i < book_.n_bids && order->remaining() > 0; ++i) {
       const Level& lvl = book_.bids[i];
       if (lvl.price < order->price) break;  // levels are descending
-      long take = std::min(order->remaining(), lvl.volume);
+      long take = std::min(order->remaining(), lvl.volume - bid_taken_[lvl.price]);
       if (take <= 0) continue;
       order->filled += take;
+      bid_taken_[lvl.price] += take;
       if (on_fill_) on_fill_(order->id, Fill{take, lvl.price});
     }
   }
+}
+
+// Fills the crossing (strictly-through) portion of a resting order against still-unconsumed
+// displayed liquidity, marking it consumed so it is not re-filled on a later book. Returns shares
+// taken.
+long SymbolFillModel::ConsumeCrossing(const Resting& r) {
+  long want = r.order.remaining();
+  long got = 0;
+  if (r.order.side == Side::kBuy) {
+    for (int i = 0; i < book_.n_asks && want > 0; ++i) {
+      const Level& lvl = book_.asks[i];
+      if (lvl.price >= r.order.price) break;  // ascending; only strictly-through levels cross
+      long take = std::min(want, lvl.volume - ask_taken_[lvl.price]);
+      if (take <= 0) continue;
+      ask_taken_[lvl.price] += take;
+      want -= take;
+      got += take;
+    }
+  } else {
+    for (int i = 0; i < book_.n_bids && want > 0; ++i) {
+      const Level& lvl = book_.bids[i];
+      if (lvl.price <= r.order.price) break;  // descending; only strictly-through levels cross
+      long take = std::min(want, lvl.volume - bid_taken_[lvl.price]);
+      if (take <= 0) continue;
+      bid_taken_[lvl.price] += take;
+      want -= take;
+      got += take;
+    }
+  }
+  return got;
+}
+
+void SymbolFillModel::ReconcileTaken() {
+  PruneTaken(&ask_taken_, book_, Side::kSell);
+  PruneTaken(&bid_taken_, book_, Side::kBuy);
 }
 
 void SymbolFillModel::Submit(const SimOrder& order) {
@@ -123,7 +161,9 @@ void SymbolFillModel::OnTrade(Cents price, long vol, std::int64_t, bool is_trial
 
 void SymbolFillModel::OnBook(const TopOfBook& book, std::int64_t) {
   book_ = book;
-  if (!matching_ || !book.valid || book.is_trial) return;
+  if (!book.valid || book.is_trial) return;
+  ReconcileTaken();
+  if (!matching_) return;
 
   if (mode_ == FillMode::kConservative) {
     for (auto& r : resting_) {
@@ -131,8 +171,7 @@ void SymbolFillModel::OnBook(const TopOfBook& book, std::int64_t) {
       bool through = r.order.side == Side::kBuy ? (best > 0 && best < r.order.price)
                                                 : (best > 0 && best > r.order.price);
       if (!through) continue;
-      long cross = CrossingVolume(book, r.order.side, r.order.price);
-      EmitFill(&r, std::min(r.order.remaining(), cross), r.order.price);
+      EmitFill(&r, ConsumeCrossing(r), r.order.price);
     }
   } else {
     for (auto& r : resting_) {

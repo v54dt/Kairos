@@ -2,6 +2,7 @@
 #define KAIROS_EXEC_SIM_FILL_MODEL_H_
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,9 @@ namespace kairos::exec {
 //     symmetric: trade price > P / best_bid > P strictly. Trade-through fills at
 //     P and are capped by a shared trade-volume budget consumed in time-priority
 //     order; quote-through fills at P capped by the crossing displayed volume.
+//     Displayed liquidity a marketable walk or a quote-through fill consumes is
+//     tracked per price level, so a persistent or re-broadcast book never re-fills
+//     the same lot and multiple orders share one displayed level (never over-fill).
 //
 // (2) kProbQueue. Ports the queue-position concept from hftbacktest
 //     (https://github.com/nkaz001/hftbacktest) ProbQueueModel: an order at a
@@ -88,7 +92,9 @@ class SymbolFillModel {
     long displayed_prev = 0;     // kProbQueue only: displayed vol at the level
   };
 
-  void MarketableWalk(SimOrder* order);  // fills against book_, mutates order.filled
+  void MarketableWalk(SimOrder* order);    // fills against book_, mutates order.filled
+  long ConsumeCrossing(const Resting& r);  // kConservative quote-through: take unconsumed liquidity
+  void ReconcileTaken();  // clamp/prune consumed-liquidity maps to the current book
   void EmitFill(Resting* r, long shares, Cents price);
   void DropFilled();
 
@@ -100,6 +106,10 @@ class SymbolFillModel {
   TopOfBook book_;
   bool matching_ = true;
   std::vector<Resting> resting_;  // insertion order == time priority
+  // kConservative: displayed liquidity already consumed at each price, so a persistent/re-broadcast
+  // book never re-fills the same lot and multiple orders share one displayed level.
+  std::map<Cents, long> ask_taken_;
+  std::map<Cents, long> bid_taken_;
 };
 
 }  // namespace kairos::exec
