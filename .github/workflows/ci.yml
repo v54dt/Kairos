@@ -74,6 +74,30 @@ jobs:
       - run: cargo build --release
         working-directory: core
 
+  tui:
+    name: tui fmt + clippy + build + test
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq capnproto uuid-dev libbsd-dev
+      - name: Install Rust
+        run: |
+          rustup toolchain install ${{ env.RUST_VERSION }} --profile minimal --component clippy,rustfmt
+          rustup default ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - run: cargo fmt --all -- --check
+        working-directory: tui
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: tui
+      - run: cargo test
+        working-directory: tui
+      - run: cargo build --release
+        working-directory: tui
+
   sidecar:
     name: sidecar build + test
     runs-on: ubuntu-latest
