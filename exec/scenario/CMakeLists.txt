@@ -10,7 +10,7 @@ endif()
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # Sources are grouped into subdirs; includes stay flat (`#include "foo.h"`), so every target gets
 # all the subdirs on its include path.
-set(KAIROS_INC ${SRC}/market ${SRC}/quote ${SRC}/order ${SRC}/notify ${SRC}/engine)
+set(KAIROS_INC ${SRC}/market ${SRC}/quote ${SRC}/order ${SRC}/notify ${SRC}/engine ${SRC}/sim)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -73,6 +73,11 @@ target_link_libraries(kairos_hub_backend PUBLIC kairos_order_codec pthread)
 add_library(kairos_uds src/quote/uds_quote_client.cpp)
 target_include_directories(kairos_uds PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
+
+# Offline fill-model library (pure logic, no capnp/socket): conservative + ProbQueue continuous
+# fills and the call-auction engine. Shared by A4 (offline) and B8 (live paper).
+add_library(kairos_sim src/sim/fill_model.cpp src/sim/fill_engine.cpp)
+target_include_directories(kairos_sim PUBLIC ${KAIROS_INC})
 
 add_library(kairos_scenario src/engine/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
@@ -140,6 +145,18 @@ add_test(NAME test_scenario COMMAND test_scenario)
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
 add_test(NAME test_quote_codec COMMAND test_quote_codec)
+
+add_executable(test_fill_model tests/test_fill_model.cpp)
+target_link_libraries(test_fill_model PRIVATE kairos_sim)
+add_test(NAME test_fill_model COMMAND test_fill_model)
+
+add_executable(test_prob_queue tests/test_prob_queue.cpp)
+target_link_libraries(test_prob_queue PRIVATE kairos_sim)
+add_test(NAME test_prob_queue COMMAND test_prob_queue)
+
+add_executable(test_fill_engine tests/test_fill_engine.cpp)
+target_link_libraries(test_fill_engine PRIVATE kairos_sim)
+add_test(NAME test_fill_engine COMMAND test_fill_engine)
 
 add_executable(test_order_codec tests/test_order_codec.cpp)
 target_link_libraries(test_order_codec PRIVATE kairos_order_codec)
