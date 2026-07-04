@@ -61,9 +61,11 @@ impl FeedState {
                 let book = self.per_symbol.entry(q.symbol.clone()).or_default();
                 book.bids = q.bids.clone();
                 book.asks = q.asks.clone();
-                book.last_price = q.last_price;
-                book.last_scale = q.last_scale;
-                book.last_volume = q.last_volume;
+                if q.last_price != 0 {
+                    book.last_price = q.last_price;
+                    book.last_scale = q.last_scale;
+                    book.last_volume = q.last_volume;
+                }
                 book.is_trial = q.is_trial;
                 book.source = q.source;
                 book.last_seen = Some(now);
@@ -261,6 +263,32 @@ mod tests {
         assert_eq!(b.last_price, 58080);
         assert_eq!(b.last_volume, 9);
         assert!(b.is_trial);
+    }
+
+    #[test]
+    fn depth_only_quote_keeps_last_trade() {
+        let mut st = FeedState::default();
+        let now = Instant::now();
+        st.apply(
+            &decode_feed_event(&trade("2330", 0, 58080, 9)).unwrap(),
+            now,
+        );
+        st.apply(
+            &decode_feed_event(&quote_with_levels(
+                "2330",
+                0,
+                vec![level(58000, 5)],
+                vec![level(58100, 3)],
+                0,
+                0,
+            ))
+            .unwrap(),
+            now,
+        );
+        let b = &st.per_symbol["2330"];
+        assert_eq!(b.bids.len(), 1, "depth-only quote still refreshes levels");
+        assert_eq!(b.last_price, 58080, "last trade must survive a depth-only quote");
+        assert_eq!(b.last_volume, 9);
     }
 
     #[test]
