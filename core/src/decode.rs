@@ -151,10 +151,13 @@ pub fn decode_feed_event(bytes: &[u8]) -> Result<FeedEvent, DecodeError> {
     let reader =
         capnp::serialize::read_message(&mut &bytes[..], capnp::message::ReaderOptions::new())?;
     let env = reader.get_root::<kairos_capnp::envelope::Reader>()?;
-    match env.which()? {
-        kairos_capnp::envelope::Which::Quote(q) => Ok(FeedEvent::Quote(decode_quote(q?)?)),
-        kairos_capnp::envelope::Which::Trade(t) => Ok(FeedEvent::Trade(decode_trade(t?)?)),
-        _ => Err(DecodeError::UnknownVariant),
+    match env.which() {
+        Ok(kairos_capnp::envelope::Which::Quote(q)) => Ok(FeedEvent::Quote(decode_quote(q?)?)),
+        Ok(kairos_capnp::envelope::Which::Trade(t)) => Ok(FeedEvent::Trade(decode_trade(t?)?)),
+        // A known-but-unrouted variant (control frame) and a future variant this
+        // build's schema does not know (which() -> NotInSchema) are both benign
+        // forward-compat traffic, not corruption.
+        Ok(_) | Err(_) => Err(DecodeError::UnknownVariant),
     }
 }
 
