@@ -6,6 +6,10 @@
 # orders to the hub via the same rule with kairos-orders.sock ($KAIROS_ORDER_SOCK).
 # Set those env vars only to override. Never /tmp (world-writable). core, sidecar,
 # the hub and scenarios must all agree, so override them together.
+#
+# Optional: inherit shared defaults (fees/window/notify/…) from a common file and
+# override only what differs here. Path is relative to this file; one level deep.
+#   base = "base.toml"
 
 [scenario]
 name = "2330-accumulate"

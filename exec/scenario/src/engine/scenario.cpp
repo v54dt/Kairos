@@ -3,6 +3,7 @@
 #include <toml++/toml.h>
 
 #include <cstdio>
+#include <filesystem>
 #include <format>
 #include <stdexcept>
 
@@ -20,6 +21,21 @@ T Required(const toml::table& t, const char* section, const char* key) {
   auto v = t[section][key].template value<T>();
   if (!v) Missing(section, key);
   return *v;
+}
+
+// Deep-merge `over` into `base`: nested tables recurse, everything else in
+// `over` overrides `base`. Used for scenario `base = "..."` inheritance.
+void MergeInto(toml::table& base, const toml::table& over) {
+  for (auto&& [key, node] : over) {
+    std::string k(key.str());
+    if (node.is_table()) {
+      if (auto* bt = base.get_as<toml::table>(k)) {
+        MergeInto(*bt, *node.as_table());
+        continue;
+      }
+    }
+    node.visit([&](auto&& n) { base.insert_or_assign(k, n); });
+  }
 }
 
 int ParseHHMM(const std::string& s) {
@@ -116,6 +132,21 @@ Scenario LoadScenario(const std::string& path) {
     t = toml::parse_file(path);
   } catch (const toml::parse_error& err) {
     throw std::runtime_error(std::format("failed to parse {}: {}", path, err.description()));
+  }
+
+  // base = "shared.toml" (relative to this file): inherit shared defaults, then
+  // let this scenario's own keys override them. One level deep, no chaining.
+  if (auto base_name = t["base"].value<std::string>()) {
+    auto base_path = std::filesystem::path(path).parent_path() / *base_name;
+    toml::table base;
+    try {
+      base = toml::parse_file(base_path.string());
+    } catch (const toml::parse_error& err) {
+      throw std::runtime_error(
+          std::format("failed to parse base {}: {}", base_path.string(), err.description()));
+    }
+    MergeInto(base, t);
+    t = std::move(base);
   }
 
   Scenario s;

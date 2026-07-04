@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <string>
 
@@ -35,6 +36,52 @@ static std::string WriteTemp(const std::string& body) {
   std::string path = "/tmp/kairos-scenario-test-" + std::to_string(getpid()) + ".toml";
   std::ofstream(path) << body;
   return path;
+}
+
+// base = "..." inheritance: shared defaults, overridden per scenario, with nested
+// tables deep-merged (not replaced).
+static void TestBaseMerge() {
+  std::string dir = "/tmp/kairos-scenario-base-" + std::to_string(getpid());
+  std::filesystem::create_directories(dir);
+  std::ofstream(dir + "/base.toml") << R"(
+[scenario]
+name = "base"
+symbol = "0050"
+market = "TSE"
+board = "OddLot"
+side = "Buy"
+product = "etf"
+budget_twd = 300000
+[pricing]
+policy = "join"
+peg_level = 1
+[window]
+start_time = "09:10"
+end_time = "13:25"
+)";
+  std::ofstream(dir + "/child.toml") << R"(
+base = "base.toml"
+[scenario]
+symbol = "2330"
+side = "Sell"
+budget_twd = 999000
+[pricing]
+peg_level = 3
+)";
+
+  Scenario s = LoadScenario(dir + "/child.toml");
+  // overridden by the child
+  CHECK(s.symbol == "2330");
+  CHECK(s.side == Side::kSell);
+  CHECK_EQ(s.budget_twd, 999000);
+  CHECK_EQ(s.peg_level, 3);  // nested [pricing] merged, not replaced
+  // inherited from the base
+  CHECK(s.board == Board::kOddLot);
+  CHECK(s.price_policy == PricePolicy::kJoin);  // survives the nested merge
+  CHECK_EQ(s.window_start_hhmm, 910);
+  CHECK_EQ(s.window_end_hhmm, 1325);
+
+  std::filesystem::remove_all(dir);
 }
 
 int main() {
@@ -90,6 +137,8 @@ quote_max_age_ms = 70000
 
   // summary renders without crashing and mentions the symbol
   CHECK(SummarizeScenario(s).find("0050") != std::string::npos);
+
+  TestBaseMerge();
 
   if (g_failures == 0) {
     std::printf("test_scenario: OK\n");
