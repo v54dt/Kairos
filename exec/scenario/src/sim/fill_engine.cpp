@@ -83,6 +83,9 @@ void FillEngine::RunClosingMatch(SymbolState* st) {
     }
   }
   st->auction.Clear();
+  // Resting continuous orders are frozen at 13:25 (A8): not migrated into the
+  // closing auction, so each expires with a terminal cancel at the close.
+  st->model->ExpireAllResting();
 }
 
 void FillEngine::Advance(std::int64_t ts_us) {
@@ -122,6 +125,16 @@ void FillEngine::Advance(std::int64_t ts_us) {
         st.closing_matched = true;
       }
     }
+  }
+}
+
+void FillEngine::Finalize() {
+  if (!closing_open_) return;
+  for (auto& [sym, st] : symbols_) {
+    if (st.closing_matched) continue;
+    st.auction.SetReference(st.closing_ref);
+    RunClosingMatch(&st);
+    st.closing_matched = true;
   }
 }
 

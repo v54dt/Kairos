@@ -3,6 +3,7 @@
 
 #include <array>
 #include <chrono>
+#include <cstdint>
 #include <mutex>
 
 #include "tw_market.h"
@@ -14,6 +15,16 @@ struct Level {
   long volume = 0;
 };
 
+// A distinct TRADE print (schema Trade), delivered separately from the
+// DEPTH-bearing Quote so queue models see trades and book updates as separate
+// events. `trade_ts_us` is the broker timestamp (CLOCK_REALTIME us).
+struct Trade {
+  Cents price = 0;
+  long volume = 0;
+  std::int64_t trade_ts_us = 0;
+  bool is_trial = false;  // 試撮
+};
+
 struct TopOfBook {
   static constexpr int kMaxLevels = 5;
   std::array<Level, kMaxLevels> bids{};  // [0, n_bids): best -> deep, descending price
@@ -22,7 +33,8 @@ struct TopOfBook {
   int n_asks = 0;
   Cents last_trade = 0;
   long last_vol = 0;
-  bool is_trial = false;  // 試撮
+  bool is_trial = false;         // 試撮
+  std::int64_t quote_ts_us = 0;  // broker quote timestamp (CLOCK_REALTIME us); 0 if absent
   std::chrono::steady_clock::time_point recv_ts{};
   bool valid = false;
 

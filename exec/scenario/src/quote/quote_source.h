@@ -14,10 +14,15 @@ namespace kairos::exec {
 class QuoteSource {
  public:
   using QuoteFn = std::function<void(const std::string& symbol, const TopOfBook&)>;
+  using TradeFn = std::function<void(const std::string& symbol, const Trade&)>;
 
   virtual ~QuoteSource() = default;
 
   virtual void SetCallback(QuoteFn on_quote) = 0;
+  // Optional trade stream (A4 sim hub). Default no-op so existing consumers stay
+  // bit-for-bit unchanged: without a trade callback the client never decodes Trade
+  // frames, leaving the quote path and its unknown-variant counter untouched.
+  virtual void SetTradeCallback(TradeFn /*on_trade*/) {}
   virtual void Start() = 0;
   virtual void Stop() = 0;
 };

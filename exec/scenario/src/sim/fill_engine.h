@@ -38,6 +38,13 @@ class FillEngine {
   void Submit(const SimOrder& order);
   void Cancel(const std::string& id, std::int64_t ts_us);
 
+  // End-of-tape flush: forces the closing call-auction match for any symbol whose
+  // closing window opened but never matched (a delayed close, or a tape that lacks
+  // an event past the boundary), so acked closing orders are resolved -- filled at
+  // the cross, remainder expired -- instead of being silently lost. Idempotent;
+  // no-op if no closing window was entered.
+  void Finalize();
+
  private:
   struct SymbolState {
     std::unique_ptr<SymbolFillModel> model;

@@ -103,6 +103,36 @@ int main() {
     CHECK_EQ(tob.bids[1].volume, 50);
     CHECK_EQ(tob.n_asks, 1);
     CHECK_EQ(tob.asks[0].price, 58100);
+    CHECK_EQ(tob.quote_ts_us, 1700000000000000LL);
+  }
+
+  // A Trade envelope decodes into a Trade via DecodeTrade, without bumping the
+  // quote-path unknown-variant counter.
+  {
+    std::uint64_t before = UnknownVariantCount();
+    capnp::MallocMessageBuilder trade_msg;
+    auto tr = trade_msg.initRoot<Envelope>().initTrade();
+    tr.setSymbol("2330");
+    tr.setPriceMantissa(58050);
+    tr.setPriceScale(2);
+    tr.setVolume(7);
+    tr.setTradeTsUs(1700000000123456LL);
+    tr.setIsTrial(true);
+    auto flat = capnp::messageToFlatArray(trade_msg);
+    auto bytes = flat.asBytes();
+    kairos::exec::Trade trade;
+    std::string symbol;
+    CHECK(DecodeTrade(bytes.begin(), bytes.size(), &trade, &symbol));
+    CHECK(symbol == "2330");
+    CHECK_EQ(trade.price, 58050);
+    CHECK_EQ(trade.volume, 7);
+    CHECK_EQ(trade.trade_ts_us, 1700000000123456LL);
+    CHECK(trade.is_trial);
+    CHECK_EQ(UnknownVariantCount() - before, 0u);  // DecodeTrade never counts
+
+    // A Quote is not a Trade.
+    auto qbytes = BuildQuote();
+    CHECK(!DecodeTrade(qbytes.data(), qbytes.size(), &trade, &symbol));
   }
 
   // A subscribe envelope is not a quote

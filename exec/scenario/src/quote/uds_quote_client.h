@@ -21,6 +21,7 @@ class UdsQuoteClient : public QuoteSource {
   ~UdsQuoteClient() override;
 
   void SetCallback(QuoteFn on_quote) override { on_quote_ = std::move(on_quote); }
+  void SetTradeCallback(TradeFn on_trade) override { on_trade_ = std::move(on_trade); }
   void Start() override;
   void Stop() override;
 
@@ -31,6 +32,7 @@ class UdsQuoteClient : public QuoteSource {
   std::string socket_path_;
   std::vector<std::string> symbols_;
   QuoteFn on_quote_;
+  TradeFn on_trade_;
   std::atomic<bool> stop_{false};
   std::atomic<int> fd_{-1};
   std::thread thread_;

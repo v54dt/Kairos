@@ -84,6 +84,9 @@ class SymbolFillModel {
   // Cancels the resting remainder. Returns true if an order with `id` was found.
   bool Cancel(const std::string& id, std::int64_t ts_us);
 
+  // Expires every still-resting order with a terminal cancel (session close).
+  void ExpireAllResting();
+
   bool HasResting() const { return !resting_.empty(); }
 
  private:

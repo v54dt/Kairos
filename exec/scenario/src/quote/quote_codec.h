@@ -22,6 +22,12 @@ std::vector<std::uint8_t> EncodeSubscribe(const std::vector<std::string>& symbol
 // well-formed but unhandled variant is counted (see UnknownVariantCount).
 bool DecodeQuote(const std::uint8_t* data, std::size_t len, TopOfBook* tob, std::string* symbol);
 
+// Decode a serialized Envelope. If it is a Trade, fill *trade (price/volume/ts/
+// 試撮) and *symbol, then return true. Returns false for any other variant or
+// malformed bytes. Unlike DecodeQuote it does NOT count unknown variants: the sim
+// hub routes Trade frames here while the counter stays a pure quote-path metric.
+bool DecodeTrade(const std::uint8_t* data, std::size_t len, Trade* trade, std::string* symbol);
+
 // Cumulative count of well-formed Envelopes whose variant DecodeQuote does not
 // handle (Trade/subAck/error/heartbeat/...). Distinct from malformed bytes, which
 // are not counted here. Exposed for observability and tests.

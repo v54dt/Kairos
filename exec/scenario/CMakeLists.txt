@@ -79,6 +79,11 @@ target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
 add_library(kairos_sim src/sim/fill_model.cpp src/sim/fill_engine.cpp src/sim/auction.cpp)
 target_include_directories(kairos_sim PUBLIC ${KAIROS_INC})
 
+# Mock-hub OrderBackend over the fill-model library (no SDK, no real-order path).
+add_library(kairos_sim_backend src/sim/sim_order_backend.cpp)
+target_include_directories(kairos_sim_backend PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_sim_backend PUBLIC kairos_sim)
+
 add_library(kairos_scenario src/engine/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
@@ -124,6 +129,10 @@ add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
                                                 tomlplusplus::tomlplusplus)
 
+# Mock order hub: fill-model backend + quote/trade UDS feed. No kairos_live link.
+add_executable(kairos_sim_hubd src/bin/sim_hub_main.cpp)
+target_link_libraries(kairos_sim_hubd PRIVATE kairos_sim_backend kairos_order_hub_server kairos_uds)
+
 # --- tests ---
 enable_testing()
 add_executable(test_market_fees tests/test_market_fees.cpp)
@@ -161,6 +170,11 @@ add_test(NAME test_fill_engine COMMAND test_fill_engine)
 add_executable(test_auction tests/test_auction.cpp)
 target_link_libraries(test_auction PRIVATE kairos_sim)
 add_test(NAME test_auction COMMAND test_auction)
+
+add_executable(test_sim_hub_server tests/test_sim_hub_server.cpp)
+target_link_libraries(test_sim_hub_server PRIVATE kairos_sim_backend kairos_order_hub_server
+                                                  kairos_order_codec)
+add_test(NAME test_sim_hub_server COMMAND test_sim_hub_server)
 
 add_executable(test_order_codec tests/test_order_codec.cpp)
 target_link_libraries(test_order_codec PRIVATE kairos_order_codec)

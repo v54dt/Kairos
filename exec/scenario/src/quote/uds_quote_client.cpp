@@ -115,8 +115,15 @@ void UdsQuoteClient::Run() {
     while (!stop_) {
       int r = ReadFrame(fd, &frame);
       if (r <= 0) break;  // EOF or error -> reconnect
-      TopOfBook tob;
+      // With no trade callback the live path never calls DecodeTrade, so the
+      // quote code path and the unknown-variant counter are exactly as before.
       std::string symbol;
+      Trade trade;
+      if (on_trade_ && DecodeTrade(frame.data(), frame.size(), &trade, &symbol)) {
+        on_trade_(symbol, trade);
+        continue;
+      }
+      TopOfBook tob;
       if (DecodeQuote(frame.data(), frame.size(), &tob, &symbol)) on_quote_(symbol, tob);
     }
     int old = fd_.exchange(-1);

@@ -213,4 +213,11 @@ bool SymbolFillModel::Cancel(const std::string& id, std::int64_t) {
   return false;
 }
 
+void SymbolFillModel::ExpireAllResting() {
+  for (const auto& r : resting_) {
+    if (on_cancel_) on_cancel_(r.order.id, true);
+  }
+  resting_.clear();
+}
+
 }  // namespace kairos::exec
