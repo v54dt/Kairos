@@ -6,6 +6,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::ipc::aeron::resolve_aeron_dir;
+
 /// Marker file name written into the target Aeron dir by a running replay.
 pub const MARKER_NAME: &str = "kairos-replay.marker";
 
@@ -92,6 +94,15 @@ pub fn default_aeron_dir() -> Option<String> {
     Some(format!("/dev/shm/aeron-{}", current_username()))
 }
 
+/// The Aeron dir the live stack (driver/core/recordd) actually resolves to for a
+/// given `--aeron-dir`: an explicit dir or `$KAIROS_AERON_DIR` (via `resolve_aeron_dir`),
+/// else the native default (`$AERON_DIR`, else `/dev/shm/aeron-<user>`). This is the
+/// single notion of "the live dir" shared by replayd's refusal and recordd's marker
+/// check, so a guard can never watch a different dir than the stack uses.
+pub fn effective_stack_dir(explicit: Option<&str>) -> Option<String> {
+    resolve_aeron_dir(explicit).or_else(default_aeron_dir)
+}
+
 /// The current user name, matching Aeron's `aeron_username()`: `$USER` first, then
 /// the passwd entry for the real uid, then the literal `"default"`.
 fn current_username() -> String {
@@ -113,14 +124,14 @@ fn current_username() -> String {
     }
 }
 
-/// True if `target` and the live `default` dir are the same physical directory and
+/// True if `target` and the `live` stack dir are the same physical directory and
 /// `--force-live-dir` was not passed. Paths are compared by canonical identity, so
 /// symlinks and non-canonical spellings (`/x/.`, `//x`, `/y/../x`) don't slip past.
-pub fn refuses_live_dir(target: &str, default: Option<&str>, force: bool) -> bool {
+pub fn refuses_live_dir(target: &str, live: Option<&str>, force: bool) -> bool {
     if force {
         return false;
     }
-    match default {
+    match live {
         Some(d) => dir_key(target) == dir_key(d),
         None => false,
     }

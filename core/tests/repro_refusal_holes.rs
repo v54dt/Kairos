@@ -1,7 +1,7 @@
 //! Archive-safety lens: refusal edge cases for replayd's live-dir guard.
 
 use kairos_core::ipc::aeron::resolve_aeron_dir;
-use kairos_core::replay::{default_aeron_dir, refuses_live_dir};
+use kairos_core::replay::{effective_stack_dir, refuses_live_dir};
 
 /// REGRESSION: a non-canonical spelling of the live default (symlink/`.`/`//`/`..`)
 /// is the same physical dir and must be refused. The guard now compares canonical
@@ -21,14 +21,13 @@ fn noncanonical_path_is_refused() {
     }
 }
 
-/// DOCUMENTED LIMITATION (not a bug): `$KAIROS_AERON_DIR` is the replay-isolation
-/// escape hatch a replay environment sets to point the whole stack at a private dir,
-/// so replayd deliberately does NOT treat it as the live dir — refusing it would
-/// break isolated replays. The live-dir refusal keys off the native default only;
-/// archive safety when production sets `$KAIROS_AERON_DIR` is covered by the marker
-/// (recordd refuses while a replay owns that dir).
+/// REGRESSION (archive-safety): when the live stack is pointed at an isolated dir via
+/// `$KAIROS_AERON_DIR`, THAT is the dir driver/core/recordd actually use, so replayd
+/// must treat it as the live dir and refuse to replay onto it. The refusal now keys off
+/// the effective stack dir (KAIROS_AERON_DIR-aware), not the native default alone.
+/// `--force-live-dir` stays the escape hatch for an intentional replay onto that dir.
 #[test]
-fn kairos_aeron_dir_is_not_treated_as_the_live_dir() {
+fn kairos_aeron_dir_live_stack_is_refused() {
     let saved_user = std::env::var("USER").ok();
     let saved_kad = std::env::var("KAIROS_AERON_DIR").ok();
     let saved_ad = std::env::var("AERON_DIR").ok();
@@ -42,11 +41,16 @@ fn kairos_aeron_dir_is_not_treated_as_the_live_dir() {
         resolve_aeron_dir(None).as_deref(),
         Some("/dev/shm/aeron-live")
     );
-    // replayd's live-dir notion is the native default, not KAIROS_AERON_DIR:
-    assert_eq!(default_aeron_dir().as_deref(), Some("/dev/shm/aeron-bob"));
+    // replayd's refusal target is now that same effective stack dir, not aeron-bob:
+    let target = effective_stack_dir(None);
+    assert_eq!(target.as_deref(), Some("/dev/shm/aeron-live"));
     assert!(
-        !refuses_live_dir("/dev/shm/aeron-live", default_aeron_dir().as_deref(), false),
-        "KAIROS_AERON_DIR is the isolation escape hatch; refusing it would break replays"
+        refuses_live_dir("/dev/shm/aeron-live", target.as_deref(), false),
+        "the KAIROS_AERON_DIR live dir must be refused"
+    );
+    assert!(
+        !refuses_live_dir("/dev/shm/aeron-live", target.as_deref(), true),
+        "--force-live-dir remains the override"
     );
     unsafe {
         match saved_user {

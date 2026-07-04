@@ -20,7 +20,8 @@ pub mod runner;
 pub mod source;
 
 pub use marker::{
-    MarkerGuard, default_aeron_dir, ensure_no_active_replay, refuses_live_dir, write_marker,
+    MarkerGuard, default_aeron_dir, effective_stack_dir, ensure_no_active_replay, refuses_live_dir,
+    write_marker,
 };
 pub use pacer::{Clock, Pace, Paced, Pacer, SystemClock};
 pub use runner::{OfferOutcome, ReplayStats, drive_replay};

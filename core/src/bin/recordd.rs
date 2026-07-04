@@ -18,9 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kairos_core::ipc::aeron::resolve_aeron_dir;
 use kairos_core::record::recorder::{Stats, run_stream};
-use kairos_core::replay::{default_aeron_dir, ensure_no_active_replay};
+use kairos_core::replay::{effective_stack_dir, ensure_no_active_replay};
 
 struct Args {
     out_dir: PathBuf,
@@ -82,9 +81,8 @@ fn stats_loop(streams: Vec<i32>, stats: Vec<Arc<Stats>>, stop: Arc<AtomicBool>) 
 
 fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
-    // Same resolution order as the aeron client: --aeron-dir, else $KAIROS_AERON_DIR,
-    // else the live default. Refuse if a replay owns that dir.
-    if let Some(dir) = resolve_aeron_dir(args.aeron_dir.as_deref()).or_else(default_aeron_dir) {
+    // Refuse if a replay owns the dir this recorder will actually subscribe from.
+    if let Some(dir) = effective_stack_dir(args.aeron_dir.as_deref()) {
         ensure_no_active_replay(&dir)?;
     }
     let stop = Arc::new(AtomicBool::new(false));

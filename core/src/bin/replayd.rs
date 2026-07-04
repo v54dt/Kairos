@@ -2,9 +2,10 @@
 //! one of three paces (realtime / accel / full-speed). Reader only: it re-offers
 //! raw envelope bytes and never decodes a payload.
 //!
-//! Isolation: `--aeron-dir` is REQUIRED (no default) and the resolved live default
-//! dir is refused unless `--force-live-dir` is given, so a fat-fingered replay can
-//! never land on the live feed. While running it writes `kairos-replay.marker`
+//! Isolation: `--aeron-dir` is REQUIRED (no default) and the live stack's Aeron dir
+//! (`$KAIROS_AERON_DIR`, else `$AERON_DIR`, else `/dev/shm/aeron-<user>`) is refused
+//! unless `--force-live-dir` is given, so a fat-fingered replay can never land on the
+//! live feed. While running it writes `kairos-replay.marker`
 //! into that dir; kairos-recordd refuses to start there (防污染正本 archive).
 //!
 //! Usage:
@@ -26,8 +27,8 @@ use std::time::{Duration, Instant};
 
 use kairos_core::ipc::aeron::AeronPub;
 use kairos_core::replay::{
-    KqrSource, OfferOutcome, Pace, Pacer, ReplayRecord, ReplayStats, SystemClock,
-    default_aeron_dir, drive_replay, refuses_live_dir, write_marker,
+    KqrSource, OfferOutcome, Pace, Pacer, ReplayRecord, ReplayStats, SystemClock, drive_replay,
+    effective_stack_dir, refuses_live_dir, write_marker,
 };
 
 /// Extra offer attempts on top of `AeronPub::offer`'s own retries before a record
@@ -183,11 +184,11 @@ fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("--aeron-dir is required (no default, by design)"))?;
     if refuses_live_dir(
         &aeron_dir,
-        default_aeron_dir().as_deref(),
+        effective_stack_dir(None).as_deref(),
         args.force_live_dir,
     ) {
         anyhow::bail!(
-            "{aeron_dir} is the live default Aeron dir; refusing to replay onto the live feed. \
+            "{aeron_dir} is the live stack's Aeron dir; refusing to replay onto the live feed. \
              Use a separate --aeron-dir, or --force-live-dir to override"
         );
     }
