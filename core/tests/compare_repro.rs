@@ -39,16 +39,15 @@ fn missing_trade_on_one_source_is_flagged() {
     assert!(!report.is_clean());
 }
 
-// (2) A corrupt / adversarial priceScale (u8 up to 255) makes price_eq compute
-// 10i128.pow(scale) which overflows i128 for scale >= 39 -> panic in debug
-// (overflow-checks on, as in cargo test / CI). The tool crashes instead of
-// reporting the divergence it exists to catch.
+// (2) A corrupt / adversarial priceScale (u8 up to 255) is handled with
+// checked_pow, so price_eq treats an unrepresentable scale as "cannot prove
+// different" rather than overflowing (panic in a checked build, wrap in release).
 #[test]
-fn huge_price_scale_panics_the_compare() {
+fn huge_price_scale_does_not_panic_the_compare() {
     let a = vec![FeedEvent::Trade(trade(0, "2330", 1, 39, 1000, 1))];
     let b = vec![FeedEvent::Trade(trade(1, "2330", 1, 2, 1000, 1))];
     let r = std::panic::catch_unwind(|| compare_streams(&a, &b));
-    assert!(r.is_err(), "expected compare_streams to panic on scale=39");
+    assert!(r.is_ok(), "compare_streams must not panic on scale=39");
 }
 
 // (3) feed_compare reads production KQR recordings, which frequently have a torn

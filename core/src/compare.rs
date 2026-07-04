@@ -104,8 +104,12 @@ impl CompareReport {
 /// `a_mantissa * 10^b_scale == b_mantissa * 10^a_scale`. Returns true when the
 /// scaling would overflow i128 (treated as "cannot prove different").
 fn price_eq(a_mantissa: i64, a_scale: u8, b_mantissa: i64, b_scale: u8) -> bool {
-    let a = (a_mantissa as i128).checked_mul(10i128.pow(b_scale as u32));
-    let b = (b_mantissa as i128).checked_mul(10i128.pow(a_scale as u32));
+    let a = 10i128
+        .checked_pow(b_scale as u32)
+        .and_then(|p| (a_mantissa as i128).checked_mul(p));
+    let b = 10i128
+        .checked_pow(a_scale as u32)
+        .and_then(|p| (b_mantissa as i128).checked_mul(p));
     match (a, b) {
         (Some(a), Some(b)) => a == b,
         _ => true,
@@ -150,7 +154,7 @@ pub fn find_seq_gaps(events: &[FeedEvent]) -> Vec<SeqGap> {
         let key = (source, symbol.clone());
         if let Some(&(prev_epoch, prev_seq)) = last.get(&key)
             && epoch == prev_epoch
-            && seq > prev_seq + 1
+            && seq > prev_seq.saturating_add(1)
         {
             gaps.push(SeqGap {
                 source,
