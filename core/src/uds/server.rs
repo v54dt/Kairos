@@ -9,6 +9,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::book::Book;
 use crate::decode::{Message, decode_message_bytes};
 use crate::encode::encode_quote;
+use crate::metrics::Metrics;
 use crate::model::Quote;
 use crate::subreg::SubRegistry;
 use crate::uds::frame::{read_frame, write_frame};
@@ -21,6 +22,7 @@ pub async fn run_server(
     quotes: broadcast::Sender<Quote>,
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
+    metrics: Arc<Metrics>,
 ) -> std::io::Result<()> {
     let _ = std::fs::remove_file(socket_path);
     let listener = UnixListener::bind(socket_path)?;
@@ -32,6 +34,7 @@ pub async fn run_server(
             quotes.clone(),
             registry.clone(),
             change_tx.clone(),
+            metrics.clone(),
         ));
     }
 }
@@ -42,7 +45,11 @@ async fn handle_client(
     quotes: broadcast::Sender<Quote>,
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
+    metrics: Arc<Metrics>,
 ) {
+    metrics
+        .clients
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (read_half, write_half) = stream.into_split();
     let subs = Arc::new(Mutex::new(HashSet::<String>::new()));
     let (snap_tx, snap_rx) = mpsc::channel::<Quote>(SNAPSHOT_CHANNEL);
@@ -51,9 +58,13 @@ async fn handle_client(
         quotes.subscribe(),
         subs.clone(),
         snap_rx,
+        metrics.clone(),
     ));
     reader_loop(read_half, book, subs, snap_tx, registry, change_tx).await;
     writer.abort();
+    metrics
+        .clients
+        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 async fn reader_loop(
@@ -128,6 +139,7 @@ async fn writer_loop(
     mut quotes: broadcast::Receiver<Quote>,
     subs: Arc<Mutex<HashSet<String>>>,
     mut snap_rx: mpsc::Receiver<Quote>,
+    metrics: Arc<Metrics>,
 ) {
     loop {
         tokio::select! {
@@ -138,7 +150,7 @@ async fn writer_loop(
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                Err(broadcast::error::RecvError::Lagged(_)) => Metrics::inc(&metrics.lagged),
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             snap = snap_rx.recv() => match snap {
