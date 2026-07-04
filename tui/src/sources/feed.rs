@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use kairos_core::decode::{FeedEvent, decode_feed_event};
 use kairos_core::encode::encode_subscribe;
+use kairos_core::model::PriceLevel;
 use kairos_core::uds::frame::{read_frame, write_frame};
 use tokio::net::UnixStream;
 
@@ -18,10 +19,23 @@ pub struct SourceStat {
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct SymbolBook {
+    pub bids: Vec<PriceLevel>,
+    pub asks: Vec<PriceLevel>,
+    pub last_price: i64,
+    pub last_scale: u8,
+    pub last_volume: i64,
+    pub is_trial: bool,
+    pub source: u16,
+    pub last_seen: Option<Instant>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct FeedState {
     pub connected: bool,
     pub last_error: Option<String>,
     pub per_source: BTreeMap<u16, SourceStat>,
+    pub per_symbol: BTreeMap<String, SymbolBook>,
 }
 
 impl FeedState {
@@ -42,8 +56,28 @@ impl FeedState {
 
     pub fn apply(&mut self, event: &FeedEvent, now: Instant) {
         match event {
-            FeedEvent::Quote(q) => self.record(q.source, &q.symbol, now),
-            FeedEvent::Trade(t) => self.record(t.source, &t.symbol, now),
+            FeedEvent::Quote(q) => {
+                self.record(q.source, &q.symbol, now);
+                let book = self.per_symbol.entry(q.symbol.clone()).or_default();
+                book.bids = q.bids.clone();
+                book.asks = q.asks.clone();
+                book.last_price = q.last_price;
+                book.last_scale = q.last_scale;
+                book.last_volume = q.last_volume;
+                book.is_trial = q.is_trial;
+                book.source = q.source;
+                book.last_seen = Some(now);
+            }
+            FeedEvent::Trade(t) => {
+                self.record(t.source, &t.symbol, now);
+                let book = self.per_symbol.entry(t.symbol.clone()).or_default();
+                book.last_price = t.price_mantissa;
+                book.last_scale = t.price_scale;
+                book.last_volume = t.volume;
+                book.is_trial = t.is_trial;
+                book.source = t.source;
+                book.last_seen = Some(now);
+            }
         }
     }
 }
@@ -97,19 +131,38 @@ async fn stream_quotes(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kairos_core::encode::encode_quote;
-    use kairos_core::model::{Exchange, Quote, QuoteBoard, Session};
+    use kairos_core::encode::{encode_quote, encode_trade};
+    use kairos_core::model::{Exchange, Quote, QuoteBoard, Session, Trade};
+
+    fn level(mantissa: i64, volume: i64) -> PriceLevel {
+        PriceLevel {
+            price_mantissa: mantissa,
+            price_scale: 2,
+            volume,
+        }
+    }
 
     fn quote(symbol: &str, source: u16) -> Vec<u8> {
+        quote_with_levels(symbol, source, vec![], vec![], 100, 1)
+    }
+
+    fn quote_with_levels(
+        symbol: &str,
+        source: u16,
+        bids: Vec<PriceLevel>,
+        asks: Vec<PriceLevel>,
+        last_price: i64,
+        last_volume: i64,
+    ) -> Vec<u8> {
         encode_quote(&Quote {
             symbol: symbol.to_string(),
             exchange: Exchange::Twse,
             quote_ts_us: 0,
-            bids: vec![],
-            asks: vec![],
-            last_price: 100,
+            bids,
+            asks,
+            last_price,
             last_scale: 2,
-            last_volume: 1,
+            last_volume,
             is_trial: false,
             source,
             seq: 0,
@@ -121,6 +174,104 @@ mod tests {
             simtrade: false,
             underlying_price: 0,
         })
+    }
+
+    fn trade(symbol: &str, source: u16, price_mantissa: i64, volume: i64) -> Vec<u8> {
+        encode_trade(&Trade {
+            symbol: symbol.to_string(),
+            exchange: Exchange::Twse,
+            source,
+            seq: 0,
+            epoch: 0,
+            trade_ts_us: 0,
+            recv_ts_us: 0,
+            price_mantissa,
+            price_scale: 2,
+            volume,
+            is_trial: true,
+            session: Session::Day,
+            trading_date: 0,
+            simtrade: false,
+            underlying_price: 0,
+        })
+    }
+
+    #[test]
+    fn quote_populates_and_replaces_book() {
+        let mut st = FeedState::default();
+        let now = Instant::now();
+        st.apply(
+            &decode_feed_event(&quote_with_levels(
+                "2330",
+                0,
+                vec![level(58000, 5)],
+                vec![level(58100, 3)],
+                58050,
+                2,
+            ))
+            .unwrap(),
+            now,
+        );
+        let b = &st.per_symbol["2330"];
+        assert_eq!(b.bids.len(), 1);
+        assert_eq!(b.asks.len(), 1);
+        assert_eq!(b.last_price, 58050);
+
+        st.apply(
+            &decode_feed_event(&quote_with_levels(
+                "2330",
+                0,
+                vec![level(57000, 1), level(56900, 2)],
+                vec![],
+                57050,
+                4,
+            ))
+            .unwrap(),
+            now,
+        );
+        let b = &st.per_symbol["2330"];
+        assert_eq!(b.bids.len(), 2, "levels replaced, not appended");
+        assert!(b.asks.is_empty());
+        assert_eq!(b.last_price, 57050);
+    }
+
+    #[test]
+    fn trade_updates_last_without_clobbering_levels() {
+        let mut st = FeedState::default();
+        let now = Instant::now();
+        st.apply(
+            &decode_feed_event(&quote_with_levels(
+                "2330",
+                0,
+                vec![level(58000, 5)],
+                vec![level(58100, 3)],
+                58050,
+                2,
+            ))
+            .unwrap(),
+            now,
+        );
+        st.apply(
+            &decode_feed_event(&trade("2330", 0, 58080, 9)).unwrap(),
+            now,
+        );
+        let b = &st.per_symbol["2330"];
+        assert_eq!(b.bids.len(), 1, "trade must not clear book levels");
+        assert_eq!(b.asks.len(), 1);
+        assert_eq!(b.last_price, 58080);
+        assert_eq!(b.last_volume, 9);
+        assert!(b.is_trial);
+    }
+
+    #[test]
+    fn trade_for_unseen_symbol_creates_entry() {
+        let mut st = FeedState::default();
+        let now = Instant::now();
+        st.apply(&decode_feed_event(&trade("6666", 3, 1200, 7)).unwrap(), now);
+        let b = &st.per_symbol["6666"];
+        assert!(b.bids.is_empty());
+        assert_eq!(b.last_price, 1200);
+        assert_eq!(b.source, 3);
     }
 
     #[test]
