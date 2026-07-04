@@ -12,9 +12,19 @@ pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 pub fn enter() -> io::Result<Tui> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    if let Err(e) = execute!(stdout, EnterAlternateScreen) {
+        let _ = disable_raw_mode();
+        return Err(e);
+    }
     install_panic_hook();
-    Terminal::new(CrosstermBackend::new(stdout))
+    match Terminal::new(CrosstermBackend::new(stdout)) {
+        Ok(term) => Ok(term),
+        Err(e) => {
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            let _ = disable_raw_mode();
+            Err(e)
+        }
+    }
 }
 
 pub fn restore() -> io::Result<()> {

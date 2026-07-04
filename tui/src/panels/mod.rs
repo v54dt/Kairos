@@ -1,44 +1,74 @@
+mod book;
 mod feed;
 mod journal;
 mod recorder;
 mod systemd;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::app::{Config, Snapshot};
+use crate::app::{Config, Snapshot, Tab};
 
 const JOURNAL_HEIGHT: u16 = 14;
 
-pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config) {
+pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config, tab: Tab) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(JOURNAL_HEIGHT),
-        ])
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
         .split(frame.area());
 
-    let title = Paragraph::new(Line::from(vec![
+    frame.render_widget(tab_bar(tab), outer[0]);
+
+    match tab {
+        Tab::Overview => render_overview(frame, outer[1], snap, cfg),
+        Tab::FeedsBooks => book::render(frame, outer[1], &snap.feed, cfg),
+    }
+}
+
+fn tab_bar(tab: Tab) -> Paragraph<'static> {
+    let active = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let idle = Style::default().fg(Color::DarkGray);
+    Paragraph::new(Line::from(vec![
         Span::styled(
             "kairos-top",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  health panel   "),
-        Span::styled("[q] quit", Style::default().fg(Color::DarkGray)),
-    ]));
-    frame.render_widget(title, outer[0]);
+        Span::raw("  "),
+        Span::styled(
+            " 1 Overview ",
+            if tab == Tab::Overview { active } else { idle },
+        ),
+        Span::raw(" "),
+        Span::styled(
+            " 2 Feeds & Books ",
+            if tab == Tab::FeedsBooks { active } else { idle },
+        ),
+        Span::raw("   "),
+        Span::styled(
+            "[Tab] switch  [q] quit",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]))
+}
+
+fn render_overview(frame: &mut Frame, area: Rect, snap: &Snapshot, cfg: &Config) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(JOURNAL_HEIGHT)])
+        .split(area);
 
     let mid = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(outer[1]);
+        .split(rows[0]);
 
     systemd::render(frame, mid[0], &snap.systemd);
 
@@ -49,7 +79,7 @@ pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config) {
     feed::render(frame, right[0], &snap.feed, cfg);
     recorder::render(frame, right[1], &snap.recorder, snap.disk_free, cfg);
 
-    journal::render(frame, outer[2], &snap.journal);
+    journal::render(frame, rows[1], &snap.journal);
 }
 
 pub(crate) fn error_line(msg: &str) -> Line<'static> {
