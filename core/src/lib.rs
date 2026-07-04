@@ -3,6 +3,7 @@ pub mod kairos_capnp {
 }
 
 pub mod book;
+pub mod compare;
 pub mod decode;
 pub mod encode;
 pub mod ipc;

@@ -24,6 +24,10 @@ path = "src/bin/recordd.rs"
 name = "kairos-record-verify"
 path = "src/bin/record_verify.rs"
 
+[[bin]]
+name = "kairos-feed-compare"
+path = "src/bin/feed_compare.rs"
+
 [dependencies]
 capnp = "0.20"
 libc = "0.2"
