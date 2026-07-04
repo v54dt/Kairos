@@ -2,6 +2,7 @@
 #define KAIROS_EXEC_SIM_FILL_MODEL_H_
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,9 @@ namespace kairos::exec {
 //     symmetric: trade price > P / best_bid > P strictly. Trade-through fills at
 //     P and are capped by a shared trade-volume budget consumed in time-priority
 //     order; quote-through fills at P capped by the crossing displayed volume.
+//     Displayed liquidity a marketable walk or a quote-through fill consumes is
+//     tracked per price level, so a persistent or re-broadcast book never re-fills
+//     the same lot and multiple orders share one displayed level (never over-fill).
 //
 // (2) kProbQueue. Ports the queue-position concept from hftbacktest
 //     (https://github.com/nkaz001/hftbacktest) ProbQueueModel: an order at a
@@ -47,7 +51,9 @@ namespace kairos::exec {
 //             queue_ahead = max(0, queue_ahead - floor(D_eff * queue_ahead / D_prev))
 //             D_prev      = D_now
 //     An order fills only on a trade (never on a bare book decrease) and only for
-//     the portion of trade volume beyond queue_ahead.
+//     the portion of trade volume beyond queue_ahead. A trade STRICTLY THROUGH the
+//     limit (price < P for a BUY, > P for a SELL) means the whole level was swept:
+//     the order fills in full at P, queue irrelevant (matches hftbacktest).
 //
 // Trial events (試撮 indicative auction matches, is_trial=true) never produce a
 // continuous fill and never advance the queue; they update the cached book only.
@@ -65,6 +71,16 @@ class SymbolFillModel {
   // rests. The caller guarantees a round-lot order for this symbol.
   void Submit(const SimOrder& order);
 
+  // Rest an already-acked order (no ack emitted): walks the current book for the
+  // marketable portion, rests the remainder. Used to hand an opening-auction
+  // unmatched remainder into the continuous session.
+  void PlaceResting(const SimOrder& order);
+
+  // Suspend continuous matching during a call-auction window: while disabled,
+  // OnBook only refreshes the cached book and OnTrade is ignored (no fills, no
+  // queue advancement). Re-enabling resumes from the current book.
+  void SetMatchingEnabled(bool enabled) { matching_ = enabled; }
+
   // Cancels the resting remainder. Returns true if an order with `id` was found.
   bool Cancel(const std::string& id, std::int64_t ts_us);
 
@@ -78,7 +94,9 @@ class SymbolFillModel {
     long displayed_prev = 0;     // kProbQueue only: displayed vol at the level
   };
 
-  void MarketableWalk(SimOrder* order);  // fills against book_, mutates order.filled
+  void MarketableWalk(SimOrder* order);    // fills against book_, mutates order.filled
+  long ConsumeCrossing(const Resting& r);  // kConservative quote-through: take unconsumed liquidity
+  void ReconcileTaken();  // clamp/prune consumed-liquidity maps to the current book
   void EmitFill(Resting* r, long shares, Cents price);
   void DropFilled();
 
@@ -88,7 +106,12 @@ class SymbolFillModel {
   SimFillFn on_fill_;
   SimCancelFn on_cancel_;
   TopOfBook book_;
+  bool matching_ = true;
   std::vector<Resting> resting_;  // insertion order == time priority
+  // kConservative: displayed liquidity already consumed at each price, so a persistent/re-broadcast
+  // book never re-fills the same lot and multiple orders share one displayed level.
+  std::map<Cents, long> ask_taken_;
+  std::map<Cents, long> bid_taken_;
 };
 
 }  // namespace kairos::exec

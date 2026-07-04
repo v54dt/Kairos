@@ -76,7 +76,7 @@ target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
 
 # Offline fill-model library (pure logic, no capnp/socket): conservative + ProbQueue continuous
 # fills and the call-auction engine. Shared by A4 (offline) and B8 (live paper).
-add_library(kairos_sim src/sim/fill_model.cpp src/sim/fill_engine.cpp)
+add_library(kairos_sim src/sim/fill_model.cpp src/sim/fill_engine.cpp src/sim/auction.cpp)
 target_include_directories(kairos_sim PUBLIC ${KAIROS_INC})
 
 add_library(kairos_scenario src/engine/scenario.cpp)
@@ -157,6 +157,10 @@ add_test(NAME test_prob_queue COMMAND test_prob_queue)
 add_executable(test_fill_engine tests/test_fill_engine.cpp)
 target_link_libraries(test_fill_engine PRIVATE kairos_sim)
 add_test(NAME test_fill_engine COMMAND test_fill_engine)
+
+add_executable(test_auction tests/test_auction.cpp)
+target_link_libraries(test_auction PRIVATE kairos_sim)
+add_test(NAME test_auction COMMAND test_auction)
 
 add_executable(test_order_codec tests/test_order_codec.cpp)
 target_link_libraries(test_order_codec PRIVATE kairos_order_codec)

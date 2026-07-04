@@ -1,7 +1,9 @@
 // FillEngine multiplexer: odd-lot/unknown-symbol rejection, per-symbol
 // isolation, partial-fill accounting, cancel semantics, and determinism (same
-// event+order tape twice -> byte-identical fill sequence).
+// event+order tape twice -> byte-identical fill sequence). All timestamps are in
+// the continuous session (10:00 Taipei) so no auction phase is triggered here.
 
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -22,6 +24,11 @@ static int g_failures = 0;
   } while (0)
 
 namespace {
+
+// 10:00:00 Taipei == 02:00:00 UTC == 7200s past UTC midnight; add a sub-second
+// offset so events stay within the continuous session, minute-granular.
+constexpr std::int64_t kCont = 7200LL * 1000000;
+std::int64_t At(long micros) { return kCont + micros; }
 
 struct AckRec {
   std::string id;
@@ -73,6 +80,7 @@ SimOrder Buy(const std::string& id, const std::string& sym, Cents price, long sh
   o.board = board;
   o.price = price;
   o.shares = shares;
+  o.place_ts_us = kCont;
   return o;
 }
 
@@ -84,21 +92,21 @@ FillEngine Make(Capture* c, FillMode mode = FillMode::kConservative) {
       [c](const std::string& id, bool ok) { c->cancels.push_back({id, ok}); });
 }
 
-// Deterministic scripted tape: books, trades, submits, cancels replayed in order.
+// Deterministic scripted tape: books, trades, submits replayed in order.
 Capture RunTape() {
   Capture c;
   FillEngine e = Make(&c, FillMode::kProbQueue);
   e.AddSymbol("2330");
   e.AddSymbol("2317");
-  e.OnBook("2330", Book({{58000, 100}}, {{58100, 100}}), 1);
-  e.OnBook("2317", Book({{12000, 200}}, {{12050, 200}}), 2);
-  e.Submit(Buy("a", "2330", 58000, 50));    // queue_ahead 100
-  e.Submit(Buy("b", "2317", 12000, 300));   // queue_ahead 200
-  e.OnTrade("2330", 58000, 120, 3, false);  // fill a: 120-100=20
-  e.OnTrade("2317", 12000, 260, 4, false);  // fill b: 260-200=60
-  e.OnBook("2330", Book({{58000, 0}}, {{58100, 100}}), 5);
-  e.OnTrade("2330", 58000, 100, 6, false);  // fill a: remaining 30
-  e.OnTrade("2317", 12000, 500, 7, false);  // fill b: remaining
+  e.OnBook("2330", Book({{58000, 100}}, {{58100, 100}}), At(1));
+  e.OnBook("2317", Book({{12000, 200}}, {{12050, 200}}), At(2));
+  e.Submit(Buy("a", "2330", 58000, 50));        // queue_ahead 100
+  e.Submit(Buy("b", "2317", 12000, 300));       // queue_ahead 200
+  e.OnTrade("2330", 58000, 120, At(3), false);  // fill a: 120-100=20
+  e.OnTrade("2317", 12000, 260, At(4), false);  // fill b: 260-200=60
+  e.OnBook("2330", Book({{58000, 0}}, {{58100, 100}}), At(5));
+  e.OnTrade("2330", 58000, 100, At(6), false);  // fill a: remaining 30
+  e.OnTrade("2317", 12000, 500, At(7), false);  // fill b: remaining
   return c;
 }
 
@@ -110,7 +118,7 @@ int main() {
     Capture c;
     FillEngine e = Make(&c);
     e.AddSymbol("2330");
-    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), 1);
+    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), At(1));
     e.Submit(Buy("odd", "2330", 10000, 500, Board::kOddLot));
     CHECK(c.acks.size() == 1 && !c.acks[0].ok);
     CHECK(c.fills.empty());
@@ -131,12 +139,12 @@ int main() {
     FillEngine e = Make(&c);
     e.AddSymbol("2330");
     e.AddSymbol("2317");
-    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), 1);
-    e.OnBook("2317", Book({{20000, 100}}, {{20100, 100}}), 2);
+    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), At(1));
+    e.OnBook("2317", Book({{20000, 100}}, {{20100, 100}}), At(2));
     e.Submit(Buy("a", "2330", 10000, 50));
-    e.OnTrade("2317", 9900, 100, 3, false);  // different symbol
+    e.OnTrade("2317", 9900, 100, At(3), false);  // different symbol
     CHECK(c.fills.empty());
-    e.OnTrade("2330", 9900, 100, 4, false);
+    e.OnTrade("2330", 9900, 100, At(4), false);
     CHECK(c.fills.size() == 1 && c.fills[0].id == "a");
   }
 
@@ -145,15 +153,16 @@ int main() {
     Capture c;
     FillEngine e = Make(&c);
     e.AddSymbol("2330");
-    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), 1);
+    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), At(1));
     e.Submit(Buy("a", "2330", 10000, 100));
-    e.OnTrade("2330", 9900, 30, 2, false);  // partial 30
-    e.OnTrade("2330", 9900, 40, 3, false);  // partial 40
-    e.OnTrade("2330", 9900, 90, 4, false);  // remaining 30 (capped)
+    e.OnTrade("2330", 9900, 30, At(2), false);  // partial 30
+    e.OnTrade("2330", 9900, 40, At(3), false);  // partial 40
+    e.OnTrade("2330", 9900, 90, At(4), false);  // remaining 30 (capped)
     CHECK(c.fills.size() == 3);
-    CHECK(c.fills[0].shares == 30 && c.fills[1].shares == 40 && c.fills[2].shares == 30);
-    // A later trade must not fill the completed order.
-    e.OnTrade("2330", 9900, 100, 5, false);
+    if (c.fills.size() == 3) {
+      CHECK(c.fills[0].shares == 30 && c.fills[1].shares == 40 && c.fills[2].shares == 30);
+    }
+    e.OnTrade("2330", 9900, 100, At(5), false);  // completed order must not fill again
     CHECK(c.fills.size() == 3);
   }
 
@@ -162,11 +171,11 @@ int main() {
     Capture c;
     FillEngine e = Make(&c);
     e.AddSymbol("2330");
-    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), 1);
+    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), At(1));
     e.Submit(Buy("a", "2330", 10000, 100));
-    e.Cancel("a", 2);
+    e.Cancel("a", At(2));
     CHECK(c.cancels.size() == 1 && c.cancels[0].first == "a" && c.cancels[0].second);
-    e.OnTrade("2330", 9900, 100, 3, false);  // no fill after cancel
+    e.OnTrade("2330", 9900, 100, At(3), false);  // no fill after cancel
     CHECK(c.fills.empty());
   }
 
@@ -175,12 +184,12 @@ int main() {
     Capture c;
     FillEngine e = Make(&c);
     e.AddSymbol("2330");
-    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), 1);
+    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), At(1));
     e.Submit(Buy("a", "2330", 10000, 100));
-    e.OnTrade("2330", 9900, 30, 2, false);  // partial 30
-    e.Cancel("a", 3);
+    e.OnTrade("2330", 9900, 30, At(2), false);  // partial 30
+    e.Cancel("a", At(3));
     CHECK(c.cancels.size() == 1 && c.cancels[0].second);
-    e.OnTrade("2330", 9900, 100, 4, false);
+    e.OnTrade("2330", 9900, 100, At(4), false);
     CHECK(c.fills.size() == 1);  // only the pre-cancel partial
   }
 
@@ -189,11 +198,11 @@ int main() {
     Capture c;
     FillEngine e = Make(&c);
     e.AddSymbol("2330");
-    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), 1);
+    e.OnBook("2330", Book({{10000, 100}}, {{10100, 100}}), At(1));
     e.Submit(Buy("a", "2330", 10000, 50));
-    e.OnTrade("2330", 9900, 50, 2, false);
+    e.OnTrade("2330", 9900, 50, At(2), false);
     CHECK(c.fills.size() == 1);
-    e.Cancel("a", 3);
+    e.Cancel("a", At(3));
     CHECK(c.cancels.size() == 1 && !c.cancels[0].second);
   }
 

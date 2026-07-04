@@ -122,6 +122,43 @@ int main() {
     CHECK(c.fills[0].shares == 25 && c.fills[0].price == 10050);
   }
 
+  // Displayed liquidity is consumed: three marketable buys share one 50-lot ask.
+  {
+    Capture c;
+    auto m = Make(&c, FillMode::kConservative);
+    m.OnBook(Book({{9990, 100}}, {{10000, 50}}), 1);
+    m.Submit(Buy("m1", 10000, 50));  // takes all 50
+    m.Submit(Buy("m2", 10000, 50));  // book already consumed -> rests
+    m.Submit(Buy("m3", 10000, 50));  // rests
+    long total = 0;
+    for (auto& f : c.fills) total += f.shares;
+    CHECK(total == 50);  // not 150
+  }
+
+  // Quote-through consumes once: a persistent crossed book never re-fills the lot.
+  {
+    Capture c;
+    auto m = Make(&c, FillMode::kConservative);
+    m.OnBook(Book({{10000, 100}}, {{10100, 100}}), 1);
+    m.Submit(Buy("b1", 10050, 1000));  // inside spread, rests
+    for (int k = 0; k < 5; ++k) m.OnBook(Book({{9950, 100}}, {{10000, 30}}), 2 + k);  // ask 30 held
+    long total = 0;
+    for (auto& f : c.fills) total += f.shares;
+    CHECK(total == 30);  // not 30*5
+    CHECK(m.HasResting());
+  }
+
+  // Two resting buys share one crossing displayed level (time priority, no over-fill).
+  {
+    Capture c;
+    auto m = Make(&c, FillMode::kConservative);
+    m.OnBook(Book({{10000, 100}}, {{10100, 100}}), 1);
+    m.Submit(Buy("b1", 10050, 300));
+    m.Submit(Buy("b2", 10050, 300));
+    m.OnBook(Book({{9950, 100}}, {{10000, 200}}), 2);  // 200 crossing, shared
+    CHECK(c.fills.size() == 1 && c.fills[0].id == "b1" && c.fills[0].shares == 200);
+  }
+
   // SELL symmetry: strictly-above trade fills a resting ask.
   {
     Capture c;
