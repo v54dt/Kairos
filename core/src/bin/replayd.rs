@@ -132,7 +132,12 @@ fn open_source(args: &Args) -> anyhow::Result<KqrSource> {
     }
 }
 
-fn stats_loop(stats: Arc<ReplayStats>, start: Instant, stop: Arc<AtomicBool>) {
+fn stats_loop(
+    stats: Arc<ReplayStats>,
+    remap: HashMap<u32, u32>,
+    start: Instant,
+    stop: Arc<AtomicBool>,
+) {
     while !stop.load(Ordering::Relaxed) {
         let until = Instant::now() + Duration::from_secs(10);
         while Instant::now() < until && !stop.load(Ordering::Relaxed) {
@@ -152,7 +157,10 @@ fn stats_loop(stats: Arc<ReplayStats>, start: Instant, stop: Arc<AtomicBool>) {
         let per_stream: Vec<String> = stats
             .per_stream()
             .iter()
-            .map(|(s, c)| format!("{s}={c}"))
+            .map(|(s, c)| {
+                let out = remap.get(s).copied().unwrap_or(*s);
+                format!("{out}={c}")
+            })
             .collect();
         eprintln!(
             "kairos-replayd: offered={} dropped={} bytes={} replayed={}ms wall={}ms ratio={ratio:.2}x streams[{}]",
@@ -185,9 +193,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     let source = open_source(&args)?;
+    let src_streams = source.stream_ids();
     let out_streams: Vec<u32> = {
-        let mut v: Vec<u32> = source
-            .stream_ids()
+        let mut v: Vec<u32> = src_streams
             .iter()
             .map(|s| args.remap.get(s).copied().unwrap_or(*s))
             .collect();
@@ -218,11 +226,12 @@ fn main() -> anyhow::Result<()> {
         out_streams, args.pace
     );
 
-    let stats = Arc::new(ReplayStats::new(&out_streams));
+    let stats = Arc::new(ReplayStats::new(&src_streams));
     let start = Instant::now();
     let stats_thread = thread::spawn({
         let (stats, stop) = (stats.clone(), stop.clone());
-        move || stats_loop(stats, start, stop)
+        let remap = args.remap.clone();
+        move || stats_loop(stats, remap, start, stop)
     });
 
     let remap = args.remap.clone();
