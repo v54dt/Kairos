@@ -7,8 +7,8 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::{broadcast, mpsc};
 
 use crate::book::Book;
-use crate::decode::{Message, decode_message_bytes};
-use crate::encode::{encode_error, encode_quote, encode_sub_ack};
+use crate::decode::{FeedEvent, Message, decode_message_bytes};
+use crate::encode::{encode_error, encode_quote, encode_sub_ack, encode_trade};
 use crate::metrics::Metrics;
 use crate::model::Quote;
 use crate::subreg::SubRegistry;
@@ -19,7 +19,7 @@ const SNAPSHOT_CHANNEL: usize = 256;
 pub async fn run_server(
     socket_path: &str,
     book: Arc<RwLock<Book>>,
-    quotes: broadcast::Sender<Quote>,
+    quotes: broadcast::Sender<FeedEvent>,
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
     metrics: Arc<Metrics>,
@@ -42,7 +42,7 @@ pub async fn run_server(
 async fn handle_client(
     stream: UnixStream,
     book: Arc<RwLock<Book>>,
-    quotes: broadcast::Sender<Quote>,
+    quotes: broadcast::Sender<FeedEvent>,
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
     metrics: Arc<Metrics>,
@@ -138,7 +138,7 @@ async fn reader_loop(
 
 async fn writer_loop(
     mut write_half: OwnedWriteHalf,
-    mut quotes: broadcast::Receiver<Quote>,
+    mut quotes: broadcast::Receiver<FeedEvent>,
     subs: Arc<Mutex<HashSet<String>>>,
     mut snap_rx: mpsc::Receiver<Vec<u8>>,
     metrics: Arc<Metrics>,
@@ -146,10 +146,16 @@ async fn writer_loop(
     loop {
         tokio::select! {
             live = quotes.recv() => match live {
-                Ok(q) => {
-                    let want = subs.lock().unwrap().contains(&q.symbol);
-                    if want && write_frame(&mut write_half, &encode_quote(&q)).await.is_err() {
-                        break;
+                Ok(event) => {
+                    let want = subs.lock().unwrap().contains(event.symbol());
+                    if want {
+                        let frame = match &event {
+                            FeedEvent::Quote(q) => encode_quote(q),
+                            FeedEvent::Trade(t) => encode_trade(t),
+                        };
+                        if write_frame(&mut write_half, &frame).await.is_err() {
+                            break;
+                        }
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {

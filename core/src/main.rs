@@ -9,11 +9,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use kairos_core::book::Book;
-use kairos_core::decode::decode_quote_bytes;
+use kairos_core::decode::{DecodeError, FeedEvent, decode_feed_event};
 use kairos_core::encode::encode_subscribe;
 use kairos_core::ipc::aeron::{AeronPub, AeronSub, CONTROL_STREAM_ID, DEFAULT_STREAM_ID};
 use kairos_core::metrics::Metrics;
-use kairos_core::model::Quote;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::path::quote_socket_path;
 use kairos_core::uds::server::run_server;
@@ -26,7 +25,7 @@ const CONTROL_HEARTBEAT: Duration = Duration::from_secs(10);
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let book = Arc::new(RwLock::new(Book::new()));
-    let (tx, _) = broadcast::channel::<Quote>(1024);
+    let (tx, _) = broadcast::channel::<FeedEvent>(1024);
     let registry = Arc::new(Mutex::new(SubRegistry::new()));
     let (change_tx, change_rx) = mpsc::channel::<()>();
     let metrics = Arc::new(Metrics::default());
@@ -70,7 +69,11 @@ fn control_publish_loop(registry: Arc<Mutex<SubRegistry>>, change_rx: mpsc::Rece
     }
 }
 
-fn aeron_poll_loop(book: Arc<RwLock<Book>>, tx: broadcast::Sender<Quote>, metrics: Arc<Metrics>) {
+fn aeron_poll_loop(
+    book: Arc<RwLock<Book>>,
+    tx: broadcast::Sender<FeedEvent>,
+    metrics: Arc<Metrics>,
+) {
     let sub = match AeronSub::connect(None, DEFAULT_STREAM_ID) {
         Ok(s) => s,
         Err(e) => {
@@ -82,12 +85,16 @@ fn aeron_poll_loop(book: Arc<RwLock<Book>>, tx: broadcast::Sender<Quote>, metric
     let mut last_err: Option<Instant> = None;
     loop {
         match sub.poll(
-            |data| match decode_quote_bytes(data) {
-                Ok(q) => {
+            |data| match decode_feed_event(data) {
+                Ok(FeedEvent::Quote(q)) => {
                     Metrics::inc(&metrics.quotes_decoded);
                     book.write().unwrap().update(q.clone());
-                    let _ = tx.send(q);
+                    let _ = tx.send(FeedEvent::Quote(q));
                 }
+                Ok(FeedEvent::Trade(t)) => {
+                    let _ = tx.send(FeedEvent::Trade(t));
+                }
+                Err(DecodeError::UnknownVariant) => Metrics::inc(&metrics.unknown_variants),
                 Err(_) => Metrics::inc(&metrics.decode_errors),
             },
             64,
