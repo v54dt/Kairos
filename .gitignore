@@ -26,3 +26,9 @@
 
 # Broker certs for exec (orders)
 /exec/scenario/certs/
+
+# KQR recorder output (kairos-recordd writes here)
+/data/
+
+# Local ops (systemd units + ship script; env-specific, not pushed)
+/ops/
