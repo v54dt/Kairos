@@ -113,6 +113,32 @@ int main() {
     CHECK(!DecodeQuote(bytes.data(), bytes.size(), &tob, &symbol));
   }
 
+  // A Trade and a heartbeat are well-formed non-quote variants: DecodeQuote must
+  // return false without throwing, and each must bump the unknown-variant count.
+  {
+    std::uint64_t before = UnknownVariantCount();
+
+    capnp::MallocMessageBuilder trade_msg;
+    auto tr = trade_msg.initRoot<Envelope>().initTrade();
+    tr.setSymbol("2330");
+    tr.setPriceMantissa(58050);
+    tr.setPriceScale(2);
+    tr.setVolume(3);
+    auto tflat = capnp::messageToFlatArray(trade_msg);
+    auto tbytes = tflat.asBytes();
+    TopOfBook tob;
+    std::string symbol;
+    CHECK(!DecodeQuote(tbytes.begin(), tbytes.size(), &tob, &symbol));
+
+    capnp::MallocMessageBuilder hb_msg;
+    hb_msg.initRoot<Envelope>().setHeartbeat();
+    auto hflat = capnp::messageToFlatArray(hb_msg);
+    auto hbytes = hflat.asBytes();
+    CHECK(!DecodeQuote(hbytes.begin(), hbytes.size(), &tob, &symbol));
+
+    CHECK_EQ(UnknownVariantCount() - before, 2u);
+  }
+
   if (g_failures == 0) {
     std::printf("test_quote_codec: OK\n");
     return 0;

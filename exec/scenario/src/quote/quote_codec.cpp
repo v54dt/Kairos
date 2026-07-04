@@ -3,12 +3,38 @@
 #include <capnp/message.h>
 #include <capnp/serialize.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstring>
+#include <iostream>
 
 #include "kairos.capnp.h"
 
 namespace kairos::exec {
+namespace {
+
+std::atomic<std::uint64_t> g_unknown_variants{0};
+std::atomic<long long> g_unknown_warn_ms{0};
+
+long long SteadyMs() {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+// A well-formed Envelope this consumer does not handle (Trade/subAck/error/...).
+// Count it and warn at most once per 5s, rather than silently dropping it.
+void NoteUnknownVariant() {
+  std::uint64_t total = g_unknown_variants.fetch_add(1, std::memory_order_relaxed) + 1;
+  long long now = SteadyMs();
+  long long last = g_unknown_warn_ms.load(std::memory_order_relaxed);
+  if (now - last > 5000 && g_unknown_warn_ms.compare_exchange_strong(last, now)) {
+    std::cerr << "kairos-exec: ignored " << total
+              << " non-quote envelopes on the quote stream (trade/control frames)\n";
+  }
+}
+
+}  // namespace
 
 Cents MantissaScaleToCents(std::int64_t mantissa, std::uint8_t scale) {
   if (scale <= 2) {
@@ -43,6 +69,7 @@ bool DecodeQuote(const std::uint8_t* data, std::size_t len, TopOfBook* tob, std:
     capnp::FlatArrayMessageReader reader(kj::arrayPtr(words.data(), words.size()));
     auto env = reader.getRoot<Envelope>();
     if (env.which() != Envelope::QUOTE) {
+      NoteUnknownVariant();
       return false;
     }
     auto q = env.getQuote();
@@ -71,5 +98,7 @@ bool DecodeQuote(const std::uint8_t* data, std::size_t len, TopOfBook* tob, std:
     return false;
   }
 }
+
+std::uint64_t UnknownVariantCount() { return g_unknown_variants.load(std::memory_order_relaxed); }
 
 }  // namespace kairos::exec
