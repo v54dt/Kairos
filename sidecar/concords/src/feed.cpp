@@ -72,6 +72,12 @@ long long SteadyMs() {
       .count();
 }
 
+std::int64_t RealtimeUs() {
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
 Exchange MapExchange(concords_sdk::ticker::Exchange e) {
   switch (e) {
     case concords_sdk::ticker::Exchange::kTWSE:
@@ -97,7 +103,7 @@ void FillLevels(std::vector<Level>& out, const concords_sdk::ticker::Quotation& 
   }
 }
 
-Quote ToQuote(const concords_sdk::ticker::Quotation& q, const char* pid) {
+Quote ToQuote(const concords_sdk::ticker::Quotation& q, const char* pid, std::int64_t recv_ts_us) {
   Quote out;
   out.symbol = pid;
   out.exchange = MapExchange(q.GetExchange());
@@ -117,17 +123,41 @@ Quote ToQuote(const concords_sdk::ticker::Quotation& q, const char* pid) {
     out.last_volume = 0;
   }
   out.is_trial = q.IsTrial();
+  out.source = 0;  // concords
+  out.recv_ts_us = recv_ts_us;
+  out.board = QuoteBoard::kRoundLot;  // concords equity feed is round-lot
+  return out;
+}
+
+// One combined Quotation carries a trade when GetTradeSize()>0; split it into an
+// authoritative Trade event alongside the depth-bearing Quote.
+Trade ToTrade(const concords_sdk::ticker::Quotation& q, const char* pid, std::int64_t recv_ts_us) {
+  Trade out;
+  out.symbol = pid;
+  out.exchange = MapExchange(q.GetExchange());
+  out.source = 0;  // concords
+  out.trade_ts_us =
+      std::chrono::duration_cast<std::chrono::microseconds>(q.GetTimestamp().time_since_epoch())
+          .count();
+  out.recv_ts_us = recv_ts_us;
+  concords_sdk::ticker::PriceVolume tr = q.GetTrade(0);
+  out.price_mantissa = static_cast<std::int64_t>(tr.price.digits);
+  out.price_scale = static_cast<std::uint8_t>(tr.price.precision);
+  out.volume = static_cast<std::int64_t>(tr.volume);
+  out.is_trial = q.IsTrial();
   return out;
 }
 
 // Per-connection state captured by value into the ticker callback, so a leaked
 // frozen ticker writes to its own orphaned session instead of racing the rebuilt
-// one's counters / staleness clock.
+// one's counters / staleness clock. The seq/epoch tracker lives here too so a
+// leaked session keeps its own counters.
 struct FeedSession {
   Publisher* publisher = nullptr;
   std::atomic<long long> last_quote_ms{0};
   long long offer_dropped = 0;  // touched only by this session's callback thread
   long long offer_warn_ms = 0;
+  SeqEpochTracker seq_epoch;  // touched only by this session's callback thread
 };
 
 }  // namespace
@@ -203,12 +233,26 @@ int RunFeed(const std::string& config_path) {
     });
     auto sess = std::make_shared<FeedSession>();
     sess->publisher = publisher.get();
+    sess->seq_epoch.Rebuild();  // new feed session -> next epoch, seq resets per symbol
     ticker->SetQuotationCallback([sess](const concords_sdk::ticker::Quotation& q) {
       const char* pid = q.GetProductId();
       if (!pid) return;
       sess->last_quote_ms.store(
           SteadyMs());  // SDK delivered (alive); update before the Aeron offer
-      std::int64_t r = sess->publisher->Offer(EncodeQuoteEnvelope(ToQuote(q, pid)));
+      std::int64_t recv_ts_us = RealtimeUs();
+      std::uint32_t epoch = sess->seq_epoch.Epoch();
+      // Quote and Trade for one symbol share the per-symbol seq space so a
+      // full-stream consumer detects any loss.
+      Quote quote = ToQuote(q, pid, recv_ts_us);
+      quote.seq = sess->seq_epoch.NextSeq(pid);
+      quote.epoch = epoch;
+      std::int64_t r = sess->publisher->Offer(EncodeQuoteEnvelope(quote));
+      if (q.GetTradeSize() > 0) {
+        Trade trade = ToTrade(q, pid, recv_ts_us);
+        trade.seq = sess->seq_epoch.NextSeq(pid);
+        trade.epoch = epoch;
+        sess->publisher->Offer(EncodeTradeEnvelope(trade));
+      }
       if (r < 0) {
         ++sess->offer_dropped;
         long long nowms = SteadyMs();
