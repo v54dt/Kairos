@@ -34,13 +34,16 @@ fn quote(symbol: &str, last: i64) -> Quote {
     }
 }
 
-async fn next_quote(client: &mut UnixStream) -> Quote {
-    let frame = tokio::time::timeout(Duration::from_secs(2), read_frame(client))
+async fn next_frame(client: &mut UnixStream) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(2), read_frame(client))
         .await
         .expect("timed out waiting for frame")
         .unwrap()
-        .unwrap();
-    decode_quote_bytes(&frame).unwrap()
+        .unwrap()
+}
+
+async fn next_quote(client: &mut UnixStream) -> Quote {
+    decode_quote_bytes(&next_frame(client).await).unwrap()
 }
 
 async fn wait_for_socket(socket: &str) {
@@ -84,7 +87,13 @@ async fn uds_snapshot_then_live_push_with_filtering() {
         .await
         .unwrap();
 
-    // snapshot from the book on subscribe
+    // subscribe is acked first (a control frame, not a quote), then the snapshot
+    let ack = next_frame(&mut client).await;
+    assert!(
+        decode_quote_bytes(&ack).is_err(),
+        "expected a subAck before the snapshot"
+    );
+
     let snap = next_quote(&mut client).await;
     assert_eq!(snap.symbol, "2330");
     assert_eq!(snap.last_price, 58000);

@@ -8,7 +8,7 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::book::Book;
 use crate::decode::{Message, decode_message_bytes};
-use crate::encode::encode_quote;
+use crate::encode::{encode_error, encode_quote, encode_sub_ack};
 use crate::metrics::Metrics;
 use crate::model::Quote;
 use crate::subreg::SubRegistry;
@@ -52,7 +52,7 @@ async fn handle_client(
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (read_half, write_half) = stream.into_split();
     let subs = Arc::new(Mutex::new(HashSet::<String>::new()));
-    let (snap_tx, snap_rx) = mpsc::channel::<Quote>(SNAPSHOT_CHANNEL);
+    let (snap_tx, snap_rx) = mpsc::channel::<Vec<u8>>(SNAPSHOT_CHANNEL);
     let writer = tokio::spawn(writer_loop(
         write_half,
         quotes.subscribe(),
@@ -71,7 +71,7 @@ async fn reader_loop(
     mut read_half: OwnedReadHalf,
     book: Arc<RwLock<Book>>,
     subs: Arc<Mutex<HashSet<String>>>,
-    snap_tx: mpsc::Sender<Quote>,
+    snap_tx: mpsc::Sender<Vec<u8>>,
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
 ) {
@@ -91,15 +91,17 @@ async fn reader_loop(
                 if changed {
                     let _ = change_tx.send(());
                 }
+                // Ack the subscription, then push the current snapshot per symbol.
+                let _ = snap_tx.try_send(encode_sub_ack(&syms, true));
                 let snapshots: Vec<Quote> = {
                     let b = book.read().unwrap();
                     syms.iter().filter_map(|sym| b.get(sym).cloned()).collect()
                 };
-                // try_send (not await): drop the snapshot if the channel is full
-                // rather than stalling the reader on a slow consumer — the live
-                // broadcast refreshes it on the symbol's next tick.
+                // try_send (not await): drop the frame if the channel is full rather
+                // than stalling the reader on a slow consumer — the live broadcast
+                // refreshes it on the symbol's next tick.
                 for q in snapshots {
-                    let _ = snap_tx.try_send(q);
+                    let _ = snap_tx.try_send(encode_quote(&q));
                 }
             }
             Ok(Message::Unsubscribe(syms)) => {
@@ -138,7 +140,7 @@ async fn writer_loop(
     mut write_half: OwnedWriteHalf,
     mut quotes: broadcast::Receiver<Quote>,
     subs: Arc<Mutex<HashSet<String>>>,
-    mut snap_rx: mpsc::Receiver<Quote>,
+    mut snap_rx: mpsc::Receiver<Vec<u8>>,
     metrics: Arc<Metrics>,
 ) {
     loop {
@@ -150,12 +152,18 @@ async fn writer_loop(
                         break;
                     }
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => Metrics::inc(&metrics.lagged),
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    Metrics::inc(&metrics.lagged);
+                    let e = encode_error(&format!("lagged {n}"));
+                    if write_frame(&mut write_half, &e).await.is_err() {
+                        break;
+                    }
+                }
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             snap = snap_rx.recv() => match snap {
-                Some(q) => {
-                    if write_frame(&mut write_half, &encode_quote(&q)).await.is_err() {
+                Some(frame) => {
+                    if write_frame(&mut write_half, &frame).await.is_err() {
                         break;
                     }
                 }
