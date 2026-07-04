@@ -88,11 +88,38 @@ bool DecodeQuote(const std::uint8_t* data, std::size_t len, TopOfBook* tob, std:
     t.last_trade = MantissaScaleToCents(q.getLastPrice(), q.getLastScale());
     t.last_vol = static_cast<long>(q.getLastVolume());
     t.is_trial = q.getIsTrial();
+    t.quote_ts_us = q.getQuoteTsUs();
     t.recv_ts = std::chrono::steady_clock::now();
     t.valid = true;
 
     *tob = t;
     *symbol = q.getSymbol().cStr();
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool DecodeTrade(const std::uint8_t* data, std::size_t len, Trade* trade, std::string* symbol) {
+  if (data == nullptr || len == 0 || len % sizeof(capnp::word) != 0) {
+    return false;
+  }
+  try {
+    std::vector<capnp::word> words(len / sizeof(capnp::word));
+    std::memcpy(words.data(), data, len);
+    capnp::FlatArrayMessageReader reader(kj::arrayPtr(words.data(), words.size()));
+    auto env = reader.getRoot<Envelope>();
+    if (env.which() != Envelope::TRADE) return false;
+    auto tr = env.getTrade();
+
+    Trade t;
+    t.price = MantissaScaleToCents(tr.getPriceMantissa(), tr.getPriceScale());
+    t.volume = static_cast<long>(tr.getVolume());
+    t.trade_ts_us = tr.getTradeTsUs();
+    t.is_trial = tr.getIsTrial();
+
+    *trade = t;
+    *symbol = tr.getSymbol().cStr();
     return true;
   } catch (...) {
     return false;
