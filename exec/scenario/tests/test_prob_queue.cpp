@@ -125,6 +125,20 @@ int main() {
     CHECK(c.fills.size() == 2 && c.fills[1].shares == 5);
   }
 
+  // Two orders stacked at the same price share one trade's post-queue volume in
+  // time priority; the trade volume is never double-counted across them.
+  {
+    Capture c;
+    auto m = Make(&c);
+    m.OnBook(Book({{10000, 100}}, {{10100, 100}}), 1);
+    m.Submit(Buy("b1", 10000, 50));   // queue_ahead 100
+    m.Submit(Buy("b2", 10000, 50));   // queue_ahead 100
+    m.OnTrade(10000, 150, 2, false);  // 150-100 = 50 past queue: b1 fills 50, b2 0
+    CHECK(c.fills.size() == 1 && c.fills[0].id == "b1" && c.fills[0].shares == 50);
+    m.OnTrade(10000, 10, 3, false);  // queues now 0: b2 fills 10 (front of queue)
+    CHECK(c.fills.size() == 2 && c.fills[1].id == "b2" && c.fills[1].shares == 10);
+  }
+
   if (g_failures == 0) {
     std::printf("test_prob_queue: OK\n");
     return 0;

@@ -147,10 +147,14 @@ void SymbolFillModel::OnTrade(Cents price, long vol, std::int64_t, bool is_trial
       budget -= f;
     }
   } else {
+    // Volume past the shared queue is a single budget: earlier same-price orders
+    // consume it first (time priority), so stacked own orders never double-fill it.
+    long spill_taken = 0;
     for (auto& r : resting_) {
       if (price != r.order.price) continue;
-      long fillable = std::max(0L, vol - r.queue_ahead);
-      long f = std::min(r.order.remaining(), fillable);
+      long spill = std::max(0L, vol - r.queue_ahead);
+      long f = std::min(r.order.remaining(), std::max(0L, spill - spill_taken));
+      spill_taken += f;
       r.queue_ahead = std::max(0L, r.queue_ahead - vol);
       r.pending_trade_vol += vol;
       EmitFill(&r, f, r.order.price);
