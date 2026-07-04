@@ -14,10 +14,14 @@
 //! - `runner`: `drive_replay` glues a paced iterator to an injected offer sink and
 //!   maintains the stats counters (shared by the daemon and the integration test).
 
+pub mod marker;
 pub mod pacer;
 pub mod runner;
 pub mod source;
 
+pub use marker::{
+    MarkerGuard, default_aeron_dir, ensure_no_active_replay, refuses_live_dir, write_marker,
+};
 pub use pacer::{Clock, Pace, Paced, Pacer, SystemClock};
 pub use runner::{OfferOutcome, ReplayStats, drive_replay};
 pub use source::{KqrSource, ReplayRecord};

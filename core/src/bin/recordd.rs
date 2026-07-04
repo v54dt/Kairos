@@ -3,6 +3,9 @@
 //! path: a crash or slow disk here never affects core or the live feed.
 //!
 //! Usage: kairos-recordd [OUT_DIR] [--aeron-dir DIR] [--streams 1001,1002]
+//!
+//! Refuses to start if a `kairos-replay.marker` for a live replay is present in
+//! the effective Aeron dir, so a replay can never pollute the real archive.
 
 use mimalloc::MiMalloc;
 
@@ -15,7 +18,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use kairos_core::ipc::aeron::resolve_aeron_dir;
 use kairos_core::record::recorder::{Stats, run_stream};
+use kairos_core::replay::{default_aeron_dir, ensure_no_active_replay};
 
 struct Args {
     out_dir: PathBuf,
@@ -77,6 +82,11 @@ fn stats_loop(streams: Vec<i32>, stats: Vec<Arc<Stats>>, stop: Arc<AtomicBool>) 
 
 fn main() -> anyhow::Result<()> {
     let args = parse_args()?;
+    // Same resolution order as the aeron client: --aeron-dir, else $KAIROS_AERON_DIR,
+    // else the live default. Refuse if a replay owns that dir.
+    if let Some(dir) = resolve_aeron_dir(args.aeron_dir.as_deref()).or_else(default_aeron_dir) {
+        ensure_no_active_replay(&dir)?;
+    }
     let stop = Arc::new(AtomicBool::new(false));
     ctrlc::set_handler({
         let stop = stop.clone();
