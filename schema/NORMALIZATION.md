@@ -49,11 +49,15 @@ A new source claims the next free value here in the same PR that adds its sideca
 
 ## 3. seq / epoch (gap detection)
 
-- `epoch :UInt32` — the **feed-session generation**. A process-global counter that
-  starts at 0 (the legacy/no-epoch sentinel) and is bumped to 1 on the first
-  session build, then +1 on **every** ticker/session rebuild: the daily
-  reconnect, the staleness-watchdog rebuild, and any other reconnect. All symbols
-  in a session share the current epoch.
+- `epoch :UInt32` — the **feed-session generation**. 0 is the legacy/no-epoch
+  sentinel. Each ticker/session build assigns a new epoch that is strictly
+  greater than any the process has used **and** than any a prior process could
+  have used: it is a process-global counter **seeded from wall-clock seconds**
+  and advanced on **every** ticker/session rebuild — the initial build, the daily
+  reconnect, the staleness-watchdog rebuild, and any other reconnect. Seeding
+  from the clock matters because `recordd` appends to one dated KQR file across a
+  sidecar restart, so a restarted process must not reuse the previous process's
+  epoch space. All symbols in a session share the current epoch.
 - `seq :UInt64` — a **per-`(source, symbol)`** monotonic counter, +1 for **every**
   emitted wire event for that symbol. Quote and Trade for one symbol share a
   single seq space, so a full-stream consumer (A4/A5) sees a contiguous run and
@@ -69,8 +73,11 @@ A consumer that only reads `Quote` (ignoring `Trade`) will see a **non-contiguou
 seq (the Trade seqs are missing). This is intentional: only a full-stream consumer
 that reads both variants should run gap detection. Do not false-alarm on it.
 
-A fubon/shioaji sidecar MUST implement the same tracker: bump `epoch` on every
-(re)connect, assign the next per-symbol `seq` to each emitted Quote/Trade.
+A fubon/shioaji sidecar MUST implement the same tracker: assign a fresh epoch
+(process-global, wall-clock-seeded, strictly increasing) on every (re)connect and
+process (re)start, and assign the next per-symbol `seq` to each emitted
+Quote/Trade. Epoch values need not match across sources — the compare tool tracks
+seq gaps per source and does not align epochs across feeds.
 
 ## 4. Timestamps
 
@@ -202,7 +209,8 @@ Equity sidecars leave all four at their defaults.
 - `board` = `roundLot` (equity round-lot feed); `session`/`tradingDate`/`simtrade`/
   `underlyingPrice` left default.
 - `isTrial` from `Quotation::IsTrial()`.
-- `epoch` bumped in the ticker `build()`; `seq` per symbol per emitted event.
+- `epoch` assigned in the ticker `build()` (process-global, wall-clock-seeded);
+  `seq` per symbol per emitted event.
 
 ### fubon (富邦 neo), source 1 — TBD
 

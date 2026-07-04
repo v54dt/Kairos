@@ -3,7 +3,9 @@
 #include <capnp/message.h>
 #include <capnp/serialize.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 
 #include "kairos.capnp.h"
@@ -15,6 +17,23 @@ namespace {
 // per-session tracker must not restart the epoch (that would make a benign
 // rebuild indistinguishable from data loss). See schema/NORMALIZATION.md §3.
 std::atomic<std::uint32_t> g_epoch{0};
+
+// Advance to the next epoch, never below wall-clock seconds. recordd appends to
+// one dated KQR file across a sidecar restart, so a restarted process must not
+// reuse the previous process's epoch space; seeding from the clock keeps each
+// session's epoch strictly greater than any a prior process could have used.
+std::uint32_t NextEpoch() {
+  auto now = static_cast<std::uint32_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  std::uint32_t prev = g_epoch.load(std::memory_order_relaxed);
+  std::uint32_t next;
+  do {
+    next = std::max<std::uint32_t>(prev + 1, now);
+  } while (!g_epoch.compare_exchange_weak(prev, next, std::memory_order_relaxed));
+  return next;
+}
 
 ::Exchange CapExchange(Exchange e) {
   switch (e) {
@@ -120,7 +139,7 @@ std::vector<std::uint8_t> EncodeTradeEnvelope(const Trade& t) {
 }
 
 std::uint32_t SeqEpochTracker::Rebuild() {
-  epoch_ = g_epoch.fetch_add(1, std::memory_order_relaxed) + 1;
+  epoch_ = NextEpoch();
   seq_.clear();
   return epoch_;
 }

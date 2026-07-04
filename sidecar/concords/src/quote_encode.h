@@ -70,16 +70,18 @@ std::vector<std::uint8_t> EncodeTradeEnvelope(const Trade& t);
 
 // Assigns per-(symbol) monotonic seq numbers within a feed session and bumps the
 // epoch on every session rebuild. The epoch is process-global (shared by every
-// FeedSession), so a fresh per-session tracker keeps advancing it rather than
-// restarting at 1. seq resets per symbol on a rebuild; a gap within one epoch
-// means data loss, a reset accompanied by an epoch bump is a benign session
-// rebuild. Not thread-safe: one tracker lives inside one FeedSession and its seq
-// map is touched only by that session's callback thread.
+// FeedSession) and seeded from wall-clock seconds, so a fresh per-session tracker
+// -- and even a restarted process appending to the same KQR file -- keeps
+// advancing it rather than reusing a prior epoch. seq resets per symbol on a
+// rebuild; a gap within one epoch means data loss, a reset accompanied by an
+// epoch bump is a benign session rebuild. Not thread-safe: one tracker lives
+// inside one FeedSession and its seq map is touched only by that session's
+// callback thread.
 class SeqEpochTracker {
  public:
-  // Advance the process-global feed-session generation (first rebuild in the
-  // process -> epoch 1) and clear this tracker's per-symbol seq counters.
-  // Returns the new epoch.
+  // Advance the process-global feed-session generation (strictly increasing,
+  // never below wall-clock seconds) and clear this tracker's per-symbol seq
+  // counters. Returns the new epoch.
   std::uint32_t Rebuild();
   // Next seq for `symbol` in the current epoch (first call for a symbol -> 1).
   std::uint64_t NextSeq(const std::string& symbol);
