@@ -86,3 +86,4 @@
 
 pub mod hft;
 pub mod npy;
+pub mod parquet;

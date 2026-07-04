@@ -40,6 +40,8 @@ rusteron-client = { version = "0.1", features = ["static"] }
 rusteron-media-driver = { version = "0.1", features = ["static"] }
 anyhow = "1"
 ctrlc = { version = "3", features = ["termination"] }
+arrow = { version = "59", default-features = false }
+parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal"] }
 
 [build-dependencies]
