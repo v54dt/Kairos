@@ -2,10 +2,10 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use kairos_core::book::Book;
-use kairos_core::decode::decode_quote_bytes;
+use kairos_core::decode::{FeedEvent, decode_quote_bytes};
 use kairos_core::encode::encode_subscribe;
 use kairos_core::metrics::Metrics;
-use kairos_core::model::{Exchange, PriceLevel, Quote};
+use kairos_core::model::{Exchange, PriceLevel, Quote, QuoteBoard, Session, Trade};
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::frame::{read_frame, write_frame};
 use kairos_core::uds::server::run_server;
@@ -31,6 +31,35 @@ fn quote(symbol: &str, last: i64) -> Quote {
         last_scale: 2,
         last_volume: 1,
         is_trial: false,
+        source: 0,
+        seq: 0,
+        epoch: 0,
+        recv_ts_us: 0,
+        board: QuoteBoard::RoundLot,
+        session: Session::Unknown,
+        trading_date: 0,
+        simtrade: false,
+        underlying_price: 0,
+    }
+}
+
+fn trade(symbol: &str, price: i64) -> Trade {
+    Trade {
+        symbol: symbol.to_owned(),
+        exchange: Exchange::Twse,
+        source: 0,
+        seq: 0,
+        epoch: 0,
+        trade_ts_us: 0,
+        recv_ts_us: 0,
+        price_mantissa: price,
+        price_scale: 2,
+        volume: 5,
+        is_trial: false,
+        session: Session::Unknown,
+        trading_date: 0,
+        simtrade: false,
+        underlying_price: 0,
     }
 }
 
@@ -46,6 +75,13 @@ async fn next_quote(client: &mut UnixStream) -> Quote {
     decode_quote_bytes(&next_frame(client).await).unwrap()
 }
 
+fn decode_trade_frame(frame: &[u8]) -> Trade {
+    match kairos_core::decode::decode_feed_event(frame).unwrap() {
+        FeedEvent::Trade(t) => t,
+        other => panic!("expected a trade frame, got {other:?}"),
+    }
+}
+
 async fn wait_for_socket(socket: &str) {
     for _ in 0..100 {
         if std::path::Path::new(socket).exists() {
@@ -59,7 +95,7 @@ async fn wait_for_socket(socket: &str) {
 async fn uds_snapshot_then_live_push_with_filtering() {
     let socket = format!("/tmp/kairos-uds-test-{}.sock", std::process::id());
     let book = Arc::new(RwLock::new(Book::new()));
-    let (tx, _rx) = broadcast::channel::<Quote>(16);
+    let (tx, _rx) = broadcast::channel::<FeedEvent>(16);
     let registry = Arc::new(Mutex::new(SubRegistry::new()));
     let (change_tx, _change_rx) = std::sync::mpsc::channel::<()>();
 
@@ -99,12 +135,21 @@ async fn uds_snapshot_then_live_push_with_filtering() {
     assert_eq!(snap.last_price, 58000);
 
     // live: 2317 is not subscribed (filtered), 2330 is delivered
-    tx.send(quote("2317", 11000)).unwrap();
-    tx.send(quote("2330", 58100)).unwrap();
+    tx.send(FeedEvent::Quote(quote("2317", 11000))).unwrap();
+    tx.send(FeedEvent::Quote(quote("2330", 58100))).unwrap();
 
     let live = next_quote(&mut client).await;
     assert_eq!(live.symbol, "2330");
     assert_eq!(live.last_price, 58100);
+
+    // a Trade for the subscribed symbol reaches the client on the same stream;
+    // an unsubscribed symbol's Trade is filtered out.
+    tx.send(FeedEvent::Trade(trade("2317", 11050))).unwrap();
+    tx.send(FeedEvent::Trade(trade("2330", 58150))).unwrap();
+    let tr = decode_trade_frame(&next_frame(&mut client).await);
+    assert_eq!(tr.symbol, "2330");
+    assert_eq!(tr.price_mantissa, 58150);
+    assert_eq!(tr.volume, 5);
 
     let _ = std::fs::remove_file(&socket);
 }
@@ -113,7 +158,7 @@ async fn uds_snapshot_then_live_push_with_filtering() {
 async fn subscribe_refcounts_and_disconnect_releases() {
     let socket = format!("/tmp/kairos-uds-reg-test-{}.sock", std::process::id());
     let book = Arc::new(RwLock::new(Book::new()));
-    let (tx, _rx) = broadcast::channel::<Quote>(16);
+    let (tx, _rx) = broadcast::channel::<FeedEvent>(16);
     let registry = Arc::new(Mutex::new(SubRegistry::new()));
     let (change_tx, change_rx) = std::sync::mpsc::channel::<()>();
 
