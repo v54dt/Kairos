@@ -32,6 +32,10 @@ path = "src/bin/replayd.rs"
 name = "kairos-feed-compare"
 path = "src/bin/feed_compare.rs"
 
+[[bin]]
+name = "kairos-kqr-export"
+path = "src/bin/kqr_export.rs"
+
 [dependencies]
 capnp = "0.20"
 libc = "0.2"
