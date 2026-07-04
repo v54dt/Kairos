@@ -27,6 +27,7 @@ path = "src/bin/record_verify.rs"
 [dependencies]
 capnp = "0.20"
 libc = "0.2"
+mimalloc = "0.1"
 rusteron-client = { version = "0.1", features = ["static"] }
 rusteron-media-driver = { version = "0.1", features = ["static"] }
 anyhow = "1"

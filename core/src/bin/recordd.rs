@@ -4,6 +4,11 @@
 //!
 //! Usage: kairos-recordd [OUT_DIR] [--aeron-dir DIR] [--streams 1001,1002]
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

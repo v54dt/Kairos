@@ -5,6 +5,11 @@
 //!   kairos-record-verify <FILE.kqr>
 //!   zstd -dc FILE.kqr.zst | kairos-record-verify -
 
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use std::fs::File;
 use std::io::{self, BufReader, Read};
 
