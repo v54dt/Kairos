@@ -169,6 +169,10 @@ add_executable(test_engine_logic tests/test_engine_logic.cpp)
 target_include_directories(test_engine_logic PRIVATE ${KAIROS_INC})
 add_test(NAME test_engine_logic COMMAND test_engine_logic)
 
+add_executable(test_engine tests/test_engine.cpp)
+target_link_libraries(test_engine PRIVATE kairos_engine)
+add_test(NAME test_engine COMMAND test_engine)
+
 add_executable(test_event tests/test_event.cpp)
 target_include_directories(test_event PRIVATE ${KAIROS_INC})
 add_test(NAME test_event COMMAND test_event)
