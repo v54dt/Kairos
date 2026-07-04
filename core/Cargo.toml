@@ -25,6 +25,10 @@ name = "kairos-record-verify"
 path = "src/bin/record_verify.rs"
 
 [[bin]]
+name = "kairos-replayd"
+path = "src/bin/replayd.rs"
+
+[[bin]]
 name = "kairos-feed-compare"
 path = "src/bin/feed_compare.rs"
 
