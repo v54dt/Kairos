@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "order_codec.h"
-#include "socket_path.h"
 #include "tw_market.h"
 
 namespace kairos::exec {
@@ -50,18 +49,17 @@ constexpr int kMarketCloseHhmm = 1330;  // TWSE regular session close; hard stop
 
 }  // namespace
 
-ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink)
-    : s_(std::move(scenario)), backend_(backend), sink_(sink) {
+ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink,
+                               QuoteSource* quotes)
+    : s_(std::move(scenario)), backend_(backend), sink_(sink), quotes_(quotes) {
   oid_prefix_ = "k" + std::to_string(::getpid());
   std::string sym = s_.symbol;
-  quotes_ =
-      std::make_unique<UdsQuoteClient>(QuoteSocketPath(), std::vector<std::string>{sym},
-                                       [this, sym](const std::string& s, const TopOfBook& tob) {
-                                         if (s == sym) {
-                                           book_.Update(tob);
-                                           cv_.notify_all();
-                                         }
-                                       });
+  quotes_->SetCallback([this, sym](const std::string& s, const TopOfBook& tob) {
+    if (s == sym) {
+      book_.Update(tob);
+      cv_.notify_all();
+    }
+  });
   // Restart-safe accounting: replay today's fills so the budget isn't re-bought,
   // then append to the same journal.
   if (!s_.journal_dir.empty()) {

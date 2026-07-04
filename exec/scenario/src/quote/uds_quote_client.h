@@ -2,27 +2,27 @@
 #define KAIROS_EXEC_UDS_QUOTE_CLIENT_H_
 
 #include <atomic>
-#include <functional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "quote_book.h"
+#include "quote_source.h"
 #include "socket_path.h"
 
 namespace kairos::exec {
 
 // Connects to the core quote UDS, subscribes the given symbols, and delivers
 // each decoded quote via the callback. Reconnects with backoff on drop.
-class UdsQuoteClient {
+class UdsQuoteClient : public QuoteSource {
  public:
-  using QuoteFn = std::function<void(const std::string& symbol, const TopOfBook&)>;
+  UdsQuoteClient(std::string socket_path, std::vector<std::string> symbols, QuoteFn on_quote = {});
+  ~UdsQuoteClient() override;
 
-  UdsQuoteClient(std::string socket_path, std::vector<std::string> symbols, QuoteFn on_quote);
-  ~UdsQuoteClient();
-
-  void Start();
-  void Stop();
+  void SetCallback(QuoteFn on_quote) override { on_quote_ = std::move(on_quote); }
+  void Start() override;
+  void Stop() override;
 
  private:
   void Run();

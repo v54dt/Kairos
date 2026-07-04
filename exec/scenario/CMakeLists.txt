@@ -83,8 +83,8 @@ target_include_directories(kairos_order_journal PUBLIC ${KAIROS_INC})
 
 add_library(kairos_engine src/engine/engine.cpp)
 target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
-target_link_libraries(kairos_engine PUBLIC kairos_uds kairos_scenario kairos_dashboard
-                                           kairos_order_journal)
+target_link_libraries(kairos_engine PUBLIC kairos_scenario kairos_dashboard kairos_order_journal
+                                           pthread)
 
 # Live order backend: real concords StockClient when the stock SDK is present in exec/scenario/lib,
 # otherwise a stub so --live reports "no broker SDK". CI has no SDK and builds the stub.
@@ -112,7 +112,8 @@ add_executable(kairos_quote_tap src/bin/quote_tap_main.cpp)
 target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
-target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_notify)
+target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_notify
+                                                     kairos_uds)
 
 add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
