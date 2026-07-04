@@ -59,11 +59,12 @@ fn stats_loop(streams: Vec<i32>, stats: Vec<Arc<Stats>>, stop: Arc<AtomicBool>) 
         }
         for (sid, s) in streams.iter().zip(&stats) {
             eprintln!(
-                "kairos-recordd: stream {sid} records={} bytes={} drops={} write_errs={}",
+                "kairos-recordd: stream {sid} records={} bytes={} drops={} write_errs={} disk_free_mib={}",
                 s.records.load(Ordering::Relaxed),
                 s.bytes.load(Ordering::Relaxed),
                 s.drops.load(Ordering::Relaxed),
                 s.write_errs.load(Ordering::Relaxed),
+                s.disk_free.load(Ordering::Relaxed) / (1024 * 1024),
             );
         }
     }

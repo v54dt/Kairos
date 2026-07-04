@@ -323,6 +323,38 @@ pub fn recover_file(path: &Path) -> Result<u64, RecordError> {
     Ok(valid_prefix_len(&data)? as u64)
 }
 
+/// Summary of a verified KQR stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifySummary {
+    pub stream_id: u32,
+    pub records: u64,
+    pub bytes: u64, // total payload bytes
+    pub first_recv_ts_us: Option<i64>,
+    pub last_recv_ts_us: Option<i64>,
+}
+
+/// Reads and validates an entire KQR stream — header plus every record's frame
+/// and CRC — returning a summary, or the first error. Used by the ship-time
+/// verify step (e.g. `zstd -dc file.kqr.zst | kairos-record-verify -`).
+pub fn verify_reader<R: Read>(r: R) -> Result<VerifySummary, RecordError> {
+    let (header, reader) = RecordReader::open(r)?;
+    let mut s = VerifySummary {
+        stream_id: header.stream_id,
+        records: 0,
+        bytes: 0,
+        first_recv_ts_us: None,
+        last_recv_ts_us: None,
+    };
+    for rec in reader {
+        let rec = rec?;
+        s.records += 1;
+        s.bytes += rec.payload.len() as u64;
+        s.first_recv_ts_us.get_or_insert(rec.recv_ts_us);
+        s.last_recv_ts_us = Some(rec.recv_ts_us);
+    }
+    Ok(s)
+}
+
 /// Archive path for a stream on a given day:
 /// `<base>/kqr/<yyyymmdd>/s<stream>-<yyyymmdd>.kqr`.
 pub fn record_path(base_dir: &Path, stream_id: u32, yyyymmdd: &str) -> PathBuf {
@@ -444,5 +476,24 @@ mod tests {
     fn path_layout() {
         let p = record_path(Path::new("data"), 1001, "20260704");
         assert_eq!(p, Path::new("data/kqr/20260704/s1001-20260704.kqr"));
+    }
+
+    #[test]
+    fn verify_reader_summarizes_and_catches_corruption() {
+        let buf = build(&[(10, b"hello"), (20, b"world!!")]);
+        let s = verify_reader(&buf[..]).unwrap();
+        assert_eq!(s.stream_id, 1001);
+        assert_eq!(s.records, 2);
+        assert_eq!(s.bytes, 12);
+        assert_eq!(s.first_recv_ts_us, Some(10));
+        assert_eq!(s.last_recv_ts_us, Some(20));
+
+        let mut bad = buf.clone();
+        let last = bad.len() - 1;
+        bad[last] ^= 0xFF;
+        assert!(matches!(
+            verify_reader(&bad[..]),
+            Err(RecordError::Crc { .. })
+        ));
     }
 }

@@ -20,6 +20,10 @@ path = "src/bin/uds_client.rs"
 name = "kairos-recordd"
 path = "src/bin/recordd.rs"
 
+[[bin]]
+name = "kairos-record-verify"
+path = "src/bin/record_verify.rs"
+
 [dependencies]
 capnp = "0.20"
 libc = "0.2"

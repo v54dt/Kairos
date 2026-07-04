@@ -5,7 +5,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufWriter, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
@@ -20,6 +20,10 @@ const CHANNEL_CAP: usize = 65_536;
 const FSYNC_BYTES: usize = 4 * 1024 * 1024;
 const FSYNC_INTERVAL: Duration = Duration::from_secs(5);
 const POLL_FRAGMENT_LIMIT: usize = 256;
+const DISK_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// Below this free space on the output filesystem, pause recording (drop +
+/// count) instead of filling the disk; resumes when space returns.
+const DISK_FLOOR_BYTES: u64 = 1024 * 1024 * 1024; // 1 GiB
 
 #[derive(Default)]
 pub struct Stats {
@@ -27,6 +31,19 @@ pub struct Stats {
     pub bytes: AtomicU64,
     pub drops: AtomicU64,
     pub write_errs: AtomicU64,
+    pub disk_free: AtomicU64, // 0 = unknown
+}
+
+/// Free bytes available on the filesystem holding `path`, or None if it can't be
+/// queried (e.g. the directory does not exist yet).
+fn disk_free_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return None;
+    }
+    Some(st.f_bavail.saturating_mul(st.f_frsize))
 }
 
 /// CLOCK_REALTIME microseconds — comparable to the broker `quote_ts_us` carried
@@ -144,8 +161,36 @@ impl Rotator {
 
 /// Drains the channel to dated files until all senders drop (recorder stopping).
 fn write_loop(rx: Receiver<(i64, Vec<u8>)>, out_dir: PathBuf, stream_id: i32, stats: Arc<Stats>) {
-    let mut rot = Rotator::new(out_dir, stream_id);
+    let mut rot = Rotator::new(out_dir.clone(), stream_id);
+    let mut last_disk_check = Instant::now();
+    let mut paused = false;
+    stats
+        .disk_free
+        .store(disk_free_bytes(&out_dir).unwrap_or(0), Ordering::Relaxed);
     while let Ok((ts, bytes)) = rx.recv() {
+        if last_disk_check.elapsed() >= DISK_CHECK_INTERVAL {
+            last_disk_check = Instant::now();
+            if let Some(free) = disk_free_bytes(&out_dir) {
+                stats.disk_free.store(free, Ordering::Relaxed);
+                let now_paused = free < DISK_FLOOR_BYTES;
+                if now_paused != paused {
+                    paused = now_paused;
+                    eprintln!(
+                        "kairos-recordd: stream {stream_id} recording {} (disk_free={} MiB)",
+                        if paused {
+                            "PAUSED — disk low"
+                        } else {
+                            "resumed"
+                        },
+                        free / (1024 * 1024)
+                    );
+                }
+            }
+        }
+        if paused {
+            stats.drops.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
         match rot.write(ts, &bytes) {
             Ok(n) => {
                 stats.records.fetch_add(1, Ordering::Relaxed);
@@ -268,6 +313,13 @@ mod tests {
         let p = std::env::temp_dir().join(format!("kairos-rec-{}-{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&p);
         p
+    }
+
+    #[test]
+    fn disk_free_reports_positive_for_existing_dir() {
+        let free = disk_free_bytes(&std::env::temp_dir());
+        assert!(free.map(|b| b > 0).unwrap_or(false));
+        assert_eq!(disk_free_bytes(Path::new("/no/such/path/here")), None);
     }
 
     #[test]
