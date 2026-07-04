@@ -60,6 +60,33 @@ pub fn encode_subscribe(symbols: &[&str]) -> Vec<u8> {
     buf
 }
 
+pub fn encode_sub_ack(symbols: &[String], ok: bool) -> Vec<u8> {
+    let mut msg = Builder::new_default();
+    {
+        let env = msg.init_root::<kairos_capnp::envelope::Builder>();
+        let mut ack = env.init_sub_ack();
+        ack.set_ok(ok);
+        let mut list = ack.init_symbols(symbols.len() as u32);
+        for (i, s) in symbols.iter().enumerate() {
+            list.set(i as u32, s.as_str());
+        }
+    }
+    let mut buf = Vec::new();
+    serialize::write_message(&mut buf, &msg).unwrap();
+    buf
+}
+
+pub fn encode_error(text: &str) -> Vec<u8> {
+    let mut msg = Builder::new_default();
+    {
+        let mut env = msg.init_root::<kairos_capnp::envelope::Builder>();
+        env.set_error(text);
+    }
+    let mut buf = Vec::new();
+    serialize::write_message(&mut buf, &msg).unwrap();
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +138,36 @@ mod tests {
                 assert_eq!(syms, vec!["2330".to_string(), "2317".to_string()]);
             }
             other => panic!("expected subscribe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sub_ack_roundtrip() {
+        let bytes = encode_sub_ack(&["2330".to_string(), "0050".to_string()], true);
+        let reader = serialize::read_message(&mut &bytes[..], ReaderOptions::new()).unwrap();
+        let env = reader.get_root::<kairos_capnp::envelope::Reader>().unwrap();
+        match env.which().unwrap() {
+            kairos_capnp::envelope::Which::SubAck(a) => {
+                let a = a.unwrap();
+                assert!(a.get_ok());
+                let syms = a.get_symbols().unwrap();
+                assert_eq!(syms.len(), 2);
+                assert_eq!(syms.get(0).unwrap().to_string().unwrap(), "2330");
+            }
+            _ => panic!("expected subAck"),
+        }
+    }
+
+    #[test]
+    fn error_roundtrip() {
+        let bytes = encode_error("lagged 5");
+        let reader = serialize::read_message(&mut &bytes[..], ReaderOptions::new()).unwrap();
+        let env = reader.get_root::<kairos_capnp::envelope::Reader>().unwrap();
+        match env.which().unwrap() {
+            kairos_capnp::envelope::Which::Error(e) => {
+                assert_eq!(e.unwrap().to_string().unwrap(), "lagged 5");
+            }
+            _ => panic!("expected error"),
         }
     }
 }
