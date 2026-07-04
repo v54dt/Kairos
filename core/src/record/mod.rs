@@ -14,6 +14,8 @@
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
+pub mod recorder;
+
 pub const MAGIC: [u8; 4] = *b"KQR1";
 pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 32;
@@ -178,6 +180,16 @@ impl<W: Write> RecordWriter<W> {
     pub fn create(mut inner: W, header: &FileHeader) -> io::Result<Self> {
         inner.write_all(&header.encode())?;
         Ok(Self { inner })
+    }
+
+    /// Wrap a writer already positioned at the end of a valid KQR file (header
+    /// present); used to append after a same-day restart.
+    pub fn from_writer(inner: W) -> Self {
+        Self { inner }
+    }
+
+    pub fn get_ref(&self) -> &W {
+        &self.inner
     }
 
     pub fn append(&mut self, recv_ts_us: i64, payload: &[u8]) -> io::Result<()> {

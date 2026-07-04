@@ -16,12 +16,17 @@ path = "src/bin/driver.rs"
 name = "kairos-uds-client"
 path = "src/bin/uds_client.rs"
 
+[[bin]]
+name = "kairos-recordd"
+path = "src/bin/recordd.rs"
+
 [dependencies]
 capnp = "0.20"
 libc = "0.2"
 rusteron-client = { version = "0.1", features = ["static"] }
 rusteron-media-driver = { version = "0.1", features = ["static"] }
 anyhow = "1"
+ctrlc = { version = "3", features = ["termination"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "signal"] }
 
 [build-dependencies]

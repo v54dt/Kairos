@@ -215,6 +215,7 @@ dependencies = [
  "anyhow",
  "capnp",
  "capnpc",
+ "ctrlc",
  "libc",
  "rusteron-client",
  "rusteron-media-driver",
