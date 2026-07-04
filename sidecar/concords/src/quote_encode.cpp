@@ -3,12 +3,18 @@
 #include <capnp/message.h>
 #include <capnp/serialize.h>
 
+#include <atomic>
 #include <cstring>
 
 #include "kairos.capnp.h"
 
 namespace kairos::concords {
 namespace {
+
+// Feed-session generation, shared by every FeedSession in the process: a fresh
+// per-session tracker must not restart the epoch (that would make a benign
+// rebuild indistinguishable from data loss). See schema/NORMALIZATION.md §3.
+std::atomic<std::uint32_t> g_epoch{0};
 
 ::Exchange CapExchange(Exchange e) {
   switch (e) {
@@ -114,7 +120,7 @@ std::vector<std::uint8_t> EncodeTradeEnvelope(const Trade& t) {
 }
 
 std::uint32_t SeqEpochTracker::Rebuild() {
-  ++epoch_;
+  epoch_ = g_epoch.fetch_add(1, std::memory_order_relaxed) + 1;
   seq_.clear();
   return epoch_;
 }
