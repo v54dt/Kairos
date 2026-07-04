@@ -1,0 +1,25 @@
+[package]
+name = "kairos-tui"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "kairos-top"
+path = "src/main.rs"
+
+[dependencies]
+kairos-core = { path = "../core" }
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+anyhow = "1"
+libc = "0.2"
+futures = "0.3"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "io-util",
+    "time",
+    "process",
+    "sync",
+] }
