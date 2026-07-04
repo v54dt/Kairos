@@ -24,6 +24,17 @@ use crate::model::{Exchange, Quote, QuoteBoard, Session, Trade};
 const ROW_GROUP_ROWS: usize = 64 * 1024;
 const LEVELS: usize = 5;
 
+/// Count the depth levels that are actually populated (both price and volume
+/// non-zero), matching the padding-skip rule the hft path uses. A trailing
+/// zero-valued level is padding, not a real 0-price level.
+fn populated_levels(levels: &[crate::model::PriceLevel]) -> u8 {
+    levels
+        .iter()
+        .take(LEVELS)
+        .filter(|l| l.price_mantissa != 0 && l.volume != 0)
+        .count() as u8
+}
+
 fn exchange_str(e: Exchange) -> &'static str {
     match e {
         Exchange::Twse => "twse",
@@ -129,8 +140,8 @@ impl QuoteRow {
             trading_date: q.trading_date,
             underlying_price: q.underlying_price,
             price_scale: scale.unwrap_or(0),
-            n_bids: q.bids.len().min(LEVELS) as u8,
-            n_asks: q.asks.len().min(LEVELS) as u8,
+            n_bids: populated_levels(&q.bids),
+            n_asks: populated_levels(&q.asks),
             bid_px,
             bid_vol,
             ask_px,
@@ -605,6 +616,25 @@ mod tests {
         assert_eq!(vol.value(0), 3);
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn n_bids_counts_populated_levels_not_padding() {
+        let mut q = sample_quote();
+        q.bids = vec![
+            PriceLevel {
+                price_mantissa: 58000,
+                price_scale: 2,
+                volume: 100,
+            },
+            PriceLevel {
+                price_mantissa: 0,
+                price_scale: 2,
+                volume: 0,
+            },
+        ];
+        let (row, _) = QuoteRow::from_quote(&q, 0);
+        assert_eq!(row.n_bids, 1);
     }
 
     #[test]
