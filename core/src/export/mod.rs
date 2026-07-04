@@ -79,10 +79,13 @@
 //! carries no aggressor side, so no BUY/SELL flag is set — queue/fill models that
 //! need trade side will not get it in `_v1`).
 //!
-//! Per symbol, events are written in a total order `(exch_ts, local_ts, seq,
-//! insertion_index)` so a re-run is byte-identical. One `.npy` per (symbol, day)
-//! is written under `<out>/hft/`; an operator can `np.savez` them into a single
-//! `.npz` if a tool ever strictly requires that.
+//! Per symbol, events are written in a total order `(local_ts, exch_ts, seq,
+//! insertion_index)`. `local_ts` is PRIMARY because hftbacktest replays the feed
+//! against a monotonic local clock (its `validate_data`/`correct_local_timestamp`
+//! contract rejects a decreasing `local_ts`); the remaining keys keep a re-run
+//! byte-identical. One `.npy` per (symbol, day) is written under `<out>/hft/`; an
+//! operator can `np.savez` them into a single `.npz` if a tool ever strictly
+//! requires that.
 
 pub mod convert;
 pub mod hft;

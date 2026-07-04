@@ -136,11 +136,13 @@ pub fn trade_to_event(t: &Trade, frame_recv_ts_us: i64) -> Event {
     }
 }
 
-/// Total order for a deterministic per-symbol event stream.
+/// Total order for a per-symbol event stream. `local_ts` is primary so the feed
+/// stays monotonic on hftbacktest's local clock; the rest keep a re-run
+/// byte-identical.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct SortKey {
-    exch_ts: i64,
     local_ts: i64,
+    exch_ts: i64,
     seq: u64,
     idx: u64,
 }
@@ -361,6 +363,29 @@ mod tests {
         assert_eq!(i64::from_le_bytes(b[16..24].try_into().unwrap()), 3);
         assert_eq!(f64::from_le_bytes(b[24..32].try_into().unwrap()), 580.0);
         assert_eq!(f64::from_le_bytes(b[32..40].try_into().unwrap()), 100.0);
+    }
+
+    #[test]
+    fn local_ts_stays_monotonic_when_exch_ts_out_of_order() {
+        let lvl = PriceLevel {
+            price_mantissa: 100,
+            price_scale: 2,
+            volume: 1,
+        };
+        let mk = |quote_ts_us: i64| {
+            let mut q = quote();
+            q.quote_ts_us = quote_ts_us;
+            q.bids = vec![lvl];
+            q.asks = vec![];
+            q
+        };
+        let mut acc = HftAccumulator::new();
+        // Received in local order (200, 210) but with descending exch_ts (100, 90).
+        acc.add_quote(&mk(100), 200);
+        acc.add_quote(&mk(90), 210);
+        let sorted = acc.into_sorted();
+        let locals: Vec<i64> = sorted[0].1.iter().map(|e| e.local_ts).collect();
+        assert!(locals.windows(2).all(|w| w[0] <= w[1]), "{locals:?}");
     }
 
     #[test]
