@@ -1,3 +1,8 @@
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use kairos_core::decode::decode_quote_bytes;
 use kairos_core::encode::encode_subscribe;
 use kairos_core::uds::frame::{read_frame, write_frame};

@@ -1,3 +1,8 @@
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
+
 use std::sync::atomic::Ordering;
 
 use rusteron_media_driver::{AeronDriver, AeronDriverContext};
