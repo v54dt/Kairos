@@ -23,10 +23,9 @@ std::atomic<std::uint32_t> g_epoch{0};
 // reuse the previous process's epoch space; seeding from the clock keeps each
 // session's epoch strictly greater than any a prior process could have used.
 std::uint32_t NextEpoch() {
-  auto now = static_cast<std::uint32_t>(
-      std::chrono::duration_cast<std::chrono::seconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
+  auto now = static_cast<std::uint32_t>(std::chrono::duration_cast<std::chrono::seconds>(
+                                            std::chrono::system_clock::now().time_since_epoch())
+                                            .count());
   std::uint32_t prev = g_epoch.load(std::memory_order_relaxed);
   std::uint32_t next;
   do {
