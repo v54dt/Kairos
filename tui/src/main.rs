@@ -1,3 +1,4 @@
+mod sources;
 mod terminal;
 
 use std::time::Duration;
