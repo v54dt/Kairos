@@ -65,6 +65,16 @@ class SymbolFillModel {
   // rests. The caller guarantees a round-lot order for this symbol.
   void Submit(const SimOrder& order);
 
+  // Rest an already-acked order (no ack emitted): walks the current book for the
+  // marketable portion, rests the remainder. Used to hand an opening-auction
+  // unmatched remainder into the continuous session.
+  void PlaceResting(const SimOrder& order);
+
+  // Suspend continuous matching during a call-auction window: while disabled,
+  // OnBook only refreshes the cached book and OnTrade is ignored (no fills, no
+  // queue advancement). Re-enabling resumes from the current book.
+  void SetMatchingEnabled(bool enabled) { matching_ = enabled; }
+
   // Cancels the resting remainder. Returns true if an order with `id` was found.
   bool Cancel(const std::string& id, std::int64_t ts_us);
 
@@ -88,6 +98,7 @@ class SymbolFillModel {
   SimFillFn on_fill_;
   SimCancelFn on_cancel_;
   TopOfBook book_;
+  bool matching_ = true;
   std::vector<Resting> resting_;  // insertion order == time priority
 };
 

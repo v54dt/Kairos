@@ -77,6 +77,10 @@ void SymbolFillModel::MarketableWalk(SimOrder* order) {
 
 void SymbolFillModel::Submit(const SimOrder& order) {
   if (on_ack_) on_ack_(order.id, true, "");
+  PlaceResting(order);
+}
+
+void SymbolFillModel::PlaceResting(const SimOrder& order) {
   SimOrder ord = order;
   if (book_.valid && !book_.is_trial) MarketableWalk(&ord);
   if (ord.remaining() <= 0) return;
@@ -92,7 +96,7 @@ void SymbolFillModel::Submit(const SimOrder& order) {
 }
 
 void SymbolFillModel::OnTrade(Cents price, long vol, std::int64_t, bool is_trial) {
-  if (is_trial || vol <= 0) return;
+  if (!matching_ || is_trial || vol <= 0) return;
 
   if (mode_ == FillMode::kConservative) {
     long budget = vol;  // shared across resting orders, time-priority order
@@ -119,7 +123,7 @@ void SymbolFillModel::OnTrade(Cents price, long vol, std::int64_t, bool is_trial
 
 void SymbolFillModel::OnBook(const TopOfBook& book, std::int64_t) {
   book_ = book;
-  if (!book.valid || book.is_trial) return;
+  if (!matching_ || !book.valid || book.is_trial) return;
 
   if (mode_ == FillMode::kConservative) {
     for (auto& r : resting_) {
