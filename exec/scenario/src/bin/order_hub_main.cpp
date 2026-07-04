@@ -3,6 +3,7 @@
 //   submit/cancel over UDS (default $XDG_RUNTIME_DIR or /tmp/kairos-orders.sock)
 //   and get ack/fill/cancel routed back. --paper uses a simulated backend.
 
+#include <sys/stat.h>
 #include <toml++/toml.h>
 
 #include <atomic>
@@ -40,6 +41,15 @@ int main(int argc, char** argv) {
   if (path.empty()) {
     std::fprintf(stderr, "usage: kairos_order_hubd <hub.toml> [--paper]\n");
     return 1;
+  }
+
+  // hub.toml holds broker credentials — warn if it is group/other-accessible.
+  struct stat st;
+  if (::stat(path.c_str(), &st) == 0 && (st.st_mode & 0077) != 0) {
+    std::fprintf(stderr,
+                 "kairos-order-hub: WARNING: %s is group/other-accessible (mode %03o); it holds "
+                 "broker credentials — chmod 600 it\n",
+                 path.c_str(), st.st_mode & 07777);
   }
 
   UserCreds creds;
