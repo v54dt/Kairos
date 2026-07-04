@@ -3,6 +3,7 @@ mod panels;
 mod sources;
 mod terminal;
 
+use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -10,14 +11,30 @@ use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 
-use app::{Config, Shared, Snapshot};
+use app::{Cli, Config, Shared, Snapshot};
 use sources::feed::{self, FeedState};
 
 const TICK: Duration = Duration::from_millis(750);
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cfg = app::parse_args();
+    let cfg = match app::parse_args() {
+        Cli::Run(cfg) => cfg,
+        Cli::Help => {
+            println!("{}", app::USAGE);
+            return Ok(());
+        }
+        Cli::Version => {
+            println!("{}", app::version_line());
+            return Ok(());
+        }
+    };
+
+    if !std::io::stdout().is_terminal() {
+        eprintln!("kairos-top: not a terminal; run in an interactive TTY (or use --help).");
+        std::process::exit(1);
+    }
+
     let socket = kairos_core::uds::path::quote_socket_path();
 
     let shared = Arc::new(Shared::default());

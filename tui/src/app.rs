@@ -29,12 +29,41 @@ pub struct Config {
     pub data_dir: PathBuf,
 }
 
-pub fn parse_args() -> Config {
+pub enum Cli {
+    Run(Config),
+    Help,
+    Version,
+}
+
+pub const USAGE: &str = "\
+kairos-top - Kairos market-data and health TUI
+
+Usage: kairos-top [OPTIONS]
+
+Options:
+  --symbols <A,B,...>   Watchlist symbols (default: 2330,0050)
+  --data-dir <PATH>     Recorder data directory
+  -h, --help            Print this help and exit
+  -V, --version         Print version and exit
+
+Keys: [1] Overview  [2] Feeds & Books  [Tab] switch  [q] quit";
+
+pub fn version_line() -> String {
+    format!("kairos-top {}", env!("CARGO_PKG_VERSION"))
+}
+
+pub fn parse_args() -> Cli {
+    parse_cli(std::env::args().skip(1))
+}
+
+pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
     let mut symbols = vec!["2330".to_string(), "0050".to_string()];
     let mut data_dir = default_data_dir();
-    let mut args = std::env::args().skip(1);
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--help" | "-h" => return Cli::Help,
+            "--version" | "-V" => return Cli::Version,
             "--symbols" => {
                 if let Some(v) = args.next() {
                     symbols = v.split(',').map(|s| s.trim().to_string()).collect();
@@ -48,7 +77,7 @@ pub fn parse_args() -> Config {
             _ => {}
         }
     }
-    Config { symbols, data_dir }
+    Cli::Run(Config { symbols, data_dir })
 }
 
 fn default_data_dir() -> PathBuf {
@@ -130,5 +159,50 @@ pub async fn refresh_recorder(shared: Arc<Shared>, data_dir: PathBuf) {
         };
         *shared.recorder.lock().unwrap() = r;
         *shared.disk_free.lock().unwrap() = recorder::disk_free_bytes(&data_dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn help_flag_parses() {
+        assert!(matches!(parse_cli(args(&["--help"])), Cli::Help));
+        assert!(matches!(parse_cli(args(&["-h"])), Cli::Help));
+    }
+
+    #[test]
+    fn version_flag_parses() {
+        assert!(matches!(parse_cli(args(&["--version"])), Cli::Version));
+        assert!(matches!(parse_cli(args(&["-V"])), Cli::Version));
+    }
+
+    #[test]
+    fn symbols_flag_parses() {
+        match parse_cli(args(&["--symbols", "2317, 2454 ,3008"])) {
+            Cli::Run(cfg) => assert_eq!(cfg.symbols, vec!["2317", "2454", "3008"]),
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn defaults_when_absent() {
+        match parse_cli(args(&[])) {
+            Cli::Run(cfg) => assert_eq!(cfg.symbols, vec!["2330", "0050"]),
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn data_dir_flag_honored() {
+        match parse_cli(args(&["--data-dir", "/tmp/x"])) {
+            Cli::Run(cfg) => assert_eq!(cfg.data_dir, PathBuf::from("/tmp/x")),
+            _ => panic!("expected Run"),
+        }
     }
 }
