@@ -113,14 +113,40 @@ fn current_username() -> String {
     }
 }
 
-/// True if `target` resolves to the live `default` dir and `--force-live-dir` was
-/// not passed. Trailing slashes are normalized so `/x` and `/x/` compare equal.
+/// True if `target` and the live `default` dir are the same physical directory and
+/// `--force-live-dir` was not passed. Paths are compared by canonical identity, so
+/// symlinks and non-canonical spellings (`/x/.`, `//x`, `/y/../x`) don't slip past.
 pub fn refuses_live_dir(target: &str, default: Option<&str>, force: bool) -> bool {
     if force {
         return false;
     }
-    let norm = |s: &str| s.trim_end_matches('/').to_owned();
-    default.map(norm) == Some(norm(target))
+    match default {
+        Some(d) => dir_key(target) == dir_key(d),
+        None => false,
+    }
+}
+
+/// Canonical identity of a path for same-dir comparison: `canonicalize` when the
+/// path exists (resolving symlinks), else a lexical normalization that folds `.`,
+/// `..`, and repeated separators. A live default and its aliases resolve equal.
+fn dir_key(s: &str) -> PathBuf {
+    let p = Path::new(s);
+    std::fs::canonicalize(p).unwrap_or_else(|_| lexical_normalize(p))
+}
+
+fn lexical_normalize(p: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
