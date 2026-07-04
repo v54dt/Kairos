@@ -45,7 +45,11 @@ bool HubOrderBackend::IsConnected() const { return fd_ >= 0; }
 
 void HubOrderBackend::Submit(const OrderSubmitMsg& order) {
   int fd = fd_;
-  if (fd >= 0) WriteFrame(fd, EncodeOrderSubmit(order));
+  // A failed write means the order never reached the hub, so no ack will ever
+  // come — reject locally now instead of waiting for the ack-timeout watchdog.
+  if (fd < 0 || !WriteFrame(fd, EncodeOrderSubmit(order))) {
+    if (on_ack_) on_ack_(order.id, false, "hub write failed");
+  }
 }
 
 void HubOrderBackend::Cancel(const std::string& id) {

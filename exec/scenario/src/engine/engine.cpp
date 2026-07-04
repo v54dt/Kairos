@@ -229,6 +229,21 @@ void ScenarioEngine::Run() {
     {
       std::lock_guard<std::mutex> lock(mu_);
       if (complete_) break;
+      // ack-timeout watchdog: an un-acked order that never got a response is dead
+      // (hub dropped it / silent write failure) — free the slot to re-place.
+      long since_submit = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - resting_t_submit_)
+                              .count();
+      if (AckTimedOut(resting_.active, resting_acked_, since_submit, s_.ack_timeout_ms)) {
+        std::fprintf(stderr, "kairos-exec: order %s ack timeout (%ldms); local reject\n",
+                     resting_id_.c_str(), since_submit);
+        sink_->Emit({EventCategory::kError,
+                     Severity::kWarning,
+                     s_.symbol,
+                     "ack_timeout:" + resting_id_,
+                     {}});
+        ClearResting();
+      }
       remaining = acct_.RemainingTwd(s_);
       resting = resting_;
       rid = resting_id_;
