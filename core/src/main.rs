@@ -7,6 +7,7 @@ use kairos_core::book::Book;
 use kairos_core::decode::decode_quote_bytes;
 use kairos_core::encode::encode_subscribe;
 use kairos_core::ipc::aeron::{AeronPub, AeronSub, CONTROL_STREAM_ID, DEFAULT_STREAM_ID};
+use kairos_core::metrics::Metrics;
 use kairos_core::model::Quote;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::path::quote_socket_path;
@@ -23,17 +24,20 @@ async fn main() -> anyhow::Result<()> {
     let (tx, _) = broadcast::channel::<Quote>(1024);
     let registry = Arc::new(Mutex::new(SubRegistry::new()));
     let (change_tx, change_rx) = mpsc::channel::<()>();
+    let metrics = Arc::new(Metrics::default());
+    metrics.clone().spawn_logger();
 
     let aeron_book = book.clone();
     let aeron_tx = tx.clone();
-    thread::spawn(move || aeron_poll_loop(aeron_book, aeron_tx));
+    let aeron_metrics = metrics.clone();
+    thread::spawn(move || aeron_poll_loop(aeron_book, aeron_tx, aeron_metrics));
 
     let control_registry = registry.clone();
     thread::spawn(move || control_publish_loop(control_registry, change_rx));
 
     let socket_path = quote_socket_path();
     eprintln!("kairos-core: UDS quote server on {socket_path}");
-    run_server(&socket_path, book, tx, registry, change_tx).await?;
+    run_server(&socket_path, book, tx, registry, change_tx, metrics).await?;
     Ok(())
 }
 
@@ -61,7 +65,7 @@ fn control_publish_loop(registry: Arc<Mutex<SubRegistry>>, change_rx: mpsc::Rece
     }
 }
 
-fn aeron_poll_loop(book: Arc<RwLock<Book>>, tx: broadcast::Sender<Quote>) {
+fn aeron_poll_loop(book: Arc<RwLock<Book>>, tx: broadcast::Sender<Quote>, metrics: Arc<Metrics>) {
     let sub = match AeronSub::connect(None, DEFAULT_STREAM_ID) {
         Ok(s) => s,
         Err(e) => {
@@ -73,11 +77,13 @@ fn aeron_poll_loop(book: Arc<RwLock<Book>>, tx: broadcast::Sender<Quote>) {
     let mut last_err: Option<Instant> = None;
     loop {
         match sub.poll(
-            |data| {
-                if let Ok(q) = decode_quote_bytes(data) {
+            |data| match decode_quote_bytes(data) {
+                Ok(q) => {
+                    Metrics::inc(&metrics.quotes_decoded);
                     book.write().unwrap().update(q.clone());
                     let _ = tx.send(q);
                 }
+                Err(_) => Metrics::inc(&metrics.decode_errors),
             },
             64,
         ) {

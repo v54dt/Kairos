@@ -4,6 +4,7 @@ use std::time::Duration;
 use kairos_core::book::Book;
 use kairos_core::decode::decode_quote_bytes;
 use kairos_core::encode::encode_subscribe;
+use kairos_core::metrics::Metrics;
 use kairos_core::model::{Exchange, PriceLevel, Quote};
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::frame::{read_frame, write_frame};
@@ -65,7 +66,15 @@ async fn uds_snapshot_then_live_push_with_filtering() {
     let srv_tx = tx.clone();
     let srv_socket = socket.clone();
     tokio::spawn(async move {
-        let _ = run_server(&srv_socket, srv_book, srv_tx, registry, change_tx).await;
+        let _ = run_server(
+            &srv_socket,
+            srv_book,
+            srv_tx,
+            registry,
+            change_tx,
+            std::sync::Arc::new(Metrics::default()),
+        )
+        .await;
     });
 
     wait_for_socket(&socket).await;
@@ -104,7 +113,15 @@ async fn subscribe_refcounts_and_disconnect_releases() {
     let srv_socket = socket.clone();
     let srv_reg = registry.clone();
     tokio::spawn(async move {
-        let _ = run_server(&srv_socket, srv_book, srv_tx, srv_reg, change_tx).await;
+        let _ = run_server(
+            &srv_socket,
+            srv_book,
+            srv_tx,
+            srv_reg,
+            change_tx,
+            std::sync::Arc::new(Metrics::default()),
+        )
+        .await;
     });
 
     wait_for_socket(&socket).await;

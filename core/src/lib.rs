@@ -6,6 +6,7 @@ pub mod book;
 pub mod decode;
 pub mod encode;
 pub mod ipc;
+pub mod metrics;
 pub mod model;
 pub mod record;
 pub mod subreg;
