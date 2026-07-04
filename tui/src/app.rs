@@ -29,6 +29,29 @@ pub struct Config {
     pub data_dir: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tab {
+    Overview,
+    FeedsBooks,
+}
+
+impl Tab {
+    pub fn select(self, key: char) -> Tab {
+        match key {
+            '1' => Tab::Overview,
+            '2' => Tab::FeedsBooks,
+            _ => self,
+        }
+    }
+
+    pub fn next(self) -> Tab {
+        match self {
+            Tab::Overview => Tab::FeedsBooks,
+            Tab::FeedsBooks => Tab::Overview,
+        }
+    }
+}
+
 pub enum Cli {
     Run(Config),
     Help,
@@ -204,5 +227,23 @@ mod tests {
             Cli::Run(cfg) => assert_eq!(cfg.data_dir, PathBuf::from("/tmp/x")),
             _ => panic!("expected Run"),
         }
+    }
+
+    #[test]
+    fn tab_select_by_key() {
+        assert_eq!(Tab::Overview.select('2'), Tab::FeedsBooks);
+        assert_eq!(Tab::FeedsBooks.select('1'), Tab::Overview);
+    }
+
+    #[test]
+    fn tab_select_unknown_key_keeps_state() {
+        assert_eq!(Tab::FeedsBooks.select('x'), Tab::FeedsBooks);
+        assert_eq!(Tab::Overview.select('9'), Tab::Overview);
+    }
+
+    #[test]
+    fn tab_next_toggles() {
+        assert_eq!(Tab::Overview.next(), Tab::FeedsBooks);
+        assert_eq!(Tab::FeedsBooks.next(), Tab::Overview);
     }
 }
