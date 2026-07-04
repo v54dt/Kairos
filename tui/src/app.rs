@@ -60,14 +60,14 @@ fn default_data_dir() -> PathBuf {
 pub struct Shared {
     pub systemd: Mutex<Fetch<Vec<UnitStatus>>>,
     pub journal: Mutex<Fetch<Vec<LogLine>>>,
-    pub recorder: Mutex<Fetch<Option<RecorderStats>>>,
+    pub recorder: Mutex<Fetch<Vec<RecorderStats>>>,
     pub disk_free: Mutex<Option<u64>>,
 }
 
 pub struct Snapshot {
     pub systemd: Fetch<Vec<UnitStatus>>,
     pub journal: Fetch<Vec<LogLine>>,
-    pub recorder: Fetch<Option<RecorderStats>>,
+    pub recorder: Fetch<Vec<RecorderStats>>,
     pub disk_free: Option<u64>,
     pub feed: FeedState,
 }

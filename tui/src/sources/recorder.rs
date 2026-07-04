@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -39,10 +40,16 @@ pub fn parse_stats_line(line: &str) -> Option<RecorderStats> {
     })
 }
 
-/// The most recent parseable stats line in a journal dump (last stream printed
-/// in the latest reporting cycle).
-pub fn parse_latest_stats(text: &str) -> Option<RecorderStats> {
-    text.lines().rev().find_map(parse_stats_line)
+/// The most recent stats line for each stream in a journal dump, sorted by
+/// stream id, so drops on any stream stay visible (not just the last printed).
+pub fn parse_latest_stats(text: &str) -> Vec<RecorderStats> {
+    let mut latest: BTreeMap<i32, RecorderStats> = BTreeMap::new();
+    for line in text.lines() {
+        if let Some(s) = parse_stats_line(line) {
+            latest.insert(s.stream, s);
+        }
+    }
+    latest.into_values().collect()
 }
 
 /// Free bytes on the filesystem holding `path`, or None if it can't be queried.
@@ -57,7 +64,7 @@ pub fn disk_free_bytes(path: &Path) -> Option<u64> {
     Some(st.f_bavail.saturating_mul(st.f_frsize))
 }
 
-pub async fn tail_stats(unit: &str, lines: u32) -> Result<Option<RecorderStats>> {
+pub async fn tail_stats(unit: &str, lines: u32) -> Result<Vec<RecorderStats>> {
     let output = Command::new("journalctl")
         .args([
             "--user",
@@ -107,15 +114,29 @@ mod tests {
     }
 
     #[test]
-    fn latest_stats_takes_last_match() {
+    fn latest_stats_keeps_every_stream() {
         let text = "\
 kairos-recordd: stream 1001 records=1 bytes=10 drops=0 write_errs=0 disk_free_mib=100
-kairos-recordd: stream 1002 records=2 bytes=20 drops=1 write_errs=0 disk_free_mib=100
+kairos-recordd: stream 1002 records=2 bytes=20 drops=0 write_errs=0 disk_free_mib=100
+kairos-recordd: stream 1001 records=9 bytes=90 drops=42 write_errs=3 disk_free_mib=100
+kairos-recordd: stream 1002 records=8 bytes=80 drops=0 write_errs=0 disk_free_mib=100
 kairos-recordd: shutting down
 ";
-        let s = parse_latest_stats(text).unwrap();
-        assert_eq!(s.stream, 1002);
-        assert_eq!(s.drops, 1);
+        let stats = parse_latest_stats(text);
+        assert_eq!(stats.len(), 2);
+        // Sorted by stream id; data stream 1001 keeps its latest drops.
+        assert_eq!(stats[0].stream, 1001);
+        assert_eq!(stats[0].records, 9);
+        assert_eq!(stats[0].drops, 42);
+        assert_eq!(stats[0].write_errs, 3);
+        assert_eq!(stats[1].stream, 1002);
+        assert_eq!(stats[1].records, 8);
+        assert_eq!(stats[1].drops, 0);
+    }
+
+    #[test]
+    fn latest_stats_empty_when_no_match() {
+        assert!(parse_latest_stats("kairos-recordd: shutting down").is_empty());
     }
 
     #[test]

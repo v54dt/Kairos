@@ -45,12 +45,20 @@ fn stats_lines(stats: &RecorderStats) -> Vec<Line<'static>> {
     } else {
         Color::Green
     };
+    let stream_style = if stats.drops > 0 || stats.write_errs > 0 {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
     vec![
-        Line::from(format!("stream     {}", stats.stream)),
-        Line::from(format!("records    {}", stats.records)),
-        Line::from(format!("bytes      {}", stats.bytes)),
         Line::from(vec![
-            Span::raw("drops      "),
+            Span::raw("stream     "),
+            Span::styled(stats.stream.to_string(), stream_style),
+        ]),
+        Line::from(format!("  records    {}", stats.records)),
+        Line::from(format!("  bytes      {}", stats.bytes)),
+        Line::from(vec![
+            Span::raw("  drops      "),
             Span::styled(stats.drops.to_string(), Style::default().fg(drop_color)),
             Span::raw(format!("   write_errs {}", stats.write_errs)),
         ]),
@@ -60,7 +68,7 @@ fn stats_lines(stats: &RecorderStats) -> Vec<Line<'static>> {
 pub fn render(
     frame: &mut Frame,
     area: Rect,
-    state: &Fetch<Option<RecorderStats>>,
+    state: &Fetch<Vec<RecorderStats>>,
     disk_free: Option<u64>,
     cfg: &Config,
 ) {
@@ -68,11 +76,11 @@ pub fn render(
     let mut lines: Vec<Line> = match state {
         Fetch::Loading => vec![loading_line()],
         Fetch::Err(e) => vec![error_line(e)],
-        Fetch::Ok(None) => vec![Line::from(Span::styled(
+        Fetch::Ok(stats) if stats.is_empty() => vec![Line::from(Span::styled(
             "no stats line",
             Style::default().fg(Color::DarkGray),
         ))],
-        Fetch::Ok(Some(stats)) => stats_lines(stats),
+        Fetch::Ok(stats) => stats.iter().flat_map(stats_lines).collect(),
     };
     lines.push(disk_line(disk_free, cfg));
     frame.render_widget(Paragraph::new(lines).block(block), area);
