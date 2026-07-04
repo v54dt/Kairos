@@ -5,10 +5,15 @@
 //   the core quote+trade UDS stream. There is NO broker SDK and NO real-order
 //   path: run EITHER the live hub OR this on a given order socket, never both.
 
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
@@ -23,6 +28,20 @@ using namespace kairos::exec;
 namespace {
 std::atomic<bool> g_stop{false};
 void OnSig(int) { g_stop = true; }
+
+// True if a process is already accepting on the order socket. The hub unlinks and
+// rebinds any existing path, so without this check a sim hub started on the live
+// hub's default socket would silently hijack live order flow.
+bool OrderSocketHasListener(const std::string& path) {
+  int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return false;
+  sockaddr_un addr{};
+  addr.sun_family = AF_UNIX;
+  std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
+  bool listening = ::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0;
+  ::close(fd);
+  return listening;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -51,6 +70,14 @@ int main(int argc, char** argv) {
   }
   if (order_sock.empty()) order_sock = OrderSocketPath();
   if (quote_sock.empty()) quote_sock = QuoteSocketPath();
+
+  if (OrderSocketHasListener(order_sock)) {
+    std::fprintf(stderr,
+                 "kairos-sim-hub: refusing to start: a hub is already listening on %s "
+                 "(the live hub?). Stop it or pass --order-sock for a separate paper socket.\n",
+                 order_sock.c_str());
+    return 1;
+  }
 
   SimOrderBackend backend(mode, symbols);
   UdsQuoteClient quotes(quote_sock, symbols);
