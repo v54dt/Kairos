@@ -159,14 +159,7 @@ Scenario LoadScenario(const std::string& path) {
   s.window_end_hhmm = ParseHHMM(s.window_end);
   s.weekdays_only = t["window"]["weekdays_only"].value_or<bool>(true);
 
-  // [reconnect]
-  s.daily_reconnect = t["reconnect"]["daily_at"].value_or<std::string>("07:05");
-  s.daily_reconnect_hhmm = ParseHHMM(s.daily_reconnect);
-
   // [risk]
-  s.max_orders = t["risk"]["max_orders"].value_or<long>(0);
-  s.max_open_orders = t["risk"]["max_open_orders"].value_or<long>(0);
-  s.max_notional_twd = t["risk"]["max_notional_twd"].value_or<long>(0);
   s.require_two_sided = t["risk"]["require_two_sided"].value_or<bool>(true);
   s.quote_max_age_ms = t["risk"]["quote_max_age_ms"].value_or<long>(5000);
   s.quote_stall_alert_ms = t["risk"]["quote_stall_alert_ms"].value_or<long>(30000);

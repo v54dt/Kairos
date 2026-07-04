@@ -22,6 +22,7 @@ class OrderBackend {
   using AckFn = std::function<void(const std::string& id, bool ok, const std::string& err)>;
   using FillFn = std::function<void(const std::string& id, const Fill&)>;
   using CancelFn = std::function<void(const std::string& id, bool ok)>;
+  using DisconnectFn = std::function<void()>;  // backend lost its link unexpectedly
 
   virtual ~OrderBackend() = default;
 
@@ -33,16 +34,18 @@ class OrderBackend {
   virtual void Submit(const OrderSubmitMsg& order) = 0;
   virtual void Cancel(const std::string& id) = 0;  // also used to re-peg (cancel + re-place)
 
-  void SetCallbacks(AckFn ack, FillFn fill, CancelFn cancel) {
+  void SetCallbacks(AckFn ack, FillFn fill, CancelFn cancel, DisconnectFn disconnect = {}) {
     on_ack_ = std::move(ack);
     on_fill_ = std::move(fill);
     on_cancel_ = std::move(cancel);
+    on_disconnect_ = std::move(disconnect);
   }
 
  protected:
   AckFn on_ack_;
   FillFn on_fill_;
   CancelFn on_cancel_;
+  DisconnectFn on_disconnect_;
 };
 
 // Paper backend: acks and fully fills every order at its limit price, instantly.

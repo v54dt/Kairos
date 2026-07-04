@@ -109,6 +109,16 @@ void ScenarioEngine::OnCancel(const std::string& id, bool /*ok*/) {
   cv_.notify_all();
 }
 
+void ScenarioEngine::OnDisconnect() {
+  sink_->Emit(
+      {EventCategory::kDisconnect, Severity::kError, s_.symbol, "disconnect:" + s_.symbol, {}});
+  if (s_.stop_on_disconnect) {
+    std::fprintf(stderr, "kairos-exec: order backend disconnected; stopping\n");
+    stop_ = true;
+    cv_.notify_all();
+  }
+}
+
 void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
   std::lock_guard<std::mutex> lock(mu_);
   // Fills are routed to us by id, so always count one — even a late fill that lands
@@ -150,7 +160,7 @@ void ScenarioEngine::Run() {
   backend_->SetCallbacks(
       [this](const std::string& id, bool ok, const std::string& e) { OnAck(id, ok, e); },
       [this](const std::string& id, const Fill& f) { OnFill(id, f); },
-      [this](const std::string& id, bool ok) { OnCancel(id, ok); });
+      [this](const std::string& id, bool ok) { OnCancel(id, ok); }, [this] { OnDisconnect(); });
   if (!backend_->Connect()) {
     std::fprintf(stderr, "kairos-exec: order backend connect failed\n");
     return;
@@ -197,6 +207,20 @@ void ScenarioEngine::Run() {
     TopOfBook tob = book_.Snapshot();
     long age = book_.AgeMs();
     bool stale = !tob.valid || (s_.quote_max_age_ms > 0 && age >= 0 && age > s_.quote_max_age_ms);
+    // quote-stall alert: emit once when quotes go silent past the threshold in the
+    // active window, and re-arm when a fresh quote arrives.
+    if (s_.quote_stall_alert_ms > 0 && age > s_.quote_stall_alert_ms) {
+      if (!quote_stalled_) {
+        quote_stalled_ = true;
+        sink_->Emit({EventCategory::kQuoteStall,
+                     Severity::kWarning,
+                     s_.symbol,
+                     "quote_stall:" + s_.symbol,
+                     {{"age_ms", std::to_string(age)}}});
+      }
+    } else if (age >= 0) {
+      quote_stalled_ = false;
+    }
 
     long remaining;
     RestingOrder resting;

@@ -57,12 +57,6 @@ struct Scenario {
   int window_end_hhmm = 1325;
   bool weekdays_only = true;
 
-  std::string daily_reconnect = "07:05";
-  int daily_reconnect_hhmm = 705;
-
-  long max_orders = 0;
-  long max_open_orders = 0;
-  long max_notional_twd = 0;
   bool require_two_sided = true;
   long quote_max_age_ms = 5000;
   long quote_stall_alert_ms = 30000;
@@ -74,7 +68,6 @@ struct Scenario {
   DashboardConfig dashboard;
 
   bool IsOddLot() const { return board == Board::kOddLot; }
-  long EffectiveMaxNotional() const { return max_notional_twd > 0 ? max_notional_twd : budget_twd; }
 };
 
 Scenario LoadScenario(const std::string& path);  // throws std::runtime_error on parse/missing

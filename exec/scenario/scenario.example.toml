@@ -42,13 +42,7 @@ start_time = "09:10"
 end_time = "13:25"
 weekdays_only = true
 
-[reconnect]
-daily_at = "07:05"
-
 [risk]
-max_orders = 0
-max_open_orders = 0
-max_notional_twd = 0
 require_two_sided = true
 quote_max_age_ms = 5000
 quote_stall_alert_ms = 30000
