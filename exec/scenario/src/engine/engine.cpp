@@ -9,7 +9,6 @@
 #include <utility>
 
 #include "order_codec.h"
-#include "socket_path.h"
 #include "tw_market.h"
 
 namespace kairos::exec {
@@ -25,8 +24,8 @@ struct LocalNow {
   bool weekday;
 };
 
-LocalNow NowUtc8() {
-  auto utc8 = std::chrono::system_clock::now() + std::chrono::hours(8);
+LocalNow LocalFromUtc(std::chrono::system_clock::time_point tp) {
+  auto utc8 = tp + std::chrono::hours(8);
   auto dp = std::chrono::floor<std::chrono::days>(utc8);
   std::chrono::weekday wd{dp};
   std::chrono::hh_mm_ss hms{utc8 - dp};
@@ -35,8 +34,8 @@ LocalNow NowUtc8() {
   return {hhmm, weekday};
 }
 
-std::string TodayUtc8() {
-  auto utc8 = std::chrono::system_clock::now() + std::chrono::hours(8);
+std::string DateFromUtc(std::chrono::system_clock::time_point tp) {
+  auto utc8 = tp + std::chrono::hours(8);
   std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(utc8)};
   char buf[16];
   std::snprintf(buf, sizeof(buf), "%04d%02u%02u", static_cast<int>(ymd.year()),
@@ -50,22 +49,25 @@ constexpr int kMarketCloseHhmm = 1330;  // TWSE regular session close; hard stop
 
 }  // namespace
 
-ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink)
-    : s_(std::move(scenario)), backend_(backend), sink_(sink) {
+ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink,
+                               QuoteSource* quotes, EngineClock clock)
+    : s_(std::move(scenario)),
+      backend_(backend),
+      sink_(sink),
+      quotes_(quotes),
+      clock_(std::move(clock)) {
   oid_prefix_ = "k" + std::to_string(::getpid());
   std::string sym = s_.symbol;
-  quotes_ =
-      std::make_unique<UdsQuoteClient>(QuoteSocketPath(), std::vector<std::string>{sym},
-                                       [this, sym](const std::string& s, const TopOfBook& tob) {
-                                         if (s == sym) {
-                                           book_.Update(tob);
-                                           cv_.notify_all();
-                                         }
-                                       });
+  quotes_->SetCallback([this, sym](const std::string& s, const TopOfBook& tob) {
+    if (s == sym) {
+      book_.Update(tob);
+      cv_.notify_all();
+    }
+  });
   // Restart-safe accounting: replay today's fills so the budget isn't re-bought,
   // then append to the same journal.
   if (!s_.journal_dir.empty()) {
-    std::string name = s_.symbol + "-" + SideName(s_.side) + "-" + TodayUtc8();
+    std::string name = s_.symbol + "-" + SideName(s_.side) + "-" + DateFromUtc(clock_.wall());
     long restored = 0;
     for (const auto& fl : ReadJournalFills(JournalPath(s_.journal_dir, name))) {
       acct_.RecordFill(s_, fl.price, fl.shares);
@@ -84,13 +86,13 @@ std::string ScenarioEngine::NextOrderId() {
 
 void ScenarioEngine::SdkGate() {
   std::lock_guard<std::mutex> lock(sdk_mu_);
-  auto now = std::chrono::steady_clock::now();
+  auto now = clock_.mono();
   if (last_sdk_.time_since_epoch().count() != 0) {
     auto since = now - last_sdk_;
     if (since < std::chrono::seconds(1))
       std::this_thread::sleep_for(std::chrono::seconds(1) - since);
   }
-  last_sdk_ = std::chrono::steady_clock::now();
+  last_sdk_ = clock_.mono();
 }
 
 void ScenarioEngine::ClearResting() {
@@ -108,7 +110,7 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
   if (ok) {
     resting_acked_ = true;
     if (dashboard_ && s_.live) {
-      auto now = std::chrono::steady_clock::now();
+      auto now = clock_.mono();
       dashboard_->ReportOrder(resting_seq_, "success", "", Millis(now - resting_t_start_),
                               Millis(resting_t_submit_ - resting_t_start_),
                               Millis(now - resting_t_submit_));
@@ -204,7 +206,7 @@ void ScenarioEngine::Run() {
   while (!stop_) {
     double window_progress = 1.0;  // ignore-window => no twap throttle
     if (!ignore_window_) {
-      LocalNow n = NowUtc8();
+      LocalNow n = LocalFromUtc(clock_.wall());
       WindowPhase phase =
           ClassifyWindow(n.hhmm, !s_.weekdays_only || n.weekday, s_.window_start_hhmm,
                          s_.window_end_hhmm, kMarketCloseHhmm);
@@ -257,9 +259,9 @@ void ScenarioEngine::Run() {
       if (complete_) break;
       // ack-timeout watchdog: an un-acked order that never got a response is dead
       // (hub dropped it / silent write failure) — free the slot to re-place.
-      long since_submit = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::steady_clock::now() - resting_t_submit_)
-                              .count();
+      long since_submit =
+          std::chrono::duration_cast<std::chrono::milliseconds>(clock_.mono() - resting_t_submit_)
+              .count();
       if (AckTimedOut(resting_.active, resting_acked_, since_submit, s_.ack_timeout_ms)) {
         std::fprintf(stderr, "kairos-exec: order %s ack timeout (%ldms); local reject\n",
                      resting_id_.c_str(), since_submit);
@@ -301,9 +303,9 @@ void ScenarioEngine::Run() {
                           s_.side,   s_.funding_type, s_.time_in_force, act.price,
                           act.shares};
         SdkGate();  // before t_start so the rate-limit sleep isn't counted as RTT
-        auto t0 = std::chrono::steady_clock::now();
+        auto t0 = clock_.mono();
         backend_->Submit(om);
-        auto t1 = std::chrono::steady_clock::now();
+        auto t1 = clock_.mono();
         {
           std::lock_guard<std::mutex> lock(mu_);
           if (resting_id_ == id) {

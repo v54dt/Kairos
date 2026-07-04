@@ -2,8 +2,9 @@
 #define KAIROS_EXEC_ENGINE_H_
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
-#include <memory>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -13,10 +14,22 @@
 #include "order_backend.h"
 #include "order_journal.h"
 #include "quote_book.h"
+#include "quote_source.h"
 #include "scenario.h"
-#include "uds_quote_client.h"
 
 namespace kairos::exec {
+
+// The engine's two time sources, injected so a replay can drive them coherently.
+// wall: local/session gating (date strings + HHMM window). mono: latency/pacing.
+// Both default to the real system/steady clocks.
+struct EngineClock {
+  std::function<std::chrono::system_clock::time_point()> wall = [] {
+    return std::chrono::system_clock::now();
+  };
+  std::function<std::chrono::steady_clock::time_point()> mono = [] {
+    return std::chrono::steady_clock::now();
+  };
+};
 
 // Drives a scenario: consumes the core quote feed into a QuoteBook, and on each
 // tick decides place / re-peg / nothing (engine_logic), routing orders through
@@ -24,7 +37,8 @@ namespace kairos::exec {
 // the window closes, or RequestStop().
 class ScenarioEngine {
  public:
-  ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink);
+  ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink, QuoteSource* quotes,
+                 EngineClock clock = {});
 
   void Run();
   void RequestStop();
@@ -45,7 +59,8 @@ class ScenarioEngine {
   EventSink* sink_;
   DashboardMetrics* dashboard_ = nullptr;
   QuoteBook book_;
-  std::unique_ptr<UdsQuoteClient> quotes_;
+  QuoteSource* quotes_;
+  EngineClock clock_;
   OrderJournal journal_;
 
   std::mutex mu_;

@@ -176,7 +176,8 @@ int main(int argc, char** argv) {
     dashboard = std::make_unique<DashboardMetrics>(scenario.dashboard, poster.get());
   }
 
-  ScenarioEngine engine(std::move(scenario), backend, sink);
+  UdsQuoteClient quotes(QuoteSocketPath(), {scenario.symbol});
+  ScenarioEngine engine(std::move(scenario), backend, sink, &quotes);
   if (ignore_window) engine.set_ignore_window(true);
   if (dashboard) engine.set_dashboard(dashboard.get());
   g_engine = &engine;
