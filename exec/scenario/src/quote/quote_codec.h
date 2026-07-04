@@ -17,8 +17,15 @@ Cents MantissaScaleToCents(std::int64_t mantissa, std::uint8_t scale);
 std::vector<std::uint8_t> EncodeSubscribe(const std::vector<std::string>& symbols);
 
 // Decode a serialized Envelope. If it is a Quote, fill *tob (best bid/ask/last,
-// 試撮 flag, recv_ts = now) and *symbol, then return true. False otherwise.
+// 試撮 flag, recv_ts = now) and *symbol, then return true. Returns false for any
+// other variant (e.g. a Trade or control frame) or malformed bytes; a
+// well-formed but unhandled variant is counted (see UnknownVariantCount).
 bool DecodeQuote(const std::uint8_t* data, std::size_t len, TopOfBook* tob, std::string* symbol);
+
+// Cumulative count of well-formed Envelopes whose variant DecodeQuote does not
+// handle (Trade/subAck/error/heartbeat/...). Distinct from malformed bytes, which
+// are not counted here. Exposed for observability and tests.
+std::uint64_t UnknownVariantCount();
 
 }  // namespace kairos::exec
 
