@@ -1,5 +1,6 @@
 # Rust build output
 /core/target/
+/tui/target/
 
 # C++ build output
 /sidecar/concords/build/
