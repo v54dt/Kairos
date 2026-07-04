@@ -1,5 +1,6 @@
 #include "feed.h"
 
+#include <sys/stat.h>
 #include <toml++/toml.h>
 
 #include <algorithm>
@@ -132,6 +133,13 @@ struct FeedSession {
 }  // namespace
 
 int RunFeed(const std::string& config_path) {
+  // sidecar.toml holds broker credentials — warn if it is group/other-accessible.
+  struct stat cfg_st;
+  if (::stat(config_path.c_str(), &cfg_st) == 0 && (cfg_st.st_mode & 0077) != 0) {
+    std::cerr << "kairos-sidecar: WARNING: " << config_path
+              << " is group/other-accessible; it holds broker credentials — chmod 600 it\n";
+  }
+
   std::string user_id, password, pfx, aeron_dir;
   std::vector<std::string> symbols;
   int reconnect_hhmm = 705;
