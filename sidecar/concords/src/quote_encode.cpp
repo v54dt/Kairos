@@ -24,6 +24,30 @@ namespace {
   return ::Exchange::TWSE;
 }
 
+::QuoteBoard CapBoard(QuoteBoard b) {
+  switch (b) {
+    case QuoteBoard::kUnknown:
+      return ::QuoteBoard::UNKNOWN;
+    case QuoteBoard::kRoundLot:
+      return ::QuoteBoard::ROUND_LOT;
+    case QuoteBoard::kOddLot:
+      return ::QuoteBoard::ODD_LOT;
+  }
+  return ::QuoteBoard::UNKNOWN;
+}
+
+::Session CapSession(Session s) {
+  switch (s) {
+    case Session::kUnknown:
+      return ::Session::UNKNOWN;
+    case Session::kDay:
+      return ::Session::DAY;
+    case Session::kNight:
+      return ::Session::NIGHT;
+  }
+  return ::Session::UNKNOWN;
+}
+
 }  // namespace
 
 std::vector<std::uint8_t> EncodeQuoteEnvelope(const Quote& q) {
@@ -50,11 +74,52 @@ std::vector<std::uint8_t> EncodeQuoteEnvelope(const Quote& q) {
   quote.setLastScale(q.last_scale);
   quote.setLastVolume(q.last_volume);
   quote.setIsTrial(q.is_trial);
+  quote.setSource(q.source);
+  quote.setSeq(q.seq);
+  quote.setEpoch(q.epoch);
+  quote.setRecvTsUs(q.recv_ts_us);
+  quote.setBoard(CapBoard(q.board));
+  quote.setSession(CapSession(q.session));
+  quote.setTradingDate(q.trading_date);
+  quote.setSimtrade(q.simtrade);
+  quote.setUnderlyingPrice(q.underlying_price);
 
   auto flat = capnp::messageToFlatArray(msg);
   auto bytes = flat.asBytes();
   return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
 }
+
+std::vector<std::uint8_t> EncodeTradeEnvelope(const Trade& t) {
+  capnp::MallocMessageBuilder msg;
+  auto trade = msg.initRoot<Envelope>().initTrade();
+  trade.setSymbol(t.symbol.c_str());
+  trade.setExchange(CapExchange(t.exchange));
+  trade.setSource(t.source);
+  trade.setSeq(t.seq);
+  trade.setEpoch(t.epoch);
+  trade.setTradeTsUs(t.trade_ts_us);
+  trade.setRecvTsUs(t.recv_ts_us);
+  trade.setPriceMantissa(t.price_mantissa);
+  trade.setPriceScale(t.price_scale);
+  trade.setVolume(t.volume);
+  trade.setIsTrial(t.is_trial);
+  trade.setSession(CapSession(t.session));
+  trade.setTradingDate(t.trading_date);
+  trade.setSimtrade(t.simtrade);
+  trade.setUnderlyingPrice(t.underlying_price);
+
+  auto flat = capnp::messageToFlatArray(msg);
+  auto bytes = flat.asBytes();
+  return std::vector<std::uint8_t>(bytes.begin(), bytes.end());
+}
+
+std::uint32_t SeqEpochTracker::Rebuild() {
+  ++epoch_;
+  seq_.clear();
+  return epoch_;
+}
+
+std::uint64_t SeqEpochTracker::NextSeq(const std::string& symbol) { return ++seq_[symbol]; }
 
 bool DecodeSubscribe(const std::uint8_t* data, std::size_t len, std::vector<std::string>* out) {
   if (data == nullptr || len == 0 || len % sizeof(capnp::word) != 0) {

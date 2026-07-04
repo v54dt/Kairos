@@ -33,8 +33,8 @@ add_executable(test_feed_window tests/test_feed_window.cpp)
 target_include_directories(test_feed_window PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_feed_window COMMAND test_feed_window)
 
-# Cross-language wire-format regression: assert the C++ encoder matches the shared golden fixture
-# that the Rust decoder test also pins (Track C5).
+# Cross-language wire-format regression: the pre-A2 fixture still decodes with capnp defaults (C++
+# half of Track C5; Rust half is core/tests/golden_wire.rs).
 add_executable(test_golden tests/test_golden.cpp)
 target_link_libraries(test_golden PRIVATE kairos_quote_encode)
 target_compile_definitions(
@@ -43,6 +43,30 @@ target_compile_definitions(
     KAIROS_GOLDEN_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/quote_golden_envelope.bin"
 )
 add_test(NAME test_golden COMMAND test_golden)
+
+# A2 new wire format pins: the C++ encoder byte-matches the shared v2 fixtures that
+# core/tests/golden_wire_v2.rs also decodes and field-checks.
+add_executable(test_golden_v2 tests/test_golden_v2.cpp)
+target_link_libraries(test_golden_v2 PRIVATE kairos_quote_encode)
+target_compile_definitions(
+  test_golden_v2
+  PRIVATE
+    KAIROS_QUOTE_V2_GOLDEN_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/quote_v2_golden_envelope.bin"
+)
+add_test(NAME test_golden_v2 COMMAND test_golden_v2)
+
+add_executable(test_trade tests/test_trade.cpp)
+target_link_libraries(test_trade PRIVATE kairos_quote_encode)
+target_compile_definitions(
+  test_trade
+  PRIVATE
+    KAIROS_TRADE_GOLDEN_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/trade_golden_envelope.bin"
+)
+add_test(NAME test_trade COMMAND test_trade)
+
+add_executable(test_seq_epoch tests/test_seq_epoch.cpp)
+target_link_libraries(test_seq_epoch PRIVATE kairos_quote_encode)
+add_test(NAME test_seq_epoch COMMAND test_seq_epoch)
 
 # The concords feed executable links the broker SDK + Aeron; built only where the SDK is present in
 # concords/lib (CI has none, so it builds just the encode lib + test).
