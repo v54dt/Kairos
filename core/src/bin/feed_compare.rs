@@ -77,6 +77,12 @@ fn main() -> ExitCode {
             g.source, g.symbol, g.epoch, g.prev_seq, g.next_seq
         );
     }
+    for m in &report.trade_count_mismatches {
+        println!(
+            "trade-count-mismatch symbol={} source {}={} source {}={}",
+            m.symbol, m.a_source, m.a_count, m.b_source, m.b_count
+        );
+    }
     for m in &report.trade_mismatches {
         println!(
             "trade-mismatch symbol={} #{} a=({}e-{},vol {}) b=({}e-{},vol {})",
@@ -118,8 +124,9 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     } else {
         println!(
-            "feed-compare: DIVERGENCE ({} seq-gaps, {} trade-mismatches, {} book-mismatches)",
+            "feed-compare: DIVERGENCE ({} seq-gaps, {} trade-count-mismatches, {} trade-mismatches, {} book-mismatches)",
             report.seq_gaps.len(),
+            report.trade_count_mismatches.len(),
             report.trade_mismatches.len(),
             report.book_mismatches.len()
         );

@@ -42,6 +42,18 @@ pub struct TradeMismatch {
     pub b_volume: i64,
 }
 
+/// The two sources emitted a different number of trades for one shared symbol
+/// (one dropped or never saw some prints). Reported instead of a per-index price
+/// comparison, which would be misaligned and fabricate mismatches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TradeCountMismatch {
+    pub symbol: String,
+    pub a_source: u16,
+    pub b_source: u16,
+    pub a_count: usize,
+    pub b_count: usize,
+}
+
 /// Timestamp skew between the two sources for the N-th trade of a symbol
 /// (`a_trade_ts_us - b_trade_ts_us`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +85,7 @@ pub enum BookSide {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CompareReport {
     pub seq_gaps: Vec<SeqGap>,
+    pub trade_count_mismatches: Vec<TradeCountMismatch>,
     pub trade_mismatches: Vec<TradeMismatch>,
     pub ts_deltas: Vec<TsDelta>,
     pub book_mismatches: Vec<BookMismatch>,
@@ -81,6 +94,7 @@ pub struct CompareReport {
 impl CompareReport {
     pub fn is_clean(&self) -> bool {
         self.seq_gaps.is_empty()
+            && self.trade_count_mismatches.is_empty()
             && self.trade_mismatches.is_empty()
             && self.book_mismatches.is_empty()
     }
@@ -188,6 +202,20 @@ pub fn compare_streams(a: &[FeedEvent], b: &[FeedEvent]) -> CompareReport {
         let Some(bt) = b_trades.get(symbol) else {
             continue;
         };
+        // Positional (Nth-vs-Nth) price comparison is only meaningful when both
+        // sources carry the same run of trades. A count divergence (a dropped or
+        // missed print) misaligns every following pair, so report the count and
+        // skip the per-index comparison instead of fabricating mismatches.
+        if at.len() != bt.len() {
+            report.trade_count_mismatches.push(TradeCountMismatch {
+                symbol: symbol.clone(),
+                a_source: at.first().map(|t| t.source).unwrap_or(a_src),
+                b_source: bt.first().map(|t| t.source).unwrap_or(b_src),
+                a_count: at.len(),
+                b_count: bt.len(),
+            });
+            continue;
+        }
         for (i, (ta, tb)) in at.iter().zip(bt.iter()).enumerate() {
             if !price_eq(
                 ta.price_mantissa,
