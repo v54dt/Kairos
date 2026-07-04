@@ -53,6 +53,15 @@ mod tests {
             last_scale: 2,
             last_volume: 1,
             is_trial: false,
+            source: 0,
+            seq: 0,
+            epoch: 0,
+            recv_ts_us: 0,
+            board: crate::model::QuoteBoard::RoundLot,
+            session: crate::model::Session::Unknown,
+            trading_date: 0,
+            simtrade: false,
+            underlying_price: 0,
         }
     }
 

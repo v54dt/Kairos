@@ -10,10 +10,11 @@ const STATS_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Default)]
 pub struct Metrics {
-    pub quotes_decoded: AtomicU64, // quotes decoded off Aeron
-    pub decode_errors: AtomicU64,  // undecodable fragments (was silently dropped)
-    pub clients: AtomicU64,        // connected UDS consumers (gauge)
-    pub lagged: AtomicU64,         // broadcast lag events (a slow consumer fell behind)
+    pub quotes_decoded: AtomicU64,   // quotes decoded off Aeron
+    pub decode_errors: AtomicU64,    // undecodable fragments (was silently dropped)
+    pub unknown_variants: AtomicU64, // well-formed Envelopes of an unrouted variant
+    pub clients: AtomicU64,          // connected UDS consumers (gauge)
+    pub lagged: AtomicU64,           // broadcast lag events (a slow consumer fell behind)
 }
 
 impl Metrics {
@@ -30,9 +31,10 @@ impl Metrics {
                 std::thread::sleep(STATS_INTERVAL);
                 let quotes = self.quotes_decoded.load(Ordering::Relaxed);
                 eprintln!(
-                    "kairos-core: quotes={quotes} (+{}) decode_err={} clients={} lagged={}",
+                    "kairos-core: quotes={quotes} (+{}) decode_err={} unknown_variant={} clients={} lagged={}",
                     quotes.saturating_sub(last_quotes),
                     self.decode_errors.load(Ordering::Relaxed),
+                    self.unknown_variants.load(Ordering::Relaxed),
                     self.clients.load(Ordering::Relaxed),
                     self.lagged.load(Ordering::Relaxed),
                 );
