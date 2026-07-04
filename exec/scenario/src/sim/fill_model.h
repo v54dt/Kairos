@@ -51,7 +51,9 @@ namespace kairos::exec {
 //             queue_ahead = max(0, queue_ahead - floor(D_eff * queue_ahead / D_prev))
 //             D_prev      = D_now
 //     An order fills only on a trade (never on a bare book decrease) and only for
-//     the portion of trade volume beyond queue_ahead.
+//     the portion of trade volume beyond queue_ahead. A trade STRICTLY THROUGH the
+//     limit (price < P for a BUY, > P for a SELL) means the whole level was swept:
+//     the order fills in full at P, queue irrelevant (matches hftbacktest).
 //
 // Trial events (試撮 indicative auction matches, is_trial=true) never produce a
 // continuous fill and never advance the queue; they update the cached book only.

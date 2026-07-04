@@ -139,6 +139,19 @@ int main() {
     CHECK(c.fills.size() == 2 && c.fills[1].id == "b2" && c.fills[1].shares == 10);
   }
 
+  // A trade strictly through the limit sweeps the level: the resting order fills
+  // in full regardless of queue_ahead (a downward sweep reporting only the print).
+  {
+    Capture c;
+    auto m = Make(&c);
+    m.OnBook(Book({{10000, 100}}, {{10100, 100}}), 1);
+    m.Submit(Buy("b1", 10000, 50));     // queue_ahead 100, never reached at-price
+    m.OnTrade(9900, 100000, 2, false);  // 99.00 < 100.00 -> full fill at 100.00
+    CHECK(c.fills.size() == 1 && c.fills[0].id == "b1" && c.fills[0].shares == 50 &&
+          c.fills[0].price == 10000);
+    CHECK(!m.HasResting());
+  }
+
   if (g_failures == 0) {
     std::printf("test_prob_queue: OK\n");
     return 0;

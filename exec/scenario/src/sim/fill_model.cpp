@@ -151,6 +151,13 @@ void SymbolFillModel::OnTrade(Cents price, long vol, std::int64_t, bool is_trial
     // consume it first (time priority), so stacked own orders never double-fill it.
     long spill_taken = 0;
     for (auto& r : resting_) {
+      bool through = r.order.side == Side::kBuy ? price < r.order.price : price > r.order.price;
+      if (through) {
+        // Price traded strictly through the limit: the resting level is gone, the
+        // order fills in full (matches hftbacktest's trade-through behavior).
+        EmitFill(&r, r.order.remaining(), r.order.price);
+        continue;
+      }
       if (price != r.order.price) continue;
       long spill = std::max(0L, vol - r.queue_ahead);
       long f = std::min(r.order.remaining(), std::max(0L, spill - spill_taken));
