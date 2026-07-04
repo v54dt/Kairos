@@ -166,6 +166,9 @@ Scenario LoadScenario(const std::string& path) {
   s.ack_timeout_ms = t["risk"]["ack_timeout_ms"].value_or<long>(3000);
   s.stop_on_disconnect = t["risk"]["stop_on_disconnect"].value_or<bool>(true);
 
+  // [journal]
+  s.journal_dir = t["journal"]["dir"].value_or<std::string>("");
+
   // [mode]
   s.live = t["mode"]["live"].value_or<bool>(false);
 

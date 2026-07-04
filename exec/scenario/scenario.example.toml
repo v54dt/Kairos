@@ -42,6 +42,12 @@ start_time = "09:10"
 end_time = "13:25"
 weekdays_only = true
 
+[journal]
+# Run-state journal dir: on restart, same-day fills are replayed so accounting is
+# restored and the budget isn't re-bought. Empty = off. Use an absolute path
+# (e.g. /home/you/Kairos/data/journal) so it lands under the gitignored data/.
+dir = ""
+
 [risk]
 require_two_sided = true
 quote_max_age_ms = 5000

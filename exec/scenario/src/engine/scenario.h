@@ -63,6 +63,9 @@ struct Scenario {
   long ack_timeout_ms = 3000;  // un-acked order past this => local reject + re-place
   bool stop_on_disconnect = true;
 
+  // Run-state journal dir (restart-safe fill accounting). Empty => disabled.
+  std::string journal_dir;
+
   bool live = false;
 
   NotifyConfig notify;

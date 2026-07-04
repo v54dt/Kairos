@@ -78,9 +78,13 @@ add_library(kairos_scenario src/engine/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
 
+add_library(kairos_order_journal src/order/order_journal.cpp)
+target_include_directories(kairos_order_journal PUBLIC ${KAIROS_INC})
+
 add_library(kairos_engine src/engine/engine.cpp)
 target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
-target_link_libraries(kairos_engine PUBLIC kairos_uds kairos_scenario kairos_dashboard)
+target_link_libraries(kairos_engine PUBLIC kairos_uds kairos_scenario kairos_dashboard
+                                           kairos_order_journal)
 
 # Live order backend: real concords StockClient when the stock SDK is present in exec/scenario/lib,
 # otherwise a stub so --live reports "no broker SDK". CI has no SDK and builds the stub.
@@ -123,6 +127,10 @@ add_test(NAME test_market_fees COMMAND test_market_fees)
 add_executable(test_pricing tests/test_pricing.cpp)
 target_include_directories(test_pricing PRIVATE ${KAIROS_INC})
 add_test(NAME test_pricing COMMAND test_pricing)
+
+add_executable(test_order_journal tests/test_order_journal.cpp)
+target_link_libraries(test_order_journal PRIVATE kairos_order_journal kairos_scenario)
+add_test(NAME test_order_journal COMMAND test_order_journal)
 
 add_executable(test_scenario tests/test_scenario.cpp)
 target_link_libraries(test_scenario PRIVATE kairos_scenario)
