@@ -6,6 +6,7 @@ pub mod book;
 pub mod compare;
 pub mod decode;
 pub mod encode;
+pub mod export;
 pub mod ipc;
 pub mod metrics;
 pub mod model;
