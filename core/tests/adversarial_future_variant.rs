@@ -17,9 +17,14 @@ fn forge_future_variant() -> Vec<u8> {
     // variant exists in this schema) to simulate a newer build's Envelope.
     let mut hb = Vec::new();
     let mut m = Builder::new_default();
-    m.init_root::<kairos_capnp::envelope::Builder>().set_heartbeat(());
+    m.init_root::<kairos_capnp::envelope::Builder>()
+        .set_heartbeat(());
     serialize::write_message(&mut hb, &m).unwrap();
-    assert_eq!(u16::from_le_bytes([hb[16], hb[17]]), 5, "discriminant moved");
+    assert_eq!(
+        u16::from_le_bytes([hb[16], hb[17]]),
+        5,
+        "discriminant moved"
+    );
     hb[16..18].copy_from_slice(&7u16.to_le_bytes());
     hb
 }
