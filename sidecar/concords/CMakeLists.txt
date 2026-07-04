@@ -33,6 +33,17 @@ add_executable(test_feed_window tests/test_feed_window.cpp)
 target_include_directories(test_feed_window PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 add_test(NAME test_feed_window COMMAND test_feed_window)
 
+# Cross-language wire-format regression: assert the C++ encoder matches the shared golden fixture
+# that the Rust decoder test also pins (Track C5).
+add_executable(test_golden tests/test_golden.cpp)
+target_link_libraries(test_golden PRIVATE kairos_quote_encode)
+target_compile_definitions(
+  test_golden
+  PRIVATE
+    KAIROS_GOLDEN_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/quote_golden_envelope.bin"
+)
+add_test(NAME test_golden COMMAND test_golden)
+
 # The concords feed executable links the broker SDK + Aeron; built only where the SDK is present in
 # concords/lib (CI has none, so it builds just the encode lib + test).
 set(CONCORDS_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/lib")
