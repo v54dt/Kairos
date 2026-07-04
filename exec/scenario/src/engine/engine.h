@@ -11,6 +11,7 @@
 #include "engine_logic.h"
 #include "event_sink.h"
 #include "order_backend.h"
+#include "order_journal.h"
 #include "quote_book.h"
 #include "scenario.h"
 #include "uds_quote_client.h"
@@ -45,6 +46,7 @@ class ScenarioEngine {
   DashboardMetrics* dashboard_ = nullptr;
   QuoteBook book_;
   std::unique_ptr<UdsQuoteClient> quotes_;
+  OrderJournal journal_;
 
   std::mutex mu_;
   std::condition_variable cv_;

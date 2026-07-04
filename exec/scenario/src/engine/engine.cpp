@@ -35,6 +35,15 @@ LocalNow NowUtc8() {
   return {hhmm, weekday};
 }
 
+std::string TodayUtc8() {
+  auto utc8 = std::chrono::system_clock::now() + std::chrono::hours(8);
+  std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(utc8)};
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%04d%02u%02u", static_cast<int>(ymd.year()),
+                static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+  return buf;
+}
+
 int HhmmToMin(int hhmm) { return (hhmm / 100) * 60 + hhmm % 100; }
 
 constexpr int kMarketCloseHhmm = 1330;  // TWSE regular session close; hard stop
@@ -53,6 +62,20 @@ ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSi
                                            cv_.notify_all();
                                          }
                                        });
+  // Restart-safe accounting: replay today's fills so the budget isn't re-bought,
+  // then append to the same journal.
+  if (!s_.journal_dir.empty()) {
+    std::string name = s_.symbol + "-" + SideName(s_.side) + "-" + TodayUtc8();
+    long restored = 0;
+    for (const auto& fl : ReadJournalFills(JournalPath(s_.journal_dir, name))) {
+      acct_.RecordFill(s_, fl.price, fl.shares);
+      restored += fl.shares;
+    }
+    if (restored > 0)
+      std::fprintf(stderr, "kairos-exec: journal replay restored %ld sh (NT$ %ld)\n", restored,
+                   acct_.FilledTwd());
+    journal_.Open(s_.journal_dir, name);
+  }
 }
 
 std::string ScenarioEngine::NextOrderId() {
@@ -80,6 +103,7 @@ void ScenarioEngine::ClearResting() {
 
 void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& err) {
   std::lock_guard<std::mutex> lock(mu_);
+  journal_.LogAck(id, ok);
   if (id != resting_id_) return;
   if (ok) {
     resting_acked_ = true;
@@ -102,8 +126,9 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
   }
 }
 
-void ScenarioEngine::OnCancel(const std::string& id, bool /*ok*/) {
+void ScenarioEngine::OnCancel(const std::string& id, bool ok) {
   std::lock_guard<std::mutex> lock(mu_);
+  journal_.LogCancel(id, ok);
   if (id != resting_id_) return;
   ClearResting();  // working order gone; next tick re-places at the current peg
   cv_.notify_all();
@@ -121,6 +146,7 @@ void ScenarioEngine::OnDisconnect() {
 
 void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
   std::lock_guard<std::mutex> lock(mu_);
+  journal_.LogFill(id, f.shares, f.price);  // journal (fsync) before we count it
   // Fills are routed to us by id, so always count one — even a late fill that lands
   // after a re-peg cancel cleared the resting order — else the budget overshoots.
   acct_.RecordFill(s_, f.price, f.shares);
