@@ -46,6 +46,7 @@ weekdays_only = true
 require_two_sided = true
 quote_max_age_ms = 5000
 quote_stall_alert_ms = 30000
+ack_timeout_ms = 3000
 stop_on_disconnect = true
 
 [mode]

@@ -60,6 +60,7 @@ struct Scenario {
   bool require_two_sided = true;
   long quote_max_age_ms = 5000;
   long quote_stall_alert_ms = 30000;
+  long ack_timeout_ms = 3000;  // un-acked order past this => local reject + re-place
   bool stop_on_disconnect = true;
 
   bool live = false;

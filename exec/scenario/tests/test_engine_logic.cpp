@@ -152,11 +152,20 @@ static void TestWindow() {
   CHECK(ClassifyWindow(1000, true, 830, 900, close) == WindowPhase::kFillRemainder);
 }
 
+static void TestAckTimeout() {
+  CHECK(!AckTimedOut(false, false, 9999, 3000));  // no working order
+  CHECK(!AckTimedOut(true, true, 9999, 3000));    // already acked
+  CHECK(!AckTimedOut(true, false, 2000, 3000));   // within timeout
+  CHECK(AckTimedOut(true, false, 3001, 3000));    // un-acked past timeout -> reject
+  CHECK(!AckTimedOut(true, false, 9999, 0));      // disabled (timeout 0)
+}
+
 int main() {
   TestDecide();
   TestPacing();
   TestWindow();
   TestAccounting();
+  TestAckTimeout();
   if (g_failures == 0) {
     std::printf("test_engine_logic: OK\n");
     return 0;

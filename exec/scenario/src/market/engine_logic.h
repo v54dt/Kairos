@@ -33,6 +33,12 @@ inline WindowPhase ClassifyWindow(int now_hhmm, bool trading_day, int start_hhmm
   return WindowPhase::kInWindow;
 }
 
+// A working order that has not been acked within timeout_ms is presumed lost (hub
+// dropped it / a silent write failure) and should be locally rejected + re-placed.
+inline bool AckTimedOut(bool active, bool acked, long ms_since_submit, long timeout_ms) {
+  return active && !acked && timeout_ms > 0 && ms_since_submit > timeout_ms;
+}
+
 enum class ActionKind { kNone, kPlace, kRepeg };
 
 struct Action {
