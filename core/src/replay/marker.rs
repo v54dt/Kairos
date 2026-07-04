@@ -80,14 +80,37 @@ pub fn ensure_no_active_replay(aeron_dir: &str) -> anyhow::Result<()> {
     }
 }
 
-/// The live default Aeron dir (`/dev/shm/aeron-<user>`), or `None` when the user
-/// name cannot be resolved. Used only to hard-refuse an accidental replay into the
-/// live dir; the required `--aeron-dir` already prevents a silent landing.
+/// The Aeron dir the live stack falls back to when no dir is given explicitly,
+/// mirroring the media driver's own resolution: `$AERON_DIR` if set, else
+/// `/dev/shm/aeron-<user>`. The user name follows Aeron's `username()`: `$USER`,
+/// then `getpwuid`, then `"default"` — so the guard still names the real live dir
+/// when `$USER` is unset (systemd/cron/container), where Aeron uses `getpwuid`.
 pub fn default_aeron_dir() -> Option<String> {
-    std::env::var("USER")
-        .ok()
-        .filter(|u| !u.is_empty())
-        .map(|u| format!("/dev/shm/aeron-{u}"))
+    if let Some(d) = std::env::var("AERON_DIR").ok().filter(|d| !d.is_empty()) {
+        return Some(d);
+    }
+    Some(format!("/dev/shm/aeron-{}", current_username()))
+}
+
+/// The current user name, matching Aeron's `aeron_username()`: `$USER` first, then
+/// the passwd entry for the real uid, then the literal `"default"`.
+fn current_username() -> String {
+    if let Some(u) = std::env::var("USER").ok().filter(|u| !u.is_empty()) {
+        return u;
+    }
+    // SAFETY: getpwuid returns a pointer into a static buffer valid until the next
+    // libc password call; pw_name is copied out immediately.
+    unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        if pw.is_null() || (*pw).pw_name.is_null() {
+            return "default".to_owned();
+        }
+        std::ffi::CStr::from_ptr((*pw).pw_name)
+            .to_str()
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map_or_else(|| "default".to_owned(), str::to_owned)
+    }
 }
 
 /// True if `target` resolves to the live `default` dir and `--force-live-dir` was
