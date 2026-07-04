@@ -60,12 +60,17 @@ fn torn_tail_aborts_whole_recording() {
     use kairos_core::encode::encode_trade;
     use kairos_core::record::{FileHeader, RecordWriter};
     let mut w = RecordWriter::create(Vec::new(), &FileHeader::new(1001, 0)).unwrap();
-    w.append(0, &encode_trade(&trade(0, "2330", 58050, 2, 1000, 1))).unwrap();
-    w.append(1, &encode_trade(&trade(0, "2330", 58100, 2, 2000, 1))).unwrap();
+    w.append(0, &encode_trade(&trade(0, "2330", 58050, 2, 1000, 1)))
+        .unwrap();
+    w.append(1, &encode_trade(&trade(0, "2330", 58100, 2, 2000, 1)))
+        .unwrap();
     let mut buf = w.into_inner();
     // simulate a crash mid-write: drop the last few bytes of the final record
     buf.truncate(buf.len() - 3);
     let r = read_kqr_events(&buf);
     // The two fully-written records are unrecoverable to the tool.
-    assert!(r.is_err(), "expected torn-tail to surface as Err (whole file lost)");
+    assert!(
+        r.is_err(),
+        "expected torn-tail to surface as Err (whole file lost)"
+    );
 }

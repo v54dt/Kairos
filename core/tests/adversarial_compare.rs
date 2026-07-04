@@ -10,8 +10,16 @@ fn quote(source: u16, symbol: &str, seq: u64, epoch: u32, bid: i64, ask: i64) ->
         symbol: symbol.to_owned(),
         exchange: Exchange::Twse,
         quote_ts_us: 0,
-        bids: vec![PriceLevel { price_mantissa: bid, price_scale: 2, volume: 1 }],
-        asks: vec![PriceLevel { price_mantissa: ask, price_scale: 2, volume: 1 }],
+        bids: vec![PriceLevel {
+            price_mantissa: bid,
+            price_scale: 2,
+            volume: 1,
+        }],
+        asks: vec![PriceLevel {
+            price_mantissa: ask,
+            price_scale: 2,
+            volume: 1,
+        }],
         last_price: 0,
         last_scale: 0,
         last_volume: 0,
@@ -63,7 +71,10 @@ fn trade_count_divergence_is_flagged() {
         FeedEvent::Trade(trade(1, "2330", 2, 1, 58010, 200)),
     ];
     let report = compare_streams(&a, &b);
-    assert!(!report.is_clean(), "count divergence must not read as clean");
+    assert!(
+        !report.is_clean(),
+        "count divergence must not read as clean"
+    );
     assert_eq!(report.trade_count_mismatches.len(), 1);
     assert_eq!(report.trade_count_mismatches[0].a_count, 3);
     assert_eq!(report.trade_count_mismatches[0].b_count, 2);

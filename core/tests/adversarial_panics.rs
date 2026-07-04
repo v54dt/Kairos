@@ -32,8 +32,16 @@ fn quote_seq(seq: u64) -> Quote {
         symbol: "2330".to_owned(),
         exchange: Exchange::Twse,
         quote_ts_us: 0,
-        bids: vec![PriceLevel { price_mantissa: 1, price_scale: 2, volume: 1 }],
-        asks: vec![PriceLevel { price_mantissa: 2, price_scale: 2, volume: 1 }],
+        bids: vec![PriceLevel {
+            price_mantissa: 1,
+            price_scale: 2,
+            volume: 1,
+        }],
+        asks: vec![PriceLevel {
+            price_mantissa: 2,
+            price_scale: 2,
+            volume: 1,
+        }],
         last_price: 0,
         last_scale: 0,
         last_volume: 0,
