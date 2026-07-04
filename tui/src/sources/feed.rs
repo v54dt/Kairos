@@ -287,7 +287,10 @@ mod tests {
         );
         let b = &st.per_symbol["2330"];
         assert_eq!(b.bids.len(), 1, "depth-only quote still refreshes levels");
-        assert_eq!(b.last_price, 58080, "last trade must survive a depth-only quote");
+        assert_eq!(
+            b.last_price, 58080,
+            "last trade must survive a depth-only quote"
+        );
         assert_eq!(b.last_volume, 9);
     }
 
