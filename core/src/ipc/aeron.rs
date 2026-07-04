@@ -10,10 +10,23 @@ pub const CONTROL_STREAM_ID: i32 = 1002;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_OFFER_RETRIES: usize = 5;
 
+/// Aeron directory to use: an explicit `--aeron-dir` wins, else a non-empty
+/// `$KAIROS_AERON_DIR` (so a replay environment can point driver+core+replayd at
+/// an isolated dir without code changes), else `None` (Aeron's own default). When
+/// both are unset, behavior is unchanged.
+pub fn resolve_aeron_dir(explicit: Option<&str>) -> Option<String> {
+    if let Some(d) = explicit {
+        return Some(d.to_owned());
+    }
+    std::env::var("KAIROS_AERON_DIR")
+        .ok()
+        .filter(|d| !d.is_empty())
+}
+
 fn client(aeron_dir: Option<&str>) -> anyhow::Result<Aeron> {
     let ctx = AeronContext::new().context("aeron context")?;
-    if let Some(dir) = aeron_dir {
-        ctx.set_dir(&dir.into_c_string())
+    if let Some(dir) = resolve_aeron_dir(aeron_dir) {
+        ctx.set_dir(&dir.as_str().into_c_string())
             .map_err(|e| anyhow::anyhow!("set aeron dir: {e:?}"))?;
     }
     let aeron = Aeron::new(&ctx).context("aeron client")?;
@@ -91,5 +104,28 @@ impl AeronPub {
             }
         }
         anyhow::bail!("offer failed after {MAX_OFFER_RETRIES} retries (backpressure)")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_aeron_dir;
+
+    #[test]
+    fn resolve_aeron_dir_precedence() {
+        // Explicit always wins, regardless of the env.
+        unsafe { std::env::set_var("KAIROS_AERON_DIR", "/env/dir") };
+        assert_eq!(
+            resolve_aeron_dir(Some("/explicit")).as_deref(),
+            Some("/explicit")
+        );
+        // No explicit -> non-empty env is used.
+        assert_eq!(resolve_aeron_dir(None).as_deref(), Some("/env/dir"));
+        // Empty env is ignored (treated as unset).
+        unsafe { std::env::set_var("KAIROS_AERON_DIR", "") };
+        assert_eq!(resolve_aeron_dir(None), None);
+        // Unset -> None (unchanged default behavior).
+        unsafe { std::env::remove_var("KAIROS_AERON_DIR") };
+        assert_eq!(resolve_aeron_dir(None), None);
     }
 }
