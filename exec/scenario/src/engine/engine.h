@@ -2,8 +2,9 @@
 #define KAIROS_EXEC_ENGINE_H_
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
-#include <memory>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -18,13 +19,26 @@
 
 namespace kairos::exec {
 
+// The engine's two time sources, injected so a replay can drive them coherently.
+// wall: local/session gating (date strings + HHMM window). mono: latency/pacing.
+// Both default to the real system/steady clocks.
+struct EngineClock {
+  std::function<std::chrono::system_clock::time_point()> wall = [] {
+    return std::chrono::system_clock::now();
+  };
+  std::function<std::chrono::steady_clock::time_point()> mono = [] {
+    return std::chrono::steady_clock::now();
+  };
+};
+
 // Drives a scenario: consumes the core quote feed into a QuoteBook, and on each
 // tick decides place / re-peg / nothing (engine_logic), routing orders through
 // the OrderBackend behind a 1 req/s gate. Run() blocks until the budget is met,
 // the window closes, or RequestStop().
 class ScenarioEngine {
  public:
-  ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink, QuoteSource* quotes);
+  ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink, QuoteSource* quotes,
+                 EngineClock clock = {});
 
   void Run();
   void RequestStop();
@@ -46,6 +60,7 @@ class ScenarioEngine {
   DashboardMetrics* dashboard_ = nullptr;
   QuoteBook book_;
   QuoteSource* quotes_;
+  EngineClock clock_;
   OrderJournal journal_;
 
   std::mutex mu_;
