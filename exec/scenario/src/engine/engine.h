@@ -34,6 +34,7 @@ class ScenarioEngine {
   void OnAck(const std::string& id, bool ok, const std::string& err);
   void OnFill(const std::string& id, const Fill& f);
   void OnCancel(const std::string& id, bool ok);
+  void OnDisconnect();
   void ClearResting();  // call under mu_
   void SdkGate();
   std::string NextOrderId();
@@ -57,6 +58,7 @@ class ScenarioEngine {
   std::chrono::steady_clock::time_point resting_t_start_;   // before Submit (post-gate)
   std::chrono::steady_clock::time_point resting_t_submit_;  // after Submit returns
   bool complete_ = false;
+  bool quote_stalled_ = false;  // quote-stall alert armed/fired (main-thread only)
   std::atomic<bool> stop_{false};
   bool ignore_window_ = false;
   int schedule_start_min_ =

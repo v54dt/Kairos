@@ -58,7 +58,6 @@ start_time = "09:10"
 end_time = "13:25"
 
 [risk]
-max_open_orders = 1
 quote_max_age_ms = 70000
 )";
 
@@ -75,7 +74,6 @@ quote_max_age_ms = 70000
   CHECK_EQ(s.budget_twd, 300000);
   CHECK_EQ(s.window_start_hhmm, 910);
   CHECK_EQ(s.window_end_hhmm, 1325);
-  CHECK_EQ(s.max_open_orders, 1);
   CHECK_EQ(s.quote_max_age_ms, 70000);
   CHECK(ValidateScenario(s).empty());
 

@@ -4,6 +4,7 @@
 
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <mutex>
@@ -76,8 +77,21 @@ int main() {
     CHECK(fill_px == 92500);
   }
 
-  client.Disconnect();
-  server.Stop();
+  // Unexpected drop: a client connected to the hub gets its disconnect callback
+  // when the hub goes away (a clean Disconnect() does not fire it).
+  std::atomic<bool> disconnected{false};
+  HubOrderBackend client2(path);
+  client2.SetCallbacks([](const std::string&, bool, const std::string&) {},
+                       [](const std::string&, const Fill&) {}, [](const std::string&, bool) {},
+                       [&] { disconnected = true; });
+  CHECK(client2.Connect());
+
+  client.Disconnect();  // clean: fires no disconnect callback
+  server.Stop();        // hub gone: client2's reader hits EOF -> disconnect callback
+  for (int i = 0; i < 200 && !disconnected; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  CHECK(disconnected);
+  client2.Disconnect();
 
   if (g_failures == 0) {
     std::printf("test_hub_order_backend: OK\n");

@@ -76,6 +76,9 @@ void HubOrderBackend::ReadLoop() {
         break;
     }
   }
+  // Loop ended while not stopping => the hub link dropped unexpectedly (not an
+  // intentional Disconnect()); notify the engine.
+  if (!stop_ && on_disconnect_) on_disconnect_();
 }
 
 }  // namespace kairos::exec
