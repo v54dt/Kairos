@@ -73,6 +73,7 @@ int main(int argc, char** argv) {
   while (!g_stop) std::this_thread::sleep_for(std::chrono::milliseconds(200));
   std::printf("kairos-sim-hub: shutting down\n");
   quotes.Stop();
+  backend.Finalize();  // resolve any pending closing-auction orders (end of tape)
   server.Stop();
   return 0;
 }

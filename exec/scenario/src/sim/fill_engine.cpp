@@ -125,6 +125,16 @@ void FillEngine::Advance(std::int64_t ts_us) {
   }
 }
 
+void FillEngine::Finalize() {
+  if (!closing_open_) return;
+  for (auto& [sym, st] : symbols_) {
+    if (st.closing_matched) continue;
+    st.auction.SetReference(st.closing_ref);
+    RunClosingMatch(&st);
+    st.closing_matched = true;
+  }
+}
+
 void FillEngine::OnBook(const std::string& symbol, const TopOfBook& book, std::int64_t ts_us) {
   Advance(ts_us);
   auto it = symbols_.find(symbol);

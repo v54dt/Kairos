@@ -58,4 +58,9 @@ void SimOrderBackend::OnTrade(const std::string& symbol, const Trade& trade) {
   engine_.OnTrade(symbol, trade.price, trade.volume, trade.trade_ts_us, trade.is_trial);
 }
 
+void SimOrderBackend::Finalize() {
+  std::lock_guard<std::mutex> lock(mu_);
+  engine_.Finalize();
+}
+
 }  // namespace kairos::exec

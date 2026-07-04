@@ -205,6 +205,25 @@ void TestClosingAuctionDelay() {
   CHECK(c.shares_for("b") == 100 && c.shares_for("s") == 100);
 }
 
+// A delayed close whose tape ends before the extended-close boundary: the acked
+// closing orders must be resolved by Finalize (end of tape), not silently lost.
+void TestClosingAuctionFinalizeFlush() {
+  Capture c;
+  FillEngine e = MakeEngine(&c);
+  e.AddSymbol("2330");
+  e.OnTrade("2330", 10000, 10, Us(10, 0, 1), false);          // reference := 100.00
+  e.Submit(Ord("b", Side::kBuy, 10500, 100, Us(13, 25, 0)));  // cross 105.00 == +5%
+  e.Submit(Ord("s", Side::kSell, 10500, 100, Us(13, 25, 30)));
+  // First post-boundary event arrives late (13:35): deviates > 3.5% -> delayed to
+  // 13:33, match deferred; the tape then ends with no further event.
+  e.OnBook("2330", Book({{10500, 100}}, {{10600, 100}}), Us(13, 35, 0));
+  CHECK(c.fills.empty());
+  e.Finalize();  // end of tape -> forced closing match
+  CHECK(c.shares_for("b") == 100 && c.shares_for("s") == 100);
+  e.Finalize();  // idempotent: no double fill
+  CHECK(c.shares_for("b") == 100 && c.shares_for("s") == 100);
+}
+
 }  // namespace
 
 int main() {
@@ -213,6 +232,7 @@ int main() {
   TestOpeningAuction();
   TestClosingAuctionNoDelay();
   TestClosingAuctionDelay();
+  TestClosingAuctionFinalizeFlush();
 
   if (g_failures == 0) {
     std::printf("test_auction: OK\n");

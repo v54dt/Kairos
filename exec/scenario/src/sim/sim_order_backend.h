@@ -37,6 +37,10 @@ class SimOrderBackend : public OrderBackend {
   void OnBook(const std::string& symbol, const TopOfBook& book);
   void OnTrade(const std::string& symbol, const Trade& trade);
 
+  // Flush pending closing-auction orders at end of tape / shutdown (see
+  // FillEngine::Finalize). Safe to call once the market-event stream has ended.
+  void Finalize();
+
  private:
   std::mutex mu_;
   FillEngine engine_;
