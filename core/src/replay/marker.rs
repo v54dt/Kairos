@@ -1,0 +1,190 @@
+//! Replay/record mutual exclusion. A running replay drops a marker file into its
+//! target Aeron dir; kairos-recordd refuses to start when a live marker is present
+//! in ITS Aeron dir, so a replay can never pollute the real archive. This is the
+//! enforcement mechanism — not a doc-only convention. Also holds the pure helpers
+//! that keep a fat-fingered replay out of the live default dir.
+
+use std::path::{Path, PathBuf};
+
+/// Marker file name written into the target Aeron dir by a running replay.
+pub const MARKER_NAME: &str = "kairos-replay.marker";
+
+/// Path of the replay marker inside `aeron_dir`.
+pub fn marker_path(aeron_dir: &str) -> PathBuf {
+    Path::new(aeron_dir).join(MARKER_NAME)
+}
+
+/// Removes the replay marker it wrote when dropped (clean exit or Ctrl-C).
+pub struct MarkerGuard {
+    path: PathBuf,
+}
+
+impl Drop for MarkerGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// Write the replay marker (this process's pid) into `aeron_dir`, creating the dir
+/// if needed. The returned guard removes it on drop.
+pub fn write_marker(aeron_dir: &str) -> std::io::Result<MarkerGuard> {
+    std::fs::create_dir_all(aeron_dir)?;
+    let path = marker_path(aeron_dir);
+    std::fs::write(&path, std::process::id().to_string())?;
+    Ok(MarkerGuard { path })
+}
+
+/// True if a process with `pid` currently exists. `kill(pid, 0)` succeeds for a
+/// live process and fails with `EPERM` for one we may not signal (still alive);
+/// only `ESRCH` (no such process) counts as dead.
+pub fn pid_is_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: kill with signal 0 performs only an existence/permission check.
+    let rc = unsafe { libc::kill(pid, 0) };
+    if rc == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Refuse to start recording when an active replay marker sits in `aeron_dir`.
+/// Absent -> Ok. Present with a live pid -> hard error. Present with a dead pid
+/// (a crashed replay left it behind) -> warn, remove, and continue.
+pub fn ensure_no_active_replay(aeron_dir: &str) -> anyhow::Result<()> {
+    let path = marker_path(aeron_dir);
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => anyhow::bail!("cannot read replay marker {}: {e}", path.display()),
+    };
+    match contents.trim().parse::<i32>() {
+        Ok(pid) if pid_is_alive(pid) => anyhow::bail!(
+            "a replay is active (pid {pid}) on this Aeron dir; refusing to record and pollute the \
+             archive. Stop the replay or remove {}",
+            path.display()
+        ),
+        Ok(_) => {
+            eprintln!(
+                "kairos-recordd: stale replay marker at {} (replay gone); removing",
+                path.display()
+            );
+            let _ = std::fs::remove_file(&path);
+            Ok(())
+        }
+        Err(_) => anyhow::bail!(
+            "unreadable replay marker at {}; remove it manually if no replay is running",
+            path.display()
+        ),
+    }
+}
+
+/// The live default Aeron dir (`/dev/shm/aeron-<user>`), or `None` when the user
+/// name cannot be resolved. Used only to hard-refuse an accidental replay into the
+/// live dir; the required `--aeron-dir` already prevents a silent landing.
+pub fn default_aeron_dir() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .map(|u| format!("/dev/shm/aeron-{u}"))
+}
+
+/// True if `target` resolves to the live `default` dir and `--force-live-dir` was
+/// not passed. Trailing slashes are normalized so `/x` and `/x/` compare equal.
+pub fn refuses_live_dir(target: &str, default: Option<&str>, force: bool) -> bool {
+    if force {
+        return false;
+    }
+    let norm = |s: &str| s.trim_end_matches('/').to_owned();
+    default.map(norm) == Some(norm(target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> String {
+        let p = std::env::temp_dir().join(format!("kairos-marker-{}-{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn absent_marker_is_ok() {
+        let dir = tmp("absent");
+        assert!(ensure_no_active_replay(&dir).is_ok());
+    }
+
+    #[test]
+    fn live_marker_refuses() {
+        let dir = tmp("live");
+        std::fs::write(marker_path(&dir), std::process::id().to_string()).unwrap();
+        assert!(ensure_no_active_replay(&dir).is_err());
+        // Still present (not removed for a live replay).
+        assert!(marker_path(&dir).exists());
+    }
+
+    #[test]
+    fn stale_marker_is_removed_and_ok() {
+        let dir = tmp("stale");
+        // A pid that is almost certainly not running.
+        std::fs::write(marker_path(&dir), "2147483000").unwrap();
+        assert!(ensure_no_active_replay(&dir).is_ok());
+        assert!(!marker_path(&dir).exists());
+    }
+
+    #[test]
+    fn unreadable_marker_refuses() {
+        let dir = tmp("garbage");
+        std::fs::write(marker_path(&dir), "not-a-pid").unwrap();
+        assert!(ensure_no_active_replay(&dir).is_err());
+    }
+
+    #[test]
+    fn write_marker_guard_removes_on_drop() {
+        let dir = tmp("guard");
+        {
+            let _g = write_marker(&dir).unwrap();
+            assert!(marker_path(&dir).exists());
+        }
+        assert!(!marker_path(&dir).exists());
+    }
+
+    #[test]
+    fn self_pid_is_alive() {
+        assert!(pid_is_alive(std::process::id() as i32));
+        assert!(!pid_is_alive(2_147_483_000));
+        assert!(!pid_is_alive(0));
+    }
+
+    #[test]
+    fn refuses_live_dir_logic() {
+        assert!(refuses_live_dir(
+            "/dev/shm/aeron-bob",
+            Some("/dev/shm/aeron-bob"),
+            false
+        ));
+        // Trailing slash normalized.
+        assert!(refuses_live_dir(
+            "/dev/shm/aeron-bob/",
+            Some("/dev/shm/aeron-bob"),
+            false
+        ));
+        // --force-live-dir overrides.
+        assert!(!refuses_live_dir(
+            "/dev/shm/aeron-bob",
+            Some("/dev/shm/aeron-bob"),
+            true
+        ));
+        // Different dir is fine.
+        assert!(!refuses_live_dir(
+            "/tmp/replay",
+            Some("/dev/shm/aeron-bob"),
+            false
+        ));
+        // Unknown default never refuses.
+        assert!(!refuses_live_dir("/dev/shm/aeron-bob", None, false));
+    }
+}
