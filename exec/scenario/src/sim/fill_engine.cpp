@@ -83,6 +83,9 @@ void FillEngine::RunClosingMatch(SymbolState* st) {
     }
   }
   st->auction.Clear();
+  // Resting continuous orders are frozen at 13:25 (A8): not migrated into the
+  // closing auction, so each expires with a terminal cancel at the close.
+  st->model->ExpireAllResting();
 }
 
 void FillEngine::Advance(std::int64_t ts_us) {

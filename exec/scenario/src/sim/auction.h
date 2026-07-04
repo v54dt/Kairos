@@ -44,6 +44,14 @@ namespace kairos::exec {
 //  A7. Opening-auction unmatched remainder carries into the continuous session as
 //      a resting limit order; closing-auction unmatched remainder expires at the
 //      close (the session is over).
+//  A8. Resting continuous orders are NOT migrated into the closing call auction
+//      (real TWSE migrates unfilled continuous orders into 集合競價收盤). They are
+//      frozen at 13:25 and expired with a terminal cancel at the close, so an acked
+//      order always ends the session with a terminal event; a strategy targeting
+//      the closing auction must submit explicit closing-window orders. Related:
+//      an order submitted before any market event has place_ts_us anchored at 0,
+//      so HhmmFromUs(0) (08:00 Taipei) routes it to the opening auction — accepted,
+//      the sim is tape-driven.
 // ====================================================================
 class AuctionEngine {
  public:

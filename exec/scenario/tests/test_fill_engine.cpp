@@ -84,6 +84,24 @@ SimOrder Buy(const std::string& id, const std::string& sym, Cents price, long sh
   return o;
 }
 
+// CLOCK_REALTIME microseconds for a Taipei local wall time (UTC+8).
+std::int64_t Us(int hh, int mm, int ss = 0) {
+  long local = hh * 3600 + mm * 60 + ss;
+  return static_cast<std::int64_t>(local - 8 * 3600) * 1000000;
+}
+
+SimOrder Order(const std::string& id, const std::string& sym, Side side, Cents price, long shares,
+               std::int64_t ts) {
+  SimOrder o;
+  o.id = id;
+  o.symbol = sym;
+  o.side = side;
+  o.price = price;
+  o.shares = shares;
+  o.place_ts_us = ts;
+  return o;
+}
+
 FillEngine Make(Capture* c, FillMode mode = FillMode::kConservative) {
   return FillEngine(
       mode,
@@ -204,6 +222,41 @@ int main() {
     CHECK(c.fills.size() == 1);
     e.Cancel("a", At(3));
     CHECK(c.cancels.size() == 1 && !c.cancels[0].second);
+  }
+
+  // A4 fidelity: a resting continuous order still alive when the closing window
+  // opens is frozen (not migrated into the closing auction, A8) and MUST receive a
+  // terminal expiry cancel at the close -- never left live forever.
+  {
+    Capture c;
+    FillEngine e = Make(&c);
+    e.AddSymbol("2330");
+    e.OnTrade("2330", 10000, 10, Us(10, 0, 0), false);  // reference := 100.00
+    e.Submit(Order("rest", "2330", Side::kBuy, 10000, 1000, Us(10, 0, 1)));
+    CHECK(c.acks.size() == 1 && c.acks[0].ok);
+    // 5000-lot print at 100.00 in the closing window: continuous matching is frozen.
+    e.OnTrade("2330", 10000, 5000, Us(13, 26, 0), false);
+    CHECK(c.fills.empty());
+    e.Finalize();  // close: no auction order, but the resting order must expire
+    CHECK(c.fills.empty());
+    CHECK(c.cancels.size() == 1 && c.cancels[0].first == "rest" && c.cancels[0].second);
+  }
+
+  // The documented A8 workaround: the same order submitted as an explicit
+  // closing-auction order fills at the cross (no expiry).
+  {
+    Capture c;
+    FillEngine e = Make(&c);
+    e.AddSymbol("2330");
+    e.OnTrade("2330", 10000, 10, Us(10, 0, 0), false);  // reference := 100.00
+    e.Submit(Order("rest", "2330", Side::kBuy, 10000, 1000, Us(13, 25, 0)));
+    e.Submit(Order("liq", "2330", Side::kSell, 10000, 5000, Us(13, 25, 30)));
+    e.Finalize();
+    long got = 0;
+    for (auto& f : c.fills)
+      if (f.id == "rest") got += f.shares;
+    CHECK(got == 1000);
+    CHECK(c.cancels.empty());
   }
 
   // Determinism: same tape twice -> byte-identical fill sequence.
