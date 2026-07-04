@@ -84,4 +84,5 @@
 //! is written under `<out>/hft/`; an operator can `np.savez` them into a single
 //! `.npz` if a tool ever strictly requires that.
 
+pub mod hft;
 pub mod npy;
