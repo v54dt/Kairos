@@ -84,12 +84,61 @@ fn parse_csv(text: &str) -> Result<Vec<Vec<String>>, String> {
     Ok(rows)
 }
 
-/// Number of data rows (header excluded). Errors on a malformed CSV or an empty
-/// file with no header row, mirroring the trader's fail-closed parse.
+const REQUIRED_COLS: [&str; 5] = ["symbol", "category", "note", "start_date", "end_date"];
+const CATEGORIES: [&str; 5] = [
+    "disposal",
+    "attention",
+    "suspension",
+    "margin_suspension",
+    "sell_first",
+];
+
+/// Trim ASCII whitespace and upper-case, matching exec/scenario `NormalizeSymbol`.
+fn normalize_symbol(s: &str) -> String {
+    s.trim_matches(|c: char| c.is_ascii_whitespace())
+        .chars()
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Number of data rows (header excluded). Mirrors the trader's fail-closed
+/// `Blacklist::Parse`: errors on a malformed CSV, a missing header column, a row
+/// whose field count differs from the header, an embedded newline in a field, an
+/// empty or non-ASCII-alphanumeric symbol, or an unknown category.
 pub fn parse_entry_count(text: &str) -> Result<usize, String> {
     let rows = parse_csv(text)?;
-    if rows.is_empty() {
-        return Err("no header row".to_string());
+    let header = rows.first().ok_or("no header row")?;
+    for name in REQUIRED_COLS {
+        if !header.iter().any(|h| h == name) {
+            return Err(format!("missing header column: {name}"));
+        }
+    }
+    let i_symbol = header.iter().position(|h| h == "symbol").unwrap();
+    let i_category = header.iter().position(|h| h == "category").unwrap();
+    for (r, fields) in rows.iter().enumerate().skip(1) {
+        if fields.len() != header.len() {
+            return Err(format!(
+                "row {r}: got {} fields, header has {}",
+                fields.len(),
+                header.len()
+            ));
+        }
+        if fields.iter().any(|f| f.contains('\n') || f.contains('\r')) {
+            return Err(format!("row {r}: embedded newline in field"));
+        }
+        let symbol = normalize_symbol(&fields[i_symbol]);
+        if symbol.is_empty() {
+            return Err(format!("row {r}: empty symbol"));
+        }
+        if !symbol
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+        {
+            return Err(format!("row {r}: non-alphanumeric byte in symbol"));
+        }
+        if !CATEGORIES.contains(&fields[i_category].as_str()) {
+            return Err(format!("row {r}: unknown category '{}'", fields[i_category]));
+        }
     }
     Ok(rows.len() - 1)
 }
@@ -181,6 +230,42 @@ mod tests {
     #[test]
     fn empty_text_has_no_header() {
         assert!(parse_entry_count("").is_err());
+    }
+
+    #[test]
+    fn missing_header_column_is_error() {
+        assert!(parse_entry_count("symbol,category\n2330,disposal\n").is_err());
+    }
+
+    #[test]
+    fn short_row_is_error() {
+        assert!(parse_entry_count(&format!("{HEADER}2330,disposal\n")).is_err());
+    }
+
+    #[test]
+    fn unknown_category_is_error() {
+        assert!(parse_entry_count(&format!("{HEADER}2330,dispsal,x,,\n")).is_err());
+    }
+
+    #[test]
+    fn empty_symbol_is_error() {
+        assert!(parse_entry_count(&format!("{HEADER},disposal,x,,\n")).is_err());
+    }
+
+    #[test]
+    fn non_ascii_symbol_is_error() {
+        assert!(parse_entry_count(&format!("{HEADER}２３３０,disposal,x,,\n")).is_err());
+    }
+
+    #[test]
+    fn embedded_newline_in_quoted_field_is_error() {
+        let text = format!("{HEADER}2330,disposal,\"line1\nline2\",,\n");
+        assert!(parse_entry_count(&text).is_err());
+    }
+
+    #[test]
+    fn lowercase_symbol_is_normalized_and_counted() {
+        assert!(parse_entry_count(&format!("{HEADER}tsm,disposal,x,,\n")).is_ok());
     }
 
     #[test]
