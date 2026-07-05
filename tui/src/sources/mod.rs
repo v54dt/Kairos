@@ -7,5 +7,6 @@ pub mod hub_status;
 pub mod journald;
 pub mod order_journal;
 pub mod recorder;
+pub mod service;
 pub mod systemd;
 pub mod timers;
