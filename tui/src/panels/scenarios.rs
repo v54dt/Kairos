@@ -9,8 +9,25 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::sources::age::format_age;
 use crate::sources::hub_status::HubReport;
 use crate::sources::order_journal::{ScenarioJournal, ScenariosView};
+use crate::sources::scenario_ctl::{
+    Focus, RunningTrader, ScenarioPrompt, ScenarioToml, ScenarioUi,
+};
 
 const HUB_HEIGHT: u16 = 9;
+const ACTIONS_HEIGHT: u16 = 5;
+const RUNNING_HEIGHT: u16 = 6;
+const TODAY_WIDTH: u16 = 50;
+
+/// Vertical scroll so the selected list row (at line `sel_line`, header-adjusted)
+/// stays visible inside a `height`-tall bordered box.
+fn scroll_offset(height: u16, sel_line: usize) -> u16 {
+    let inner_h = height.saturating_sub(2) as usize;
+    if inner_h > 0 && sel_line >= inner_h {
+        (sel_line - inner_h + 1) as u16
+    } else {
+        0
+    }
+}
 
 fn now_us() -> i64 {
     SystemTime::now()
@@ -26,6 +43,135 @@ fn dim(text: &str) -> Line<'static> {
     ))
 }
 
+fn mode_span(live: bool) -> Span<'static> {
+    if live {
+        Span::styled(
+            "LIVE",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled("PAPER", Style::default().fg(Color::Green))
+    }
+}
+
+fn select_line(cells: Vec<Span<'static>>, selected: bool) -> Line<'static> {
+    let marker = if selected { "> " } else { "  " };
+    let mut spans = vec![Span::raw(marker)];
+    spans.extend(cells);
+    let mut line = Line::from(spans);
+    if selected {
+        line = line.style(Style::default().add_modifier(Modifier::REVERSED));
+    }
+    line
+}
+
+fn available_lines(avail: &[ScenarioToml], skipped: usize, ui: &ScenarioUi) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        format!("  {:<22} {:<8} {:>6}", "toml", "symbol", "mode"),
+        Style::default().fg(Color::DarkGray),
+    ))];
+    if avail.is_empty() {
+        lines.push(dim("no scenario tomls in scenario dir"));
+    }
+    let focused = ui.focus == Focus::Available;
+    let sel = ui.avail_sel.min(avail.len().saturating_sub(1));
+    for (i, s) in avail.iter().enumerate() {
+        let stem = s
+            .path
+            .file_stem()
+            .map(|x| x.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let cells = vec![
+            Span::raw(format!("{stem:<22} ")),
+            Span::raw(format!("{:<8} ", s.symbol)),
+            mode_span(s.live),
+        ];
+        lines.push(select_line(cells, focused && i == sel));
+    }
+    if skipped > 0 {
+        lines.push(dim(&format!("({skipped} unreadable toml skipped)")));
+    }
+    lines
+}
+
+fn running_lines(running: &[RunningTrader], ui: &ScenarioUi) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        format!("  {:>7} {:<26} {:>5}", "pid", "toml", "mode"),
+        Style::default().fg(Color::DarkGray),
+    ))];
+    if running.is_empty() {
+        lines.push(dim("no running scenario traders"));
+    }
+    let focused = ui.focus == Focus::Running;
+    let sel = ui.run_sel.min(running.len().saturating_sub(1));
+    for (i, t) in running.iter().enumerate() {
+        let toml = t.toml.rsplit('/').next().unwrap_or(&t.toml).to_string();
+        let cells = vec![
+            Span::raw(format!("{:>7} ", t.pid)),
+            Span::raw(format!("{toml:<26} ")),
+            mode_span(t.live),
+        ];
+        lines.push(select_line(cells, focused && i == sel));
+    }
+    lines
+}
+
+fn legend_line() -> Line<'static> {
+    Line::from(Span::styled(
+        "[left/right] focus  [up/down] select  [s]tart  [x]stop   LIVE start needs typed confirm",
+        Style::default().fg(Color::DarkGray),
+    ))
+}
+
+fn actions_lines(ui: &ScenarioUi) -> Vec<Line<'static>> {
+    let cyan = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let red = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let yellow = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let mut lines = match &ui.confirm {
+        ScenarioPrompt::Idle => vec![legend_line()],
+        ScenarioPrompt::TypedStart {
+            name,
+            symbol,
+            stem,
+            buf,
+            ..
+        } => vec![
+            Line::from(Span::styled(
+                format!("START LIVE {name} ({symbol}) — REAL orders"),
+                red,
+            )),
+            Line::from(Span::styled(
+                format!("type '{stem}' and Enter to confirm   [Esc] cancel"),
+                red,
+            )),
+            Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
+        ],
+        ScenarioPrompt::SimpleStart { name, symbol, .. } => vec![Line::from(Span::styled(
+            format!("START PAPER {name} ({symbol})?  [y/N]"),
+            yellow,
+        ))],
+        ScenarioPrompt::SimpleStop { pid, toml, live } => {
+            let mode = if *live { "LIVE" } else { "PAPER" };
+            let toml = toml.rsplit('/').next().unwrap_or(toml);
+            vec![Line::from(Span::styled(
+                format!("STOP pid {pid} {toml} ({mode})?  [y/N]"),
+                yellow,
+            ))]
+        }
+    };
+    if let Some(msg) = &ui.last_result {
+        lines.push(Line::from(Span::styled(
+            msg.clone(),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines
+}
+
 fn age_from_us(now: i64, event_us: i64) -> String {
     if event_us <= 0 || now <= event_us {
         return "-".to_string();
@@ -36,8 +182,8 @@ fn age_from_us(now: i64, event_us: i64) -> String {
 fn scenario_lines(scenarios: &[ScenarioJournal], now: i64) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         format!(
-            "{:<22} {:>6} {:>10} {:>14} {:>6} {:>7}",
-            "scenario", "fills", "shares", "NT$", "cxl", "last"
+            "{:<16} {:>6} {:>10} {:>6}",
+            "journal", "fills", "shares", "last"
         ),
         Style::default().fg(Color::DarkGray),
     ))];
@@ -46,21 +192,19 @@ fn scenario_lines(scenarios: &[ScenarioJournal], now: i64) -> Vec<Line<'static>>
         return lines;
     }
     for s in scenarios {
-        let ntd = s.filled_notional_cents / 100;
         lines.push(Line::from(format!(
-            "{:<22} {:>6} {:>10} {:>14} {:>6} {:>7}",
+            "{:<16} {:>6} {:>10} {:>6}",
             s.name,
             s.fills,
             s.filled_shares,
-            ntd,
-            s.cancels,
             age_from_us(now, s.last_event_us),
         )));
     }
     lines
 }
 
-fn hub_lines(hub: &Option<HubReport>, now_s: i64) -> Vec<Line<'static>> {
+fn hub_lines(hub: &Option<HubReport>) -> Vec<Line<'static>> {
+    let now_s = now_us() / 1_000_000;
     let report = match hub {
         None => {
             return vec![Line::from(Span::styled(
@@ -106,11 +250,7 @@ fn hub_lines(hub: &Option<HubReport>, now_s: i64) -> Vec<Line<'static>> {
         lines.push(dim("no connected clients"));
     }
     for c in &report.status.clients {
-        let idle = if c.last_activity_s > 0 && now_s > c.last_activity_s {
-            format_age(Duration::from_secs((now_s - c.last_activity_s) as u64))
-        } else {
-            "-".to_string()
-        };
+        let idle = age_from_us(now_s * 1_000_000, c.last_activity_s * 1_000_000);
         let open_style = if c.open > 0 {
             Style::default().fg(Color::Cyan)
         } else {
@@ -127,24 +267,266 @@ fn hub_lines(hub: &Option<HubReport>, now_s: i64) -> Vec<Line<'static>> {
     lines
 }
 
-pub fn render(frame: &mut Frame, area: Rect, view: &ScenariosView) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    view: &ScenariosView,
+    avail: &(Vec<ScenarioToml>, usize),
+    running: &[RunningTrader],
+    ui: &ScenarioUi,
+) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(HUB_HEIGHT)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(RUNNING_HEIGHT),
+            Constraint::Length(ACTIONS_HEIGHT),
+            Constraint::Length(HUB_HEIGHT),
+        ])
         .split(area);
 
-    let now = now_us();
+    let avail_offset = if ui.focus == Focus::Available && !avail.0.is_empty() {
+        let sel = ui.avail_sel.min(avail.0.len() - 1);
+        scroll_offset(rows[0].height, sel + 1)
+    } else {
+        0
+    };
     frame.render_widget(
-        Paragraph::new(scenario_lines(&view.scenarios, now)).block(
+        Paragraph::new(available_lines(&avail.0, avail.1, ui))
+            .scroll((avail_offset, 0))
+            .block(
+                Block::default()
+                    .title("available scenarios")
+                    .borders(Borders::ALL),
+            ),
+        rows[0],
+    );
+    let run_offset = if ui.focus == Focus::Running && !running.is_empty() {
+        let sel = ui.run_sel.min(running.len() - 1);
+        scroll_offset(rows[1].height, sel + 1)
+    } else {
+        0
+    };
+    frame.render_widget(
+        Paragraph::new(running_lines(running, ui))
+            .scroll((run_offset, 0))
+            .block(
+                Block::default()
+                    .title("running traders")
+                    .borders(Borders::ALL),
+            ),
+        rows[1],
+    );
+    frame.render_widget(
+        Paragraph::new(actions_lines(ui))
+            .block(Block::default().title("actions").borders(Borders::ALL)),
+        rows[2],
+    );
+
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(TODAY_WIDTH), Constraint::Min(0)])
+        .split(rows[3]);
+    frame.render_widget(
+        Paragraph::new(scenario_lines(&view.scenarios, now_us())).block(
             Block::default()
                 .title("scenarios (today)")
                 .borders(Borders::ALL),
         ),
-        rows[0],
+        bottom[0],
     );
     frame.render_widget(
-        Paragraph::new(hub_lines(&view.hub, now / 1_000_000))
+        Paragraph::new(hub_lines(&view.hub))
             .block(Block::default().title("order hub").borders(Borders::ALL)),
-        rows[1],
+        bottom[1],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::hub_status::{HubReport, HubStatus};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::path::PathBuf;
+
+    fn scen(stem: &str, symbol: &str, live: bool) -> ScenarioToml {
+        ScenarioToml {
+            path: PathBuf::from(format!("/e/{stem}.toml")),
+            name: format!("{symbol}-plan"),
+            symbol: symbol.to_string(),
+            live,
+        }
+    }
+
+    fn trader(pid: i32, live: bool) -> RunningTrader {
+        RunningTrader {
+            pid,
+            toml: "/e/2330.toml".to_string(),
+            live,
+        }
+    }
+
+    fn draw(
+        w: u16,
+        h: u16,
+        view: &ScenariosView,
+        avail: &(Vec<ScenarioToml>, usize),
+        running: &[RunningTrader],
+        ui: &ScenarioUi,
+    ) {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, f.area(), view, avail, running, ui))
+            .unwrap();
+    }
+
+    fn buffer_text(
+        w: u16,
+        h: u16,
+        view: &ScenariosView,
+        avail: &(Vec<ScenarioToml>, usize),
+        running: &[RunningTrader],
+        ui: &ScenarioUi,
+    ) -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, f.area(), view, avail, running, ui))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let area = buf.area;
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        s
+    }
+
+    #[test]
+    fn renders_empty_without_panic() {
+        let view = ScenariosView::default();
+        draw(100, 30, &view, &(vec![], 0), &[], &ScenarioUi::default());
+    }
+
+    #[test]
+    fn renders_many_with_skipped_and_no_hub() {
+        let avail: Vec<_> = (0..40)
+            .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
+            .collect();
+        let running: Vec<_> = (0..6).map(|i| trader(1000 + i, i % 2 == 0)).collect();
+        let ui = ScenarioUi {
+            focus: Focus::Available,
+            avail_sel: 39,
+            run_sel: 5,
+            ..Default::default()
+        };
+        draw(
+            100,
+            30,
+            &ScenariosView::default(),
+            &(avail, 3),
+            &running,
+            &ui,
+        );
+    }
+
+    #[test]
+    fn available_selection_scrolls_into_view_on_small_terminal() {
+        let avail: Vec<_> = (0..40)
+            .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
+            .collect();
+        let ui = ScenarioUi {
+            focus: Focus::Available,
+            avail_sel: 39,
+            ..Default::default()
+        };
+        let text = buffer_text(80, 24, &ScenariosView::default(), &(avail, 0), &[], &ui);
+        assert!(
+            text.contains("s39 "),
+            "selected scenario scrolled off-screen:\n{text}"
+        );
+        assert!(
+            text.contains("[up/down] select"),
+            "action/confirm banner squeezed out:\n{text}"
+        );
+    }
+
+    #[test]
+    fn running_selection_scrolls_into_view_on_small_terminal() {
+        let running: Vec<_> = (0..12).map(|i| trader(2000 + i, i % 2 == 0)).collect();
+        let ui = ScenarioUi {
+            focus: Focus::Running,
+            run_sel: 11,
+            ..Default::default()
+        };
+        let text = buffer_text(
+            80,
+            24,
+            &ScenariosView::default(),
+            &(vec![], 0),
+            &running,
+            &ui,
+        );
+        assert!(
+            text.contains("2011 "),
+            "selected trader scrolled off-screen:\n{text}"
+        );
+    }
+
+    #[test]
+    fn renders_confirm_overlays() {
+        let ui_live = ScenarioUi {
+            confirm: ScenarioPrompt::TypedStart {
+                toml: PathBuf::from("/e/2330.toml"),
+                name: "2330-plan".to_string(),
+                symbol: "2330".to_string(),
+                stem: "2330".to_string(),
+                buf: "23".to_string(),
+            },
+            last_result: Some("launched pid 4242".to_string()),
+            ..Default::default()
+        };
+        draw(
+            80,
+            20,
+            &ScenariosView::default(),
+            &(vec![], 0),
+            &[],
+            &ui_live,
+        );
+
+        let ui_stop = ScenarioUi {
+            focus: Focus::Running,
+            confirm: ScenarioPrompt::SimpleStop {
+                pid: 4242,
+                toml: "/e/2330.toml".to_string(),
+                live: true,
+            },
+            ..Default::default()
+        };
+        draw(
+            80,
+            20,
+            &ScenariosView::default(),
+            &(vec![], 0),
+            &[],
+            &ui_stop,
+        );
+    }
+
+    #[test]
+    fn renders_with_hub_present() {
+        let view = ScenariosView {
+            scenarios: vec![],
+            hub: Some(HubReport {
+                status: HubStatus {
+                    client_count: 1,
+                    ..Default::default()
+                },
+                age: Duration::from_secs(1),
+            }),
+        };
+        draw(100, 30, &view, &(vec![], 0), &[], &ScenarioUi::default());
+    }
 }

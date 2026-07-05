@@ -13,6 +13,7 @@ use crate::sources::hub_status::{self, HubReport};
 use crate::sources::journald::{self, LogLine};
 use crate::sources::order_journal::{self, ScenarioJournal, ScenariosView};
 use crate::sources::recorder::{self, RecorderStats};
+use crate::sources::scenario_ctl::{self, RunningTrader, ScenarioToml};
 use crate::sources::systemd::{self, UnitStatus};
 use crate::sources::timers::{self, TimerEntry};
 
@@ -40,6 +41,7 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub journal_dir: PathBuf,
     pub blacklist_path: Option<PathBuf>,
+    pub scenario_dir: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,12 +92,16 @@ Options:
   --data-dir <PATH>      Recorder data directory
   --journal-dir <PATH>   Order-journal directory (default: <data-dir>/journal)
   --blacklist-path <PATH> Restricted-symbol blacklist CSV (F1 gate)
+  --scenario-dir <PATH>  Scenario .toml directory (default: ~/Kairos/exec/scenario)
   -h, --help             Print this help and exit
   -V, --version          Print version and exit
 
 Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Events  [Tab] switch  [q] quit
 Overview tab: [up/down] select unit  [r]estart [s]tart [x]stop [f] reset-failed  [S]/[X] kairos.target up/down
               trading units require a typed confirm (the unit name); research crons and reset-failed are y/N
+Scenarios tab: [left/right] focus Available/Running  [up/down] select  [s]tart selected  [x]stop selected
+               starting a LIVE toml needs a typed confirm (the toml stem); a PAPER start and any stop are y/N
+               the trader binary is found on PATH as kairos_scenario_trader ($KAIROS_SCENARIO_TRADER overrides)
 Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)";
 
 pub fn version_line() -> String {
@@ -111,6 +117,7 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
     let mut data_dir = default_data_dir();
     let mut journal_dir: Option<PathBuf> = None;
     let mut blacklist_path: Option<PathBuf> = None;
+    let mut scenario_dir: Option<PathBuf> = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -136,21 +143,36 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
                     blacklist_path = Some(PathBuf::from(v));
                 }
             }
+            "--scenario-dir" => {
+                if let Some(v) = args.next() {
+                    scenario_dir = Some(PathBuf::from(v));
+                }
+            }
             _ => {}
         }
     }
     let journal_dir = journal_dir.unwrap_or_else(|| data_dir.join("journal"));
+    let scenario_dir = scenario_dir.unwrap_or_else(default_scenario_dir);
     Cli::Run(Config {
         symbols,
         data_dir,
         journal_dir,
         blacklist_path,
+        scenario_dir,
     })
 }
 
 fn default_data_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join("Kairos").join("data")
+}
+
+fn default_scenario_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home)
+        .join("Kairos")
+        .join("exec")
+        .join("scenario")
 }
 
 #[derive(Default)]
@@ -161,6 +183,8 @@ pub struct Shared {
     pub disk_free: Mutex<Option<u64>>,
     pub hub: Mutex<Option<HubReport>>,
     pub scenarios: Mutex<Vec<ScenarioJournal>>,
+    pub available: Mutex<(Vec<ScenarioToml>, usize)>,
+    pub running: Mutex<Vec<RunningTrader>>,
     pub timers: Mutex<Fetch<Vec<TimerEntry>>>,
     pub blacklist: Mutex<Fetch<BlacklistFreshness>>,
     pub archive: Mutex<Fetch<ArchiveScan>>,
@@ -175,6 +199,8 @@ pub struct Snapshot {
     pub disk_free: Option<u64>,
     pub feed: FeedState,
     pub scenarios: ScenariosView,
+    pub available: (Vec<ScenarioToml>, usize),
+    pub running: Vec<RunningTrader>,
     pub timers: Fetch<Vec<TimerEntry>>,
     pub blacklist: Fetch<BlacklistFreshness>,
     pub archive: Fetch<ArchiveScan>,
@@ -195,6 +221,8 @@ impl Snapshot {
             disk_free: *shared.disk_free.lock().unwrap(),
             feed: feed.lock().unwrap().clone(),
             scenarios,
+            available: shared.available.lock().unwrap().clone(),
+            running: shared.running.lock().unwrap().clone(),
             timers: shared.timers.lock().unwrap().clone(),
             blacklist: shared.blacklist.lock().unwrap().clone(),
             archive: shared.archive.lock().unwrap().clone(),
@@ -268,6 +296,22 @@ pub async fn refresh_scenarios(shared: Arc<Shared>, journal_dir: PathBuf) {
         tick.tick().await;
         let date = order_journal::today_tw();
         *shared.scenarios.lock().unwrap() = order_journal::scan_journal(&journal_dir, &date);
+    }
+}
+
+pub async fn refresh_available(shared: Arc<Shared>, scenario_dir: PathBuf) {
+    let mut tick = interval(REFRESH);
+    loop {
+        tick.tick().await;
+        *shared.available.lock().unwrap() = scenario_ctl::enumerate_available(&scenario_dir);
+    }
+}
+
+pub async fn refresh_running(shared: Arc<Shared>) {
+    let mut tick = interval(REFRESH);
+    loop {
+        tick.tick().await;
+        *shared.running.lock().unwrap() = scenario_ctl::enumerate_running();
     }
 }
 
@@ -417,6 +461,22 @@ mod tests {
     fn journal_dir_flag_honored() {
         match parse_cli(args(&["--journal-dir", "/tmp/j"])) {
             Cli::Run(cfg) => assert_eq!(cfg.journal_dir, PathBuf::from("/tmp/j")),
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn scenario_dir_flag_honored() {
+        match parse_cli(args(&["--scenario-dir", "/tmp/s"])) {
+            Cli::Run(cfg) => assert_eq!(cfg.scenario_dir, PathBuf::from("/tmp/s")),
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn scenario_dir_defaults_under_home() {
+        match parse_cli(args(&[])) {
+            Cli::Run(cfg) => assert!(cfg.scenario_dir.ends_with("exec/scenario")),
             _ => panic!("expected Run"),
         }
     }
