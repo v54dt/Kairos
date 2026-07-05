@@ -110,7 +110,9 @@ void TestContinuous() {
 void TestClosingAuction() {
   std::string path = "/tmp/kairos-test-simhub-a-" + std::to_string(::getpid()) + ".sock";
   SimOrderBackend backend(FillMode::kConservative, {"2330"});
-  OrderHubServer server(&backend, path);
+  // This test rests a crossing buy/sell pair on one account -- exactly the
+  // 155-1-5 self-match the risk gate blocks -- so opt out to exercise the cross.
+  OrderHubServer server(&backend, path, OrderHub::RiskConfig{.self_match_protection = false});
   CHECK(server.Start());
   backend.OnTrade("2330", Trade{10000, 10, Us(10, 0, 0), false});           // reference := 100.00
   backend.OnBook("2330", Book({{10000, 0}}, {{10100, 0}}, Us(13, 25, 0)));  // closing window opens

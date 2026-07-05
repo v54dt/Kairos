@@ -52,6 +52,18 @@ long OrderHub::CurrentTradingDay() const {
   return forced_trading_day_ >= 0 ? forced_trading_day_ : LocalTradingDay();
 }
 
+bool OrderHub::SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const {
+  for (const auto& [rid, r] : routes_) {
+    if (r.closed || r.side == o.side || r.symbol != o.symbol) continue;
+    bool cross = o.side == Side::kBuy ? o.price >= r.price : o.price <= r.price;
+    if (cross) {
+      *other_id = rid;
+      return true;
+    }
+  }
+  return false;
+}
+
 void OrderHub::SetTradingDayForTest(long day) {
   std::lock_guard<std::mutex> lock(mu_);
   forced_trading_day_ = day;
@@ -119,6 +131,8 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       } else if (risk_.max_open_notional_per_client_cents > 0 &&
                  clients_[client].open_notional + n > risk_.max_open_notional_per_client_cents) {
         reject = "per-client open-notional limit exceeded";
+      } else if (std::string other; risk_.self_match_protection && SelfMatchCross(o, &other)) {
+        reject = "self-match risk vs open order " + other;
       } else {
         ClientStats& cs = clients_[client];
         routes_[o.id] = Route{client, o.shares, false, false, o.symbol, o.side, o.price};

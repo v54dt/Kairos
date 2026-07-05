@@ -96,6 +96,9 @@ class OrderHub {
   void RejectSubmit(int client, const std::string& id, const std::string& reason);
   void ReleaseOpen(Route& r);      // free a route's reserved open notional once; caller holds mu_
   long CurrentTradingDay() const;  // caller holds mu_
+  // True if the submit would cross this account's own open opposite-side order on
+  // the same symbol (證交法 155-1-5); *other_id is the crossed order. Caller holds mu_.
+  bool SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const;
 
   OrderBackend* backend_;
   SendFn send_;

@@ -297,6 +297,68 @@ void TestHaltFile() {
   ::unsetenv("KAIROS_HUB_HALT");
 }
 
+// ---- self-match protection (155-1-5) -----------------------------------
+
+void TestSelfMatch() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub hub(&backend, sink.Fn());  // self_match_protection on by default
+  CHECK(hub.Start());
+
+  // Client 7 rests a buy 2330@100.00; client 9's crossing sell at/below 100.00
+  // would self-match across the shared account -> rejected, not forwarded.
+  Feed(hub, 7, Order("A", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 1);
+  Feed(hub, 9, Order("B", "2330", Side::kSell, 10000, 1000));  // sell <= open buy -> cross
+  CHECK(backend.submits.size() == 1);                          // B not forwarded
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+  CHECK(sink.Last().ack.error_message.find("self-match risk vs open order A") != std::string::npos);
+
+  // The resting buy A is untouched (still open).
+  CHECK(hub.CaptureStatus().account_open_notional_cents == 10000000);
+
+  // A non-crossing opposite-side sell (above the open buy) routes normally.
+  Feed(hub, 9, Order("C", "2330", Side::kSell, 10100, 1000));  // sell > open buy -> no cross
+  CHECK(backend.submits.size() == 2);
+
+  // A same-symbol same-side buy routes (only opposite side is a self-match).
+  Feed(hub, 9, Order("D", "2330", Side::kBuy, 9900, 1000));
+  CHECK(backend.submits.size() == 3);
+
+  // A different symbol opposite side never self-matches.
+  Feed(hub, 9, Order("E", "1101", Side::kSell, 5000, 1000));
+  CHECK(backend.submits.size() == 4);
+
+  hub.Stop();
+}
+
+// ---- cancels are never blocked -----------------------------------------
+
+void TestCancelsNeverBlocked() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_account_notional_cents = 1;  // every submit is over the cap
+  cfg.max_open_orders_per_client = 1;  // and over the count limit
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  // Over every cap: a submit is rejected, but a cancel still forwards.
+  Feed(hub, 7, Order("x", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.empty());
+  Cancel(hub, 7, "x");
+  CHECK(backend.cancels.size() == 1);
+
+  // Under admin halt: a submit is rejected, but a cancel still forwards.
+  hub.SetAdminHalt(true);
+  Feed(hub, 7, Order("y", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.empty());
+  Cancel(hub, 7, "y");
+  CHECK(backend.cancels.size() == 2);
+
+  hub.Stop();
+}
+
 }  // namespace
 
 int main() {
@@ -306,6 +368,8 @@ int main() {
   TestPerClientCaps();
   TestAdminHalt();
   TestHaltFile();
+  TestSelfMatch();
+  TestCancelsNeverBlocked();
 
   if (g_failures == 0) {
     std::printf("test_hub_risk_gate: OK\n");
