@@ -11,7 +11,7 @@ execution engine, with recording and monitoring around it.
 | `core/`          | Rust     | `kairos-core` + tools   | Aeron → book → UDS quote server; recorder, replay, verify   |
 | `sidecar/concords/` | C++   | sidecar daemon          | Broker SDK → Aeron feed publisher                           |
 | `exec/scenario/` | C++      | scenario engine         | Strategy scenarios + order hub over UDS                     |
-| `tui/`           | Rust     | `kairos-top`            | Terminal health dashboard (systemd, journald, feed, recorder) |
+| `tui/`           | Rust     | `kairos-top`            | Terminal health dashboard (feeds, books, scenarios, jobs, events) |
 
 ## Build
 
@@ -28,8 +28,12 @@ cd tui && cargo build --release
 ./target/release/kairos-top            # --symbols 2330,0050 --data-dir ~/Kairos/data
 ```
 
-`kairos-top` is read-only (its only write is the UDS Subscribe frame). Quit with
-`q` or `Ctrl-C`; the terminal is restored on quit and on panic.
+`kairos-top` has four tabs, switched with `1`-`4` or `Tab`: **Overview**
+(systemd, feed, recorder, events), **Feeds & Books** (L5 book viewer),
+**Scenarios** (order-journal rollups + live order-hub status), and **Data &
+Events** (jobs & timers, blacklist freshness, recorder archive, and a wider
+journald event tail). It is read-only (its only write is the UDS Subscribe
+frame). Quit with `q` or `Ctrl-C`; the terminal is restored on quit and on panic.
 
 C++ components:
 

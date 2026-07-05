@@ -41,6 +41,12 @@ async fn main() -> Result<()> {
     let shared = Arc::new(Shared::default());
     let feed_state = Arc::new(Mutex::new(FeedState::default()));
 
+    let blacklist_path = sources::blacklist::resolve_blacklist_path(
+        cfg.blacklist_path.as_ref().and_then(|p| p.to_str()),
+        std::env::var("KAIROS_BLACKLIST_CSV").ok().as_deref(),
+    );
+    let kqr_dir = cfg.data_dir.join("kqr");
+
     tokio::spawn(feed::run(socket, cfg.symbols.clone(), feed_state.clone()));
     tokio::spawn(app::refresh_systemd(shared.clone()));
     tokio::spawn(app::refresh_journal(shared.clone()));
@@ -50,6 +56,10 @@ async fn main() -> Result<()> {
         shared.clone(),
         cfg.journal_dir.clone(),
     ));
+    tokio::spawn(app::refresh_timers(shared.clone()));
+    tokio::spawn(app::refresh_blacklist(shared.clone(), blacklist_path));
+    tokio::spawn(app::refresh_archive(shared.clone(), kqr_dir));
+    tokio::spawn(app::refresh_events(shared.clone()));
 
     let mut term = terminal::enter()?;
     let res = run(&mut term, &shared, &feed_state, &cfg).await;
@@ -104,7 +114,7 @@ fn tab_for(event: &Event, current: Tab) -> Option<Tab> {
             return None;
         }
         return match key.code {
-            KeyCode::Char(c @ ('1' | '2' | '3')) => Some(current.select(c)),
+            KeyCode::Char(c @ ('1' | '2' | '3' | '4')) => Some(current.select(c)),
             KeyCode::Tab => Some(current.next()),
             _ => None,
         };

@@ -4,18 +4,27 @@ use std::time::Duration;
 
 use tokio::time::interval;
 
+use std::time::SystemTime;
+
+use crate::sources::archive::{self, ArchiveScan, ShipVerify};
+use crate::sources::blacklist::{self, BlacklistFreshness};
 use crate::sources::feed::FeedState;
 use crate::sources::hub_status::{self, HubReport};
 use crate::sources::journald::{self, LogLine};
 use crate::sources::order_journal::{self, ScenarioJournal, ScenariosView};
 use crate::sources::recorder::{self, RecorderStats};
 use crate::sources::systemd::{self, UnitStatus};
+use crate::sources::timers::{self, TimerEntry};
 
 const REFRESH: Duration = Duration::from_secs(2);
 const JOURNAL_TAIL: u32 = 10;
 const MAX_JOURNAL: usize = 12;
+const EVENTS_TAIL: u32 = 50;
+const MAX_EVENTS: usize = 50;
 const RECORDER_UNIT: &str = "kairos-recordd.service";
 const RECORDER_SCAN: u32 = 200;
+const SHIP_UNIT: &str = "kairos-record-ship.service";
+const SHIP_SCAN: u32 = 200;
 
 #[derive(Clone, Debug, Default)]
 pub enum Fetch<T> {
@@ -30,6 +39,7 @@ pub struct Config {
     pub symbols: Vec<String>,
     pub data_dir: PathBuf,
     pub journal_dir: PathBuf,
+    pub blacklist_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +47,7 @@ pub enum Tab {
     Overview,
     FeedsBooks,
     Scenarios,
+    Data,
 }
 
 impl Tab {
@@ -45,6 +56,7 @@ impl Tab {
             '1' => Tab::Overview,
             '2' => Tab::FeedsBooks,
             '3' => Tab::Scenarios,
+            '4' => Tab::Data,
             _ => self,
         }
     }
@@ -53,7 +65,8 @@ impl Tab {
         match self {
             Tab::Overview => Tab::FeedsBooks,
             Tab::FeedsBooks => Tab::Scenarios,
-            Tab::Scenarios => Tab::Overview,
+            Tab::Scenarios => Tab::Data,
+            Tab::Data => Tab::Overview,
         }
     }
 }
@@ -70,13 +83,14 @@ kairos-top - Kairos market-data and health TUI
 Usage: kairos-top [OPTIONS]
 
 Options:
-  --symbols <A,B,...>   Watchlist symbols (default: 2330,0050)
-  --data-dir <PATH>     Recorder data directory
-  --journal-dir <PATH>  Order-journal directory (default: <data-dir>/journal)
-  -h, --help            Print this help and exit
-  -V, --version         Print version and exit
+  --symbols <A,B,...>    Watchlist symbols (default: 2330,0050)
+  --data-dir <PATH>      Recorder data directory
+  --journal-dir <PATH>   Order-journal directory (default: <data-dir>/journal)
+  --blacklist-path <PATH> Restricted-symbol blacklist CSV (F1 gate)
+  -h, --help             Print this help and exit
+  -V, --version          Print version and exit
 
-Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [Tab] switch  [q] quit";
+Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Data & Events  [Tab] switch  [q] quit";
 
 pub fn version_line() -> String {
     format!("kairos-top {}", env!("CARGO_PKG_VERSION"))
@@ -90,6 +104,7 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
     let mut symbols = vec!["2330".to_string(), "0050".to_string()];
     let mut data_dir = default_data_dir();
     let mut journal_dir: Option<PathBuf> = None;
+    let mut blacklist_path: Option<PathBuf> = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -110,6 +125,11 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
                     journal_dir = Some(PathBuf::from(v));
                 }
             }
+            "--blacklist-path" => {
+                if let Some(v) = args.next() {
+                    blacklist_path = Some(PathBuf::from(v));
+                }
+            }
             _ => {}
         }
     }
@@ -118,6 +138,7 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
         symbols,
         data_dir,
         journal_dir,
+        blacklist_path,
     })
 }
 
@@ -134,6 +155,11 @@ pub struct Shared {
     pub disk_free: Mutex<Option<u64>>,
     pub hub: Mutex<Option<HubReport>>,
     pub scenarios: Mutex<Vec<ScenarioJournal>>,
+    pub timers: Mutex<Fetch<Vec<TimerEntry>>>,
+    pub blacklist: Mutex<Fetch<BlacklistFreshness>>,
+    pub archive: Mutex<Fetch<ArchiveScan>>,
+    pub ship_verify: Mutex<Fetch<Option<ShipVerify>>>,
+    pub events: Mutex<Fetch<Vec<LogLine>>>,
 }
 
 pub struct Snapshot {
@@ -143,6 +169,11 @@ pub struct Snapshot {
     pub disk_free: Option<u64>,
     pub feed: FeedState,
     pub scenarios: ScenariosView,
+    pub timers: Fetch<Vec<TimerEntry>>,
+    pub blacklist: Fetch<BlacklistFreshness>,
+    pub archive: Fetch<ArchiveScan>,
+    pub ship_verify: Fetch<Option<ShipVerify>>,
+    pub events: Fetch<Vec<LogLine>>,
 }
 
 impl Snapshot {
@@ -158,6 +189,11 @@ impl Snapshot {
             disk_free: *shared.disk_free.lock().unwrap(),
             feed: feed.lock().unwrap().clone(),
             scenarios,
+            timers: shared.timers.lock().unwrap().clone(),
+            blacklist: shared.blacklist.lock().unwrap().clone(),
+            archive: shared.archive.lock().unwrap().clone(),
+            ship_verify: shared.ship_verify.lock().unwrap().clone(),
+            events: shared.events.lock().unwrap().clone(),
         }
     }
 }
@@ -178,23 +214,23 @@ pub async fn refresh_journal(shared: Arc<Shared>) {
     let mut tick = interval(REFRESH);
     loop {
         tick.tick().await;
-        *shared.journal.lock().unwrap() = collect_journal().await;
+        *shared.journal.lock().unwrap() = collect_journal(MAX_JOURNAL, JOURNAL_TAIL).await;
     }
 }
 
-async fn collect_journal() -> Fetch<Vec<LogLine>> {
+async fn collect_journal(max: usize, per_unit: u32) -> Fetch<Vec<LogLine>> {
     let units = match systemd::list_units().await {
         Ok(u) => u,
         Err(e) => return Fetch::Err(e.to_string()),
     };
     let mut lines = Vec::new();
     for u in &units {
-        if let Ok(mut ls) = journald::tail_unit(&u.unit, JOURNAL_TAIL).await {
+        if let Ok(mut ls) = journald::tail_unit(&u.unit, per_unit).await {
             lines.append(&mut ls);
         }
     }
     lines.sort_by(|a, b| a.ts.cmp(&b.ts));
-    let drop = lines.len().saturating_sub(MAX_JOURNAL);
+    let drop = lines.len().saturating_sub(max);
     Fetch::Ok(lines.split_off(drop))
 }
 
@@ -226,6 +262,51 @@ pub async fn refresh_scenarios(shared: Arc<Shared>, journal_dir: PathBuf) {
         tick.tick().await;
         let date = order_journal::today_tw();
         *shared.scenarios.lock().unwrap() = order_journal::scan_journal(&journal_dir, &date);
+    }
+}
+
+pub async fn refresh_timers(shared: Arc<Shared>) {
+    let mut tick = interval(REFRESH);
+    loop {
+        tick.tick().await;
+        let r = match timers::collect_timers().await {
+            Ok(v) => Fetch::Ok(v),
+            Err(e) => Fetch::Err(e.to_string()),
+        };
+        *shared.timers.lock().unwrap() = r;
+    }
+}
+
+pub async fn refresh_blacklist(shared: Arc<Shared>, path: PathBuf) {
+    let mut tick = interval(REFRESH);
+    loop {
+        tick.tick().await;
+        let f = blacklist::read_blacklist(&path, SystemTime::now());
+        *shared.blacklist.lock().unwrap() = Fetch::Ok(f);
+    }
+}
+
+pub async fn refresh_archive(shared: Arc<Shared>, kqr_dir: PathBuf) {
+    let mut tick = interval(REFRESH);
+    loop {
+        tick.tick().await;
+        let today = order_journal::today_tw();
+        let yesterday = order_journal::yesterday_tw();
+        let scan = archive::scan_archive(&kqr_dir, &today, &yesterday);
+        *shared.archive.lock().unwrap() = Fetch::Ok(scan);
+        let sv = match archive::ship_verify(SHIP_UNIT, SHIP_SCAN).await {
+            Ok(v) => Fetch::Ok(v),
+            Err(e) => Fetch::Err(e.to_string()),
+        };
+        *shared.ship_verify.lock().unwrap() = sv;
+    }
+}
+
+pub async fn refresh_events(shared: Arc<Shared>) {
+    let mut tick = interval(REFRESH);
+    loop {
+        tick.tick().await;
+        *shared.events.lock().unwrap() = collect_journal(MAX_EVENTS, EVENTS_TAIL).await;
     }
 }
 
@@ -279,6 +360,8 @@ mod tests {
         assert_eq!(Tab::FeedsBooks.select('1'), Tab::Overview);
         assert_eq!(Tab::Overview.select('3'), Tab::Scenarios);
         assert_eq!(Tab::Scenarios.select('2'), Tab::FeedsBooks);
+        assert_eq!(Tab::Overview.select('4'), Tab::Data);
+        assert_eq!(Tab::Data.select('1'), Tab::Overview);
     }
 
     #[test]
@@ -286,13 +369,31 @@ mod tests {
         assert_eq!(Tab::FeedsBooks.select('x'), Tab::FeedsBooks);
         assert_eq!(Tab::Overview.select('9'), Tab::Overview);
         assert_eq!(Tab::Scenarios.select('z'), Tab::Scenarios);
+        assert_eq!(Tab::Data.select('z'), Tab::Data);
     }
 
     #[test]
     fn tab_next_cycles() {
         assert_eq!(Tab::Overview.next(), Tab::FeedsBooks);
         assert_eq!(Tab::FeedsBooks.next(), Tab::Scenarios);
-        assert_eq!(Tab::Scenarios.next(), Tab::Overview);
+        assert_eq!(Tab::Scenarios.next(), Tab::Data);
+        assert_eq!(Tab::Data.next(), Tab::Overview);
+    }
+
+    #[test]
+    fn blacklist_path_flag_honored() {
+        match parse_cli(args(&["--blacklist-path", "/tmp/bl.csv"])) {
+            Cli::Run(cfg) => assert_eq!(cfg.blacklist_path, Some(PathBuf::from("/tmp/bl.csv"))),
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn blacklist_path_defaults_none() {
+        match parse_cli(args(&[])) {
+            Cli::Run(cfg) => assert_eq!(cfg.blacklist_path, None),
+            _ => panic!("expected Run"),
+        }
     }
 
     #[test]

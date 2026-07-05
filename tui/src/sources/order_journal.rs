@@ -117,16 +117,26 @@ pub fn aggregate_file(stem: &str, text: &str) -> ScenarioJournal {
     j
 }
 
-/// `YYYYMMDD` for the current day in UTC+8 (TWSE session date), matching the
-/// engine's `DateFromUtc`. Hand-rolled to avoid a chrono dependency.
-pub fn today_tw() -> String {
+/// `YYYYMMDD` for the day `offset` days from now in UTC+8 (TWSE session date),
+/// matching the engine's `DateFromUtc`. Hand-rolled to avoid a chrono dependency.
+fn date_tw(offset: i64) -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    let days = (secs + 8 * 3600).div_euclid(86_400);
+    let days = (secs + 8 * 3600).div_euclid(86_400) + offset;
     let (y, m, d) = civil_from_days(days);
     format!("{y:04}{m:02}{d:02}")
+}
+
+/// `YYYYMMDD` for the current TWSE session date (UTC+8).
+pub fn today_tw() -> String {
+    date_tw(0)
+}
+
+/// `YYYYMMDD` for the previous TWSE session date (UTC+8).
+pub fn yesterday_tw() -> String {
+    date_tw(-1)
 }
 
 // Days since 1970-01-01 -> (year, month, day). Howard Hinnant's civil algorithm.
@@ -279,6 +289,13 @@ mod tests {
         let d = today_tw();
         assert_eq!(d.len(), 8);
         assert!(d.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn yesterday_is_before_today() {
+        let y = yesterday_tw();
+        assert_eq!(y.len(), 8);
+        assert!(y < today_tw());
     }
 
     #[test]
