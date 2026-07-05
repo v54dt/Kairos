@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "hub_status.h"
 #include "uds_frame.h"
 
 namespace kairos::exec {
@@ -41,9 +42,24 @@ bool OrderHubServer::Start() {
     return false;
   }
   accept_thread_ = std::thread([this] { AcceptLoop(); });
+  status_thread_ = std::thread([this] { StatusLoop(); });
   std::printf("kairos-order-hub: listening on %s\n", path_.c_str());
   std::fflush(stdout);
   return true;
+}
+
+void OrderHubServer::WriteStatus(const std::string& path) {
+  AtomicWriteFile(path, SerializeHubStatus(hub_.CaptureStatus()));
+}
+
+void OrderHubServer::StatusLoop() {
+  const std::string path = HubStatusPath();
+  if (path.empty()) return;  // no runtime dir: skip status writes, never /tmp
+  while (!stop_) {
+    WriteStatus(path);
+    for (int i = 0; i < 40 && !stop_; ++i)  // ~2s, sliced for a responsive shutdown
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
 }
 
 void OrderHubServer::AcceptLoop() {
@@ -102,6 +118,7 @@ void OrderHubServer::Stop() {
     listen_fd_ = -1;
   }
   if (accept_thread_.joinable()) accept_thread_.join();
+  if (status_thread_.joinable()) status_thread_.join();
 
   std::vector<int> fds;
   {
@@ -112,6 +129,8 @@ void OrderHubServer::Stop() {
   while (active_clients_.load() > 0) {           // wait for detached client threads to drain
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
+  const std::string status = HubStatusPath();
+  if (!status.empty()) WriteStatus(status);  // final snapshot before teardown
   hub_.Stop();
   ::unlink(path_.c_str());
 }

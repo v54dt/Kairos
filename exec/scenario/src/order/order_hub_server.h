@@ -30,12 +30,15 @@ class OrderHubServer {
   void AcceptLoop();
   void ClientLoop(int fd);
   void Send(int client, const std::vector<std::uint8_t>& bytes);
+  void StatusLoop();                          // periodic status snapshot writer
+  void WriteStatus(const std::string& path);  // one snapshot, off all mutexes
 
   std::string path_;
   OrderHub hub_;
   int listen_fd_ = -1;
   std::atomic<bool> stop_{false};
   std::thread accept_thread_;
+  std::thread status_thread_;
   std::mutex clients_mu_;
   std::unordered_set<int> live_;        // open client fds (Send guard)
   std::atomic<int> active_clients_{0};  // detached client threads in flight
