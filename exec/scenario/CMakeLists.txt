@@ -196,6 +196,10 @@ add_executable(test_order_hub_server tests/test_order_hub_server.cpp)
 target_link_libraries(test_order_hub_server PRIVATE kairos_order_hub_server)
 add_test(NAME test_order_hub_server COMMAND test_order_hub_server)
 
+add_executable(test_hub_shutdown_snapshot tests/test_hub_shutdown_snapshot.cpp)
+target_link_libraries(test_hub_shutdown_snapshot PRIVATE kairos_order_hub_server)
+add_test(NAME test_hub_shutdown_snapshot COMMAND test_hub_shutdown_snapshot)
+
 add_executable(test_hub_order_backend tests/test_hub_order_backend.cpp)
 target_link_libraries(test_hub_order_backend PRIVATE kairos_hub_backend kairos_order_hub_server)
 add_test(NAME test_hub_order_backend COMMAND test_hub_order_backend)

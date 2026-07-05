@@ -121,6 +121,12 @@ void OrderHubServer::Stop() {
   if (accept_thread_.joinable()) accept_thread_.join();
   if (status_thread_.joinable()) status_thread_.join();
 
+  // Snapshot while the registry is still intact: tearing down the client fds
+  // makes each ClientLoop call OnClientDisconnect, which erases per-client
+  // state, so capturing after the drain would clobber it with an empty file.
+  const std::string status = HubStatusPath();
+  if (!status.empty()) WriteStatus(status);  // final snapshot of what was connected/open
+
   std::vector<int> fds;
   {
     std::lock_guard<std::mutex> lock(clients_mu_);
@@ -130,8 +136,6 @@ void OrderHubServer::Stop() {
   while (active_clients_.load() > 0) {           // wait for detached client threads to drain
     std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  const std::string status = HubStatusPath();
-  if (!status.empty()) WriteStatus(status);  // final snapshot before teardown
   hub_.Stop();
   ::unlink(path_.c_str());
 }
