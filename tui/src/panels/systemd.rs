@@ -1,5 +1,5 @@
 use ratatui::Frame;
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -43,21 +43,20 @@ fn legend_line() -> Line<'static> {
     ))
 }
 
-fn confirm_lines(ui: &ServiceUi) -> Vec<Line<'static>> {
+fn footer_lines(ui: &ServiceUi) -> Vec<Line<'static>> {
     let cyan = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
     let mut lines = match &ui.confirm {
-        ConfirmPrompt::Idle => Vec::new(),
+        ConfirmPrompt::Idle => vec![legend_line()],
         ConfirmPrompt::TypedConfirm { verb, unit, buf } => {
             let stem = unit.rsplit_once('.').map(|(s, _)| s).unwrap_or(unit);
+            let red = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
             vec![
+                Line::from(Span::styled(format!("{} {unit}", verb.as_str()), red)),
                 Line::from(Span::styled(
-                    format!(
-                        "type '{stem}' and Enter to {} {unit}   [Esc] cancel",
-                        verb.as_str()
-                    ),
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    format!("type '{stem}' and Enter to confirm   [Esc] cancel"),
+                    red,
                 )),
                 Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
             ]
@@ -79,31 +78,50 @@ fn confirm_lines(ui: &ServiceUi) -> Vec<Line<'static>> {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, state: &Fetch<Vec<UnitStatus>>, ui: &ServiceUi) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(6)])
+        .split(area);
+
     let block = Block::default()
         .title("systemd (kairos-*)")
         .borders(Borders::ALL);
-    let mut lines: Vec<Line> = match state {
-        Fetch::Loading => vec![loading_line()],
-        Fetch::Err(e) => vec![error_line(e)],
-        Fetch::Ok(units) if units.is_empty() => {
+    let (lines, sel): (Vec<Line>, usize) = match state {
+        Fetch::Loading => (vec![loading_line()], 0),
+        Fetch::Err(e) => (vec![error_line(e)], 0),
+        Fetch::Ok(units) if units.is_empty() => (
             vec![Line::from(Span::styled(
                 "no kairos-* units",
                 Style::default().fg(Color::DarkGray),
-            ))]
-        }
+            ))],
+            0,
+        ),
         Fetch::Ok(units) => {
             let sel = ui.selected.min(units.len().saturating_sub(1));
-            units
+            let lines = units
                 .iter()
                 .enumerate()
                 .map(|(i, u)| unit_line(u, i == sel))
-                .collect()
+                .collect();
+            (lines, sel)
         }
     };
-    lines.push(Line::from(""));
-    lines.push(legend_line());
-    lines.extend(confirm_lines(ui));
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+
+    let inner_h = rows[0].height.saturating_sub(2) as usize;
+    let offset = if inner_h > 0 && sel >= inner_h {
+        (sel - inner_h + 1) as u16
+    } else {
+        0
+    };
+    frame.render_widget(
+        Paragraph::new(lines).block(block).scroll((offset, 0)),
+        rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(footer_lines(ui))
+            .block(Block::default().title("actions").borders(Borders::ALL)),
+        rows[1],
+    );
 }
 
 #[cfg(test)]
@@ -126,6 +144,21 @@ mod tests {
     fn draw(state: &Fetch<Vec<UnitStatus>>, ui: &ServiceUi) {
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         term.draw(|f| render(f, f.area(), state, ui)).unwrap();
+    }
+
+    fn buffer_text(w: u16, h: u16, state: &Fetch<Vec<UnitStatus>>, ui: &ServiceUi) -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, f.area(), state, ui)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let area = buf.area;
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        s
     }
 
     #[test]
@@ -180,5 +213,54 @@ mod tests {
             last_result: None,
         };
         draw(&Fetch::Ok(units), &ui);
+    }
+
+    #[test]
+    fn confirm_and_result_visible_with_many_units_on_small_terminal() {
+        let units: Vec<_> = (0..17)
+            .map(|i| unit(&format!("kairos-unit-{i}.service"), "active"))
+            .collect();
+        let ui = ServiceUi {
+            selected: 1,
+            confirm: ConfirmPrompt::TypedConfirm {
+                verb: Verb::Stop,
+                unit: "kairos-core.service".to_string(),
+                buf: "kairos-co".to_string(),
+            },
+            last_result: Some("stop kairos-core.service failed: boom".to_string()),
+        };
+        let text = buffer_text(40, 9, &Fetch::Ok(units), &ui);
+        assert!(
+            text.contains("stop kairos-core.service"),
+            "verb+unit clipped:\n{text}"
+        );
+        assert!(
+            text.contains("type 'kairos-core'"),
+            "confirm instruction clipped:\n{text}"
+        );
+        assert!(
+            text.contains("> kairos-co"),
+            "typed-buffer echo clipped:\n{text}"
+        );
+        assert!(
+            text.contains("stop kairos-core.service failed"),
+            "action result clipped:\n{text}"
+        );
+    }
+
+    #[test]
+    fn selection_scrolls_into_view_with_many_units() {
+        let units: Vec<_> = (0..17)
+            .map(|i| unit(&format!("kairos-unit-{i}.service"), "active"))
+            .collect();
+        let ui = ServiceUi {
+            selected: 16,
+            ..Default::default()
+        };
+        let text = buffer_text(40, 9, &Fetch::Ok(units), &ui);
+        assert!(
+            text.contains("kairos-unit-16"),
+            "selected unit scrolled off-screen:\n{text}"
+        );
     }
 }
