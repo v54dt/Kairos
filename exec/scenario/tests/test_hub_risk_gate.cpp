@@ -444,15 +444,20 @@ void TestDuplicateOrder() {
 
   // A fill and a cancel between different orders must not create a false dup.
   backend.FireAck("A", true, "");
-  backend.FireFill("A", Fill{10000, 10000});
-  backend.FireCancel("C", true);
+  backend.FireFill("A", Fill{10000, 10000});  // A fully fills -> terminal, dup entry cleared
+  backend.FireCancel("C", true);              // C cancelled -> terminal, dup entry cleared
   Feed(hub, 7, Order("D", "2330", Side::kBuy, 500, 10000));  // different shares -> routes
   CHECK(backend.submits.size() == 3);
+
+  // A reached a terminal state (full fill), so an identical re-order within the
+  // window is a legitimate sequential order, not a runaway loop -> routes.
+  Feed(hub, 7, Order("A2", "2330", Side::kBuy, 10000, 10000));
+  CHECK(backend.submits.size() == 4);
 
   // Outside the window the same fields route again (ring pruned).
   hub.SetMonoMsForTest(1000 + 60001);
   Feed(hub, 7, Order("E", "2330", Side::kBuy, 10000, 10000));  // == A fields, but window elapsed
-  CHECK(backend.submits.size() == 4);
+  CHECK(backend.submits.size() == 5);
   hub.Stop();
 
   // Disabled (0): two identical submits both route.
@@ -564,15 +569,20 @@ void TestGuardsCombinedFailClosed() {
   CHECK(hub.Start());
   hub.SetMonoMsForTest(1000);
 
-  Feed(hub, 7, Order("seed", "2330", Side::kBuy, 10000, 1000));  // seeds dup ring + collar ref
+  Feed(hub, 7, Order("seed", "2330", Side::kBuy, 10000, 1000));  // establishes the collar ref
   CHECK(backend.submits.size() == 1);
   backend.FireAck("seed", true, "");
-  backend.FireFill("seed", Fill{1000, 10000});
+  backend.FireFill("seed", Fill{1000, 10000});  // terminal: seed leaves the dup ring
+
+  // A still-live order for the (b) duplicate check to trip against.
+  Feed(hub, 7, Order("live", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 2);
+  backend.FireAck("live", true, "");  // acked, unfilled: stays in the dup ring
 
   std::size_t base = backend.submits.size();
   Feed(hub, 7, Order("g1", "2330", Side::kBuy, 10000, 1001));  // (c) oversize
   Feed(hub, 7, Order("g2", "2330", Side::kBuy, 20000, 100));   // (a) off-price
-  Feed(hub, 7, Order("g3", "2330", Side::kBuy, 10000, 1000));  // (b) duplicate of seed
+  Feed(hub, 7, Order("g3", "2330", Side::kBuy, 10000, 1000));  // (b) duplicate of the live order
   CHECK(backend.submits.size() == base);  // none forwarded: all three fail-closed
   hub.Stop();
 }

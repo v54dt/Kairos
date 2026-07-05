@@ -73,6 +73,15 @@ bool OrderHub::DuplicateSubmit(const OrderSubmitMsg& o, long now_ms) {
   return false;
 }
 
+void OrderHub::RemoveDupEntry(const std::string& id) {
+  for (auto it = dup_ring_.begin(); it != dup_ring_.end(); ++it) {
+    if (it->id == id) {
+      dup_ring_.erase(it);
+      return;
+    }
+  }
+}
+
 bool OrderHub::CollarReference(const std::string& symbol, Cents* ref) const {
   auto it = last_fill_price_cents_.find(symbol);
   if (it == last_fill_price_cents_.end()) return false;
@@ -192,7 +201,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         ++cs.submitted;
         cs.last_activity_us = NowUs();
         if (risk_.dup_order_window_ms > 0) {
-          dup_ring_.push_back({o.symbol, o.side, o.shares, o.price, now_ms});
+          dup_ring_.push_back({o.id, o.symbol, o.side, o.shares, o.price, now_ms});
           if (dup_ring_.size() > kDupRingCap) dup_ring_.pop_front();
         }
       }
@@ -251,6 +260,7 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
       } else {
         ReleaseOpen(it->second);  // backend rejected: free its reserved notional
         open_ids_.erase(it->first);
+        RemoveDupEntry(id);  // terminal: a legitimate retry must not read as a dup
       }
       auto cs = clients_.find(client);
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
@@ -279,6 +289,7 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
         if (it->second.shares_remaining <= 0) {
           it->second.closed = true;
           open_ids_.erase(it->first);
+          RemoveDupEntry(id);  // terminal: a legitimate re-order must not read as a dup
           if (cs != clients_.end()) --cs->second.open_orders;
         }
       }
@@ -302,6 +313,7 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
       if (ok) {
         ReleaseOpen(it->second);  // successful cancel: free reserved notional
         open_ids_.erase(it->first);
+        RemoveDupEntry(id);  // terminal: a re-peg at the same price must not read as a dup
         if (cs != clients_.end()) ++cs->second.cancelled;
       }
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();

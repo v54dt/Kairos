@@ -82,9 +82,12 @@ class OrderHub {
     Cents price = 0;  // reserved open notional == price * shares_remaining
   };
 
-  // One admitted submit, kept in a bounded ring so a runaway strategy that
-  // resubmits the same (symbol, side, shares, price) within the window is caught.
+  // One admitted-and-still-live submit, kept in a bounded ring so a runaway
+  // strategy that resubmits the same (symbol, side, shares, price) within the
+  // window is caught. Removed when the order reaches a terminal state so a
+  // legitimate sequential re-order after a fill/cancel/reject is not blocked.
   struct DupEntry {
+    std::string id;
     std::string symbol;
     Side side = Side::kBuy;
     long shares = 0;
@@ -117,6 +120,8 @@ class OrderHub {
   // Prune the dup ring to the window and report whether an identical admitted
   // submit is still within it. Caller holds mu_ and has checked the window > 0.
   bool DuplicateSubmit(const OrderSubmitMsg& o, long now_ms);
+  // Drop the dup-ring entry for a now-terminal order id, if present. Caller holds mu_.
+  void RemoveDupEntry(const std::string& id);
   // The account's last fill price for `symbol` if one exists (the collar
   // reference); false at cold start (no fill yet). Caller holds mu_.
   bool CollarReference(const std::string& symbol, Cents* ref) const;
