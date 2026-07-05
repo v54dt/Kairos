@@ -1,5 +1,7 @@
-# E2E drill scenario for the trend_day_2330 tape. Buys 2330 with a crossing peg so
-# the descending trend-day trades fill through the sim hub's conservative fill model.
+# E2E drill scenario for the trend_day_2330 tape. Rests a passive join BUY at the
+# best bid so the descending trend-day trades print strictly through it and fill via
+# the sim hub's conservative trade-through model (OnTrade) — coverage that actually
+# depends on the trend-day tape's trades, not the standing ask book.
 # The drill harness injects [journal].dir (per-run temp path) before launching the
 # trader; the committed fixture omits it to avoid a machine-specific absolute path.
 
@@ -26,7 +28,7 @@ daytrade_tax_rate = 0.0015
 max_order_value_twd = 0
 
 [pricing]
-policy = "cross"
+policy = "join"
 tick_offset = 0
 peg_level = 1
 reference_price = 0.0
