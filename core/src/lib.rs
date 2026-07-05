@@ -14,4 +14,5 @@ pub mod record;
 pub mod replay;
 pub mod sim;
 pub mod subreg;
+pub mod tapegen;
 pub mod uds;
