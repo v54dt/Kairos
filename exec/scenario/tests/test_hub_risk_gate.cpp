@@ -156,6 +156,7 @@ void TestFailClosed() {
   expect_reject(Order("bad-price", "2330", Side::kBuy, 0, 1000));
   expect_reject(Order("bad-price2", "2330", Side::kBuy, -1, 1000));
   expect_reject(Order("hi-price", "2330", Side::kBuy, kMaxTwStockPriceCents + 1, 1000));
+  expect_reject(Order("hi-shares", "2330", Side::kBuy, 10000, kMaxTwStockShares + 1));
   expect_reject(Order("", "2330", Side::kBuy, 10000, 1000));
   expect_reject(Order("no-sym", "", Side::kBuy, 10000, 1000));
 
@@ -201,6 +202,31 @@ void TestAccountNotionalCap() {
   // A smaller order that still fits routes.
   Feed(hub, 7, Order("d", "2330", Side::kBuy, 10000, 500));  // 5,000,000c -> 25M <= 30M
   CHECK(backend.submits.size() == 3);
+
+  hub.Stop();
+}
+
+// A pathological share count that would overflow price*shares int64 must be
+// rejected (not admitted via a wrapped-negative notional), and must not corrupt
+// the shared account aggregate for the orders that follow.
+void TestNotionalOverflowRejected() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_account_notional_cents = 30000000;  // 300,000 TWD
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  // price 100.00 * 1e15 shares = 1e19c, which wraps int64 negative if unguarded.
+  Feed(hub, 7, Order("overflow", "2330", Side::kBuy, 10000, 1000000000000000L));
+  CHECK(backend.submits.empty());  // rejected, never forwarded
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+  CHECK(hub.CaptureStatus().account_open_notional_cents == 0);  // aggregate uncorrupted
+
+  // The cap still holds for the next order: 5,000,000c (>> 300,000 cap) is blocked.
+  Feed(hub, 7, Order("over-cap", "2330", Side::kBuy, 50000, 10000));
+  CHECK(backend.submits.empty());
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
 
   hub.Stop();
 }
@@ -365,6 +391,7 @@ int main() {
   TestRegistryAccounting();
   TestFailClosed();
   TestAccountNotionalCap();
+  TestNotionalOverflowRejected();
   TestPerClientCaps();
   TestAdminHalt();
   TestHaltFile();

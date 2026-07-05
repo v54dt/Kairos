@@ -115,8 +115,8 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       }
       // Fail-closed field validation: a doubtful submit is rejected, never forwarded.
       auto live = routes_.find(o.id);
-      if (o.id.empty() || o.symbol.empty() || o.shares <= 0 || o.price <= 0 ||
-          o.price > kMaxTwStockPriceCents) {
+      if (o.id.empty() || o.symbol.empty() || o.shares <= 0 || o.shares > kMaxTwStockShares ||
+          o.price <= 0 || o.price > kMaxTwStockPriceCents) {
         reject = "invalid order fields";
       } else if (live != routes_.end() && !live->second.closed) {
         reject = "duplicate live order id";
