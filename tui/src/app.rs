@@ -19,6 +19,7 @@ use crate::sources::timers::{self, TimerEntry};
 
 const REFRESH: Duration = Duration::from_secs(2);
 const JOURNAL_TAIL: u32 = 10;
+pub const DRILLDOWN_TAIL: u32 = 200;
 const MAX_JOURNAL: usize = 12;
 const EVENTS_TAIL: u32 = 50;
 const MAX_EVENTS: usize = 50;
@@ -97,8 +98,9 @@ Options:
   -V, --version          Print version and exit
 
 Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Events  [Tab] switch  [q] quit
-Overview tab: [up/down] select unit  [r]estart [s]tart [x]stop [f] reset-failed  [S]/[X] kairos.target up/down
+Overview tab: [up/down] select unit  [Enter] open its journal  [r]estart [s]tart [x]stop [f] reset-failed  [S]/[X] kairos.target up/down
               trading units require a typed confirm (the unit name); research crons and reset-failed are y/N
+              in the journal view: [up/down][PgUp/PgDn] scroll (newest at bottom)  [Esc] close
 Scenarios tab: [left/right] focus Available/Running  [up/down] select  [s]tart selected  [x]stop selected
                starting a LIVE toml needs a typed confirm (the toml stem); a PAPER start and any stop are y/N
                the trader binary is found on PATH as kairos_scenario_trader ($KAIROS_SCENARIO_TRADER overrides)

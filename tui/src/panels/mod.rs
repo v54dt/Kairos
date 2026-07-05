@@ -11,12 +11,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::app::{Config, Snapshot, Tab};
 use crate::sources::halt::HaltUi;
 use crate::sources::scenario_ctl::ScenarioUi;
 use crate::sources::service::ServiceUi;
+
+pub(crate) use journal::DrillView;
 
 const JOURNAL_HEIGHT: u16 = 14;
 
@@ -50,6 +52,34 @@ pub fn render(
         Tab::Risk => risk::render(frame, outer[1], &snap.scenarios.hub, &snap.blacklist, halt),
         Tab::Data => data::render(frame, outer[1], snap),
     }
+}
+
+/// Draw the read-only journal drill-down as a centered overlay. `Clear` wipes
+/// the Overview panels underneath so they never bleed through. Returns the
+/// scroll position clamped to the rendered content.
+pub fn render_drill_overlay(frame: &mut Frame, view: &DrillView) -> usize {
+    let area = centered_rect(frame.area(), 90, 80);
+    frame.render_widget(Clear, area);
+    journal::render_drilldown(frame, area, view)
+}
+
+fn centered_rect(area: Rect, pct_x: u16, pct_y: u16) -> Rect {
+    let vert = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - pct_y) / 2),
+            Constraint::Percentage(pct_y),
+            Constraint::Percentage((100 - pct_y) / 2),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - pct_x) / 2),
+            Constraint::Percentage(pct_x),
+            Constraint::Percentage((100 - pct_x) / 2),
+        ])
+        .split(vert[1])[1]
 }
 
 fn tab_bar(tab: Tab) -> Paragraph<'static> {
