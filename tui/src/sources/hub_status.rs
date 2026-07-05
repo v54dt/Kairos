@@ -20,6 +20,10 @@ pub struct HubStatus {
     pub written_epoch_s: i64,
     pub client_count: i64,
     pub clients: Vec<ClientStatus>,
+    pub account_open_notional_cents: i64,
+    pub account_day_realized_cents: i64,
+    pub max_account_notional_cents: i64,
+    pub halted: bool,
 }
 
 /// A parsed snapshot plus how stale the file is (from its mtime).
@@ -81,6 +85,19 @@ fn json_int(s: &str, key: &str) -> Option<i64> {
         .find(|c: char| c != '-' && !c.is_ascii_digit())
         .unwrap_or(rest.len());
     rest[..end].parse().ok()
+}
+
+fn json_bool(s: &str, key: &str) -> Option<bool> {
+    let needle = format!("\"{key}\":");
+    let start = s.find(&needle)? + needle.len();
+    let rest = s[start..].trim_start();
+    if rest.starts_with("true") {
+        Some(true)
+    } else if rest.starts_with("false") {
+        Some(false)
+    } else {
+        None
+    }
 }
 
 fn json_str(s: &str, key: &str) -> Option<String> {
@@ -148,6 +165,10 @@ pub fn parse_hub_status(text: &str) -> Result<HubStatus, String> {
         written_epoch_s: json_int(t, "written_epoch_s").unwrap_or(0),
         client_count: json_int(t, "client_count").unwrap_or(0),
         clients: client_objects(t).iter().map(|o| parse_client(o)).collect(),
+        account_open_notional_cents: json_int(t, "account_open_notional_cents").unwrap_or(0),
+        account_day_realized_cents: json_int(t, "account_day_realized_cents").unwrap_or(0),
+        max_account_notional_cents: json_int(t, "max_account_notional_cents").unwrap_or(0),
+        halted: json_bool(t, "halted").unwrap_or(false),
     })
 }
 
@@ -172,7 +193,9 @@ mod tests {
     const GOOD: &str = "{\"start_epoch_s\":1000,\"written_epoch_s\":1042,\"client_count\":2,\
         \"clients\":[{\"prefix\":\"k100\",\"pid\":100,\"open\":2,\"submitted\":5,\"filled\":3,\
         \"cancelled\":1,\"last_activity_s\":1040},{\"prefix\":\"k200\",\"pid\":200,\"open\":0,\
-        \"submitted\":1,\"filled\":1,\"cancelled\":0,\"last_activity_s\":1041}]}\n";
+        \"submitted\":1,\"filled\":1,\"cancelled\":0,\"last_activity_s\":1041}],\
+        \"account_open_notional_cents\":1234500,\"account_day_realized_cents\":-5000,\
+        \"max_account_notional_cents\":50000000,\"halted\":true}\n";
 
     #[test]
     fn parses_good_snapshot() {
@@ -187,6 +210,29 @@ mod tests {
         assert_eq!(s.clients[0].filled, 3);
         assert_eq!(s.clients[1].prefix, "k200");
         assert_eq!(s.clients[1].cancelled, 0);
+        assert_eq!(s.account_open_notional_cents, 1234500);
+        assert_eq!(s.account_day_realized_cents, -5000);
+        assert_eq!(s.max_account_notional_cents, 50000000);
+        assert!(s.halted);
+    }
+
+    #[test]
+    fn risk_fields_default_when_absent() {
+        // A payload lacking the risk fields must still parse (Scenarios panel
+        // regression guard): defaults are 0 and halted false.
+        let s = parse_hub_status("{\"client_count\":0,\"clients\":[]}").unwrap();
+        assert_eq!(s.account_open_notional_cents, 0);
+        assert_eq!(s.account_day_realized_cents, 0);
+        assert_eq!(s.max_account_notional_cents, 0);
+        assert!(!s.halted);
+    }
+
+    #[test]
+    fn halted_true_and_false_parse() {
+        let t = parse_hub_status("{\"clients\":[],\"halted\":true}").unwrap();
+        assert!(t.halted);
+        let f = parse_hub_status("{\"clients\":[],\"halted\":false}").unwrap();
+        assert!(!f.halted);
     }
 
     #[test]
