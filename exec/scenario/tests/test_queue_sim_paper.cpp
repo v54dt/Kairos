@@ -60,6 +60,10 @@ OrderSubmitMsg BuyOrder(const std::string& id, Cents price, long shares) {
   return {id, "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash", "ROD", price, shares};
 }
 
+OrderSubmitMsg OddLotBuy(const std::string& id, Cents price, long shares) {
+  return {id, "2330", Market::kTse, Board::kOddLot, Side::kBuy, "Cash", "ROD", price, shares};
+}
+
 long TotalShares(const std::vector<FillRec>& fills) {
   long n = 0;
   for (const auto& f : fills) n += f.shares;
@@ -146,12 +150,37 @@ void TestDeterminism() {
   CHECK(a == b);
 }
 
+// Odd-lot is the scenario default board and the round-lot fill engine rejects it,
+// so the default paper backend must still ack and fill an odd-lot order (instantly)
+// rather than reject-storm it.
+void TestOddLotFillsInsteadOfReject() {
+  const Cents kP = 10000;
+
+  std::vector<FillRec> fills;
+  std::vector<std::string> rejects;
+  QueueSimBackend sim(FillMode::kProbQueue, {"2330"});
+  sim.SetCallbacks(
+      [&rejects](const std::string& id, bool ok, const std::string&) {
+        if (!ok) rejects.push_back(id);
+      },
+      [&fills](const std::string& id, const Fill& f) { fills.push_back({id, f.shares, f.price}); },
+      [](const std::string&, bool) {});
+  sim.OnMarketBook("2330", Book(kP, 1000, kP + 10, kCont), kCont);
+  sim.Submit(OddLotBuy("odd1", kP, 500));
+
+  std::printf("odd-lot paper: filled %ld sh, %zu reject(s)\n", TotalShares(fills), rejects.size());
+  CHECK(rejects.empty());            // NOT rejected as "odd-lot board not supported"
+  CHECK(TotalShares(fills) == 500);  // instant full fill at the limit
+  CHECK(fills.size() == 1 && fills[0].price == kP);
+}
+
 }  // namespace
 
 int main() {
   TestQueueVsInstantPartial();
   TestTradeThroughFillsFull();
   TestDeterminism();
+  TestOddLotFillsInsteadOfReject();
   if (g_failures == 0) {
     std::printf("test_queue_sim_paper: OK\n");
     return 0;
