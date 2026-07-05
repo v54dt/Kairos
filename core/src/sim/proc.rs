@@ -78,6 +78,19 @@ impl ChildGuard {
             .collect()
     }
 
+    /// `(name, exited_cleanly)` for every child that has already exited. `false`
+    /// means a non-zero status or a killing signal (a crash), so the caller can
+    /// distinguish a finite feeder finishing its tape from one dying mid-stream.
+    pub fn exited_status(&mut self) -> Vec<(String, bool)> {
+        self.children
+            .iter_mut()
+            .filter_map(|s| match s.child.try_wait() {
+                Ok(Some(status)) => Some((s.name.clone(), status.success())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// (name, process-group id) for every spawned child, for the pidfile a separate
     /// `down`/`status` invocation reads.
     pub fn pgids(&self) -> Vec<(String, libc::pid_t)> {

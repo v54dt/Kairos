@@ -38,6 +38,21 @@ use kairos_core::uds::path::{order_socket_path, quote_socket_path};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const KILL_GRACE: Duration = Duration::from_secs(3);
+/// The finite replay feeder; its clean exit is benign, everything else is fatal.
+const REPLAYD: &str = "kairos-replayd";
+
+/// Split just-exited children into the names that must tear the sim down and a flag
+/// for "the replay tape finished cleanly". A daemon exit is always fatal; replayd is
+/// fatal only when it exited non-clean (crash mid-tape), benign when it exited 0.
+fn classify_exits(dead: &[(String, bool)]) -> (Vec<String>, bool) {
+    let fatal = dead
+        .iter()
+        .filter(|(name, clean)| name != REPLAYD || !*clean)
+        .map(|(name, _)| name.clone())
+        .collect();
+    let replay_done = dead.iter().any(|(name, clean)| name == REPLAYD && *clean);
+    (fatal, replay_done)
+}
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -172,11 +187,22 @@ fn run(opts: &Opts, replay: Option<(Vec<PathBuf>, Option<f64>)>) -> anyhow::Resu
     write_pidfile(&paths, &guard.pgids())?;
     print_ready(&paths, replay.is_some());
 
+    // replayd is a finite feeder: its CLEAN exit means the tape is done, so keep
+    // the daemons (driver/core/sim_hubd) up for a trader to act on the final book.
+    // A daemon exit, or replayd dying mid-tape (non-zero), still tears the sim down.
+    let mut replay_noted = false;
     while !stop.load(Ordering::Relaxed) {
-        let dead = guard.exited();
-        if !dead.is_empty() {
-            eprintln!("kairos-sim: child exited unexpectedly: {}", dead.join(", "));
+        let (fatal, replay_done) = classify_exits(&guard.exited_status());
+        if !fatal.is_empty() {
+            eprintln!(
+                "kairos-sim: child exited unexpectedly: {}",
+                fatal.join(", ")
+            );
             break;
+        }
+        if replay_done && !replay_noted {
+            replay_noted = true;
+            eprintln!("kairos-sim: replay finished; sim still up (Ctrl-C to tear down).");
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -262,4 +288,50 @@ fn status(opts: &Opts) -> anyhow::Result<()> {
 
 fn present(b: bool) -> &'static str {
     if b { "present" } else { "absent" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{REPLAYD, classify_exits};
+
+    fn e(name: &str, clean: bool) -> (String, bool) {
+        (name.to_string(), clean)
+    }
+
+    #[test]
+    fn nothing_exited_is_not_fatal() {
+        let (fatal, done) = classify_exits(&[]);
+        assert!(fatal.is_empty());
+        assert!(!done);
+    }
+
+    #[test]
+    fn clean_replay_exit_is_benign() {
+        let (fatal, done) = classify_exits(&[e(REPLAYD, true)]);
+        assert!(fatal.is_empty());
+        assert!(done);
+    }
+
+    #[test]
+    fn replay_crash_is_fatal_not_done() {
+        let (fatal, done) = classify_exits(&[e(REPLAYD, false)]);
+        assert_eq!(fatal, vec![REPLAYD.to_string()]);
+        assert!(!done);
+    }
+
+    #[test]
+    fn daemon_exit_is_fatal_regardless_of_status() {
+        for clean in [true, false] {
+            let (fatal, done) = classify_exits(&[e("kairos-core", clean)]);
+            assert_eq!(fatal, vec!["kairos-core".to_string()]);
+            assert!(!done);
+        }
+    }
+
+    #[test]
+    fn daemon_death_caught_even_with_clean_replay() {
+        let (fatal, done) = classify_exits(&[e(REPLAYD, true), e("kairos_sim_hubd", true)]);
+        assert_eq!(fatal, vec!["kairos_sim_hubd".to_string()]);
+        assert!(done);
+    }
 }
