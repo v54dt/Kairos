@@ -215,6 +215,11 @@ add_executable(test_hub_status tests/test_hub_status.cpp)
 target_link_libraries(test_hub_status PRIVATE kairos_hub_status kairos_order_hub)
 add_test(NAME test_hub_status COMMAND test_hub_status)
 
+add_executable(test_hub_risk_gate tests/test_hub_risk_gate.cpp)
+target_link_libraries(test_hub_risk_gate PRIVATE kairos_order_hub kairos_order_codec
+                                                 kairos_hub_status)
+add_test(NAME test_hub_risk_gate COMMAND test_hub_risk_gate)
+
 add_executable(test_order_hub_server tests/test_order_hub_server.cpp)
 target_link_libraries(test_order_hub_server PRIVATE kairos_order_hub_server)
 add_test(NAME test_order_hub_server COMMAND test_order_hub_server)

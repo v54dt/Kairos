@@ -19,12 +19,15 @@ struct ClientStatus {
   long last_activity_s = 0;
 };
 
-// Whole-hub snapshot serialized to a status file for the TUI to read.
+// Whole-hub snapshot serialized to a status file for the TUI to read. The risk
+// aggregates are appended so existing positional initializers stay valid.
 struct HubStatus {
   long start_epoch_s = 0;
   long written_epoch_s = 0;
   int client_count = 0;
   std::vector<ClientStatus> clients;
+  long account_open_notional_cents = 0;  // reserved notional of all live orders
+  long account_day_realized_cents = 0;   // filled value since the trading-day boundary
 };
 
 // Single-line JSON (no external JSON lib; matches the hand-rolled JSONL style).

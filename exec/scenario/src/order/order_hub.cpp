@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <ctime>
 #include <utility>
 
 #include "order_codec.h"
@@ -17,6 +18,14 @@ long NowUs() {
       .count();
 }
 
+// Local calendar date as YYYYMMDD; the day-realized notional resets when it changes.
+long LocalTradingDay() {
+  std::time_t t = std::time(nullptr);
+  std::tm tm{};
+  localtime_r(&t, &tm);
+  return (tm.tm_year + 1900) * 10000L + (tm.tm_mon + 1) * 100L + tm.tm_mday;
+}
+
 // prefix = the "k<pid>" head of a user_defined_id (k<pid>-<seq>); pid its digits.
 void ParseId(const std::string& id, std::string* prefix, long* pid) {
   auto dash = id.find('-');
@@ -28,7 +37,23 @@ void ParseId(const std::string& id, std::string* prefix, long* pid) {
 }  // namespace
 
 OrderHub::OrderHub(OrderBackend* backend, SendFn send)
-    : backend_(backend), send_(std::move(send)), start_epoch_s_(NowUs() / 1000000) {}
+    : backend_(backend),
+      send_(std::move(send)),
+      start_epoch_s_(NowUs() / 1000000),
+      current_trading_day_(LocalTradingDay()) {}
+
+long OrderHub::CurrentTradingDay() const {
+  return forced_trading_day_ >= 0 ? forced_trading_day_ : LocalTradingDay();
+}
+
+void OrderHub::SetTradingDayForTest(long day) {
+  std::lock_guard<std::mutex> lock(mu_);
+  forced_trading_day_ = day;
+}
+
+void OrderHub::RejectSubmit(int client, const std::string& id, const std::string& reason) {
+  send_(client, EncodeOrderAck({id, false, reason}));
+}
 
 bool OrderHub::Start() {
   backend_->SetCallbacks(
@@ -48,19 +73,43 @@ void OrderHub::OnClientConnect(int client) {
 
 void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t len) {
   OrderMessage msg;
-  if (!DecodeOrder(data, len, &msg)) return;
+  if (!DecodeOrder(data, len, &msg)) return;  // undecodable frame: dropped, never forwarded
   if (msg.kind == OrderMsgKind::kSubmit) {
+    const OrderSubmitMsg& o = msg.submit;
+    std::string reject;
     {
       std::lock_guard<std::mutex> lock(mu_);
-      routes_[msg.submit.id] = Route{client, msg.submit.shares, false, false};
-      ClientStats& cs = clients_[client];
-      if (cs.prefix.empty()) ParseId(msg.submit.id, &cs.prefix, &cs.pid);
-      ++cs.submitted;
-      cs.last_activity_us = NowUs();
+      long today = CurrentTradingDay();
+      if (today != current_trading_day_) {
+        current_trading_day_ = today;
+        account_day_realized_cents_ = 0;
+      }
+      // Fail-closed field validation: a doubtful submit is rejected, never forwarded.
+      auto live = routes_.find(o.id);
+      if (o.id.empty() || o.symbol.empty() || o.shares <= 0 || o.price <= 0 ||
+          o.price > kMaxTwStockPriceCents) {
+        reject = "invalid order fields";
+      } else if (live != routes_.end() && !live->second.closed) {
+        reject = "duplicate live order id";
+      } else {
+        std::int64_t n = static_cast<std::int64_t>(o.price) * o.shares;
+        ClientStats& cs = clients_[client];
+        routes_[o.id] = Route{client, o.shares, false, false, o.symbol, o.side, o.price};
+        account_open_notional_cents_ += n;
+        cs.open_notional += n;
+        ++cs.open_orders;
+        if (cs.prefix.empty()) ParseId(o.id, &cs.prefix, &cs.pid);
+        ++cs.submitted;
+        cs.last_activity_us = NowUs();
+      }
     }
-    backend_->Submit(msg.submit);  // gated inside the backend; never hold mu_ across it
+    if (!reject.empty()) {
+      RejectSubmit(client, o.id, reject);  // ack ok=false, off the lock; no backend forward
+      return;
+    }
+    backend_->Submit(o);  // gated inside the backend; never hold mu_ across it
   } else if (msg.kind == OrderMsgKind::kCancel) {
-    backend_->Cancel(msg.cancel.id);
+    backend_->Cancel(msg.cancel.id);  // cancels are never gated: always allow flattening
   }
 }
 
@@ -68,6 +117,7 @@ void OrderHub::OnClientDisconnect(int client) {
   std::lock_guard<std::mutex> lock(mu_);
   for (auto it = routes_.begin(); it != routes_.end();) {
     if (it->second.client == client) {
+      ReleaseOpen(it->second);  // free any still-open reserved notional before dropping
       it = routes_.erase(it);
     } else {
       ++it;
@@ -82,6 +132,18 @@ int OrderHub::ClientFor(const std::string& id) {
   return it == routes_.end() ? -1 : it->second.client;
 }
 
+void OrderHub::ReleaseOpen(Route& r) {
+  if (r.closed) return;  // release reserved open notional exactly once
+  std::int64_t n = static_cast<std::int64_t>(r.price) * r.shares_remaining;
+  account_open_notional_cents_ -= n;
+  auto cs = clients_.find(r.client);
+  if (cs != clients_.end()) {
+    cs->second.open_notional -= n;
+    --cs->second.open_orders;
+  }
+  r.closed = true;
+}
+
 void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
   int client = -1;
   {
@@ -89,7 +151,11 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
     auto it = routes_.find(id);
     if (it != routes_.end()) {
       client = it->second.client;
-      if (ok) it->second.acked = true;
+      if (ok) {
+        it->second.acked = true;
+      } else {
+        ReleaseOpen(it->second);  // backend rejected: free its reserved notional
+      }
       auto cs = clients_.find(client);
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
     }
@@ -104,9 +170,20 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
     auto it = routes_.find(id);
     if (it != routes_.end()) {
       client = it->second.client;
-      it->second.shares_remaining -= f.shares;
-      if (it->second.shares_remaining <= 0) it->second.closed = true;
       auto cs = clients_.find(client);
+      if (!it->second.closed) {
+        long before = it->second.shares_remaining;
+        long acct_sh = std::min<long>(f.shares, before > 0 ? before : 0);
+        std::int64_t open_delta = static_cast<std::int64_t>(it->second.price) * acct_sh;
+        account_open_notional_cents_ -= open_delta;
+        account_day_realized_cents_ += static_cast<std::int64_t>(f.price) * f.shares;
+        it->second.shares_remaining -= f.shares;
+        if (cs != clients_.end()) cs->second.open_notional -= open_delta;
+        if (it->second.shares_remaining <= 0) {
+          it->second.closed = true;
+          if (cs != clients_.end()) --cs->second.open_orders;
+        }
+      }
       if (cs != clients_.end()) {
         ++cs->second.filled;
         cs->second.last_activity_us = NowUs();
@@ -123,12 +200,12 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
     auto it = routes_.find(id);
     if (it != routes_.end()) {
       client = it->second.client;
-      if (ok) it->second.closed = true;
       auto cs = clients_.find(client);
-      if (cs != clients_.end()) {
-        if (ok) ++cs->second.cancelled;
-        cs->second.last_activity_us = NowUs();
+      if (ok) {
+        ReleaseOpen(it->second);  // successful cancel: free reserved notional
+        if (cs != clients_.end()) ++cs->second.cancelled;
       }
+      if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
     }
   }
   if (client >= 0) send_(client, EncodeOrderCancelResult({id, ok}));
@@ -139,6 +216,8 @@ HubStatus OrderHub::CaptureStatus() const {
   s.start_epoch_s = start_epoch_s_;
   s.written_epoch_s = NowUs() / 1000000;
   std::lock_guard<std::mutex> lock(mu_);
+  s.account_open_notional_cents = account_open_notional_cents_;
+  s.account_day_realized_cents = account_day_realized_cents_;
   std::unordered_map<int, int> open;
   for (const auto& [id, r] : routes_) {
     if (r.acked && !r.closed) ++open[r.client];
