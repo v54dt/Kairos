@@ -232,12 +232,62 @@ pub fn is_scenario_trader_pid(pid: i32) -> bool {
         .is_some()
 }
 
-/// Which sub-list the Scenarios panel cursor is acting on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Focus {
-    #[default]
-    Available,
-    Running,
+/// One unified Scenarios-panel row: an available scenario, a running trader, or
+/// both (a running trader matched to its toml). `avail` drives START; `running`
+/// drives STOP. An orphan trader (started elsewhere, no toml on disk) is a row
+/// with `avail: None` so it stays stoppable.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScenarioRow {
+    pub stem: String,
+    pub symbol: String,
+    pub live: bool,
+    pub avail: Option<ScenarioToml>,
+    pub running: Option<RunningTrader>,
+}
+
+impl ScenarioRow {
+    pub fn is_running(&self) -> bool {
+        self.running.is_some()
+    }
+
+    pub fn pid(&self) -> Option<i32> {
+        self.running.as_ref().map(|t| t.pid)
+    }
+}
+
+/// Merge available scenarios with running traders into one row list, matching a
+/// trader to a scenario by the toml file stem (the scenario dir is one dir, so
+/// the stem is unique). Available scenarios come first in their sorted order;
+/// any running trader whose stem is not on disk is appended as an orphan row so
+/// it can still be stopped.
+pub fn merge_rows(avail: &[ScenarioToml], running: &[RunningTrader]) -> Vec<ScenarioRow> {
+    let run_stem = |t: &RunningTrader| toml_stem(Path::new(&t.toml));
+    let mut rows = Vec::new();
+    for s in avail {
+        let stem = toml_stem(&s.path);
+        let run = running.iter().find(|t| run_stem(t) == stem).cloned();
+        rows.push(ScenarioRow {
+            stem,
+            symbol: s.symbol.clone(),
+            live: run.as_ref().map(|t| t.live).unwrap_or(s.live),
+            avail: Some(s.clone()),
+            running: run,
+        });
+    }
+    for t in running {
+        let stem = run_stem(t);
+        if avail.iter().any(|s| toml_stem(&s.path) == stem) {
+            continue;
+        }
+        rows.push(ScenarioRow {
+            stem,
+            symbol: String::new(),
+            live: t.live,
+            avail: None,
+            running: Some(t.clone()),
+        });
+    }
+    rows
 }
 
 /// An action authorized by a completed confirmation. `Start` carries the launch
@@ -511,12 +561,11 @@ pub fn stop_trader(pid: i32) -> Result<String, String> {
     })
 }
 
-/// Read-only state the Scenarios panel needs to render process control.
+/// Read-only state the Scenarios panel needs to render process control. `sel`
+/// is a single cursor over the merged row list.
 #[derive(Clone, Debug, Default)]
 pub struct ScenarioUi {
-    pub focus: Focus,
-    pub avail_sel: usize,
-    pub run_sel: usize,
+    pub sel: usize,
     pub confirm: ScenarioPrompt,
     pub last_result: Option<String>,
 }
@@ -1037,6 +1086,44 @@ live = maybe
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(ensure_trader_bin(&bin).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn merge_matches_running_to_scenario_by_stem() {
+        let avail = vec![
+            parse_scenario_toml(PathBuf::from("/e/0050.toml"), PAPER_TOML),
+            parse_scenario_toml(PathBuf::from("/e/2330.toml"), LIVE_TOML),
+        ];
+        let running = vec![RunningTrader {
+            pid: 4242,
+            toml: "/e/2330.toml".to_string(),
+            live: true,
+        }];
+        let rows = merge_rows(&avail, &running);
+        assert_eq!(rows.len(), 2, "no orphan row: the trader matched a scenario");
+        let r2330 = rows.iter().find(|r| r.stem == "2330").unwrap();
+        assert!(r2330.is_running());
+        assert_eq!(r2330.pid(), Some(4242));
+        assert!(r2330.avail.is_some(), "still startable-source once stopped");
+        let r0050 = rows.iter().find(|r| r.stem == "0050").unwrap();
+        assert!(!r0050.is_running());
+        assert_eq!(r0050.pid(), None);
+    }
+
+    #[test]
+    fn merge_appends_orphan_trader_not_on_disk() {
+        let avail = vec![parse_scenario_toml(PathBuf::from("/e/2330.toml"), LIVE_TOML)];
+        let running = vec![RunningTrader {
+            pid: 9001,
+            toml: "/e/ghost.toml".to_string(),
+            live: false,
+        }];
+        let rows = merge_rows(&avail, &running);
+        assert_eq!(rows.len(), 2);
+        let ghost = rows.iter().find(|r| r.stem == "ghost").unwrap();
+        assert!(ghost.avail.is_none(), "orphan has no on-disk toml");
+        assert!(ghost.is_running());
+        assert_eq!(ghost.pid(), Some(9001));
     }
 
     #[test]
