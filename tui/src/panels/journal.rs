@@ -57,18 +57,28 @@ fn drill_line(l: &LogLine) -> Line<'static> {
     ])
 }
 
+/// Largest meaningful `rev` (lines-from-bottom) for the given content: scrolling
+/// past this only pins the view to the oldest line, so it is the clamp bound.
+fn max_rev(total: usize, viewport: usize) -> usize {
+    if viewport == 0 || total <= viewport {
+        0
+    } else {
+        total - viewport
+    }
+}
+
 /// Top scroll offset for a `rev` lines-from-bottom position: `rev == 0` pins the
 /// newest line to the bottom; larger `rev` walks toward the top. All-saturating
 /// so it never scrolls past either end.
 fn scroll_top(total: usize, viewport: usize, rev: usize) -> u16 {
-    if viewport == 0 || total <= viewport {
-        return 0;
-    }
-    let max_top = total - viewport;
+    let max_top = max_rev(total, viewport);
     (max_top - rev.min(max_top)).min(u16::MAX as usize) as u16
 }
 
-pub fn render_drilldown(frame: &mut Frame, area: Rect, view: &DrillView) {
+/// Renders the drill-down and returns the scroll position clamped to the
+/// content actually rendered, so the caller can write it back and never
+/// accumulate phantom over-scroll past the oldest line.
+pub fn render_drilldown(frame: &mut Frame, area: Rect, view: &DrillView) -> usize {
     let mut title = vec![Span::styled(
         format!("journal: {}", view.unit),
         Style::default()
@@ -95,8 +105,10 @@ pub fn render_drilldown(frame: &mut Frame, area: Rect, view: &DrillView) {
         Fetch::Ok(logs) => logs.iter().map(drill_line).collect(),
     };
     let viewport = area.height.saturating_sub(2) as usize;
-    let top = scroll_top(lines.len(), viewport, view.rev);
+    let rev = view.rev.min(max_rev(lines.len(), viewport));
+    let top = scroll_top(lines.len(), viewport, rev);
     frame.render_widget(Paragraph::new(lines).block(block).scroll((top, 0)), area);
+    rev
 }
 
 #[cfg(test)]
@@ -115,7 +127,10 @@ mod tests {
 
     fn buffer_text(w: u16, h: u16, view: &DrillView) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render_drilldown(f, f.area(), view)).unwrap();
+        term.draw(|f| {
+            render_drilldown(f, f.area(), view);
+        })
+        .unwrap();
         let buf = term.backend().buffer().clone();
         let mut s = String::new();
         for y in 0..buf.area.height {
@@ -196,6 +211,32 @@ mod tests {
             .collect();
         let text = buffer_text(80, 12, &view(Fetch::Ok(logs), 0));
         assert!(text.contains("entry-39"), "newest line clipped:\n{text}");
+    }
+
+    fn drawn_rev(w: u16, h: u16, view: &DrillView) -> usize {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        let mut got = usize::MAX;
+        term.draw(|f| got = render_drilldown(f, f.area(), view))
+            .unwrap();
+        got
+    }
+
+    #[test]
+    fn render_clamps_overscroll_to_max_rev() {
+        let logs: Vec<_> = (0..200)
+            .map(|i| log("2026-07-04T00:00:00", &format!("entry-{i}")))
+            .collect();
+        // viewport = h - 2 = 28, so max_rev = 200 - 28 = 172.
+        assert_eq!(drawn_rev(80, 30, &view(Fetch::Ok(logs), 9_999)), 172);
+    }
+
+    #[test]
+    fn render_clamps_unscrollable_content_to_zero() {
+        let logs: Vec<_> = (0..3)
+            .map(|i| log("2026-07-04T00:00:00", &format!("entry-{i}")))
+            .collect();
+        // Content fits the viewport, so any accumulated rev collapses to 0.
+        assert_eq!(drawn_rev(80, 30, &view(Fetch::Ok(logs), 50)), 0);
     }
 
     #[test]

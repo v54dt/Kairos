@@ -112,12 +112,16 @@ async fn run(
                 let service = service_ui(sel, &confirm, &action_result);
                 let scenario = scen.ui();
                 let drill_view = drill.as_ref().map(|d| d.view());
+                let mut clamped_rev: Option<usize> = None;
                 term.draw(|frame| {
                     panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario);
                     if tab == Tab::Overview && let Some(v) = &drill_view {
-                        panels::render_drill_overlay(frame, v);
+                        clamped_rev = Some(panels::render_drill_overlay(frame, v));
                     }
                 })?;
+                if let (Some(d), Some(r)) = (drill.as_mut(), clamped_rev) {
+                    d.rev = r;
+                }
             }
             Some(Ok(event)) = events.next() => {
                 let key = match &event {
@@ -206,12 +210,16 @@ async fn run(
                     let service = service_ui(sel, &confirm, &action_result);
                     let scenario = scen.ui();
                     let drill_view = drill.as_ref().map(|d| d.view());
+                    let mut clamped_rev: Option<usize> = None;
                     term.draw(|frame| {
                         panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario);
                         if tab == Tab::Overview && let Some(v) = &drill_view {
-                            panels::render_drill_overlay(frame, v);
+                            clamped_rev = Some(panels::render_drill_overlay(frame, v));
                         }
                     })?;
+                    if let (Some(d), Some(r)) = (drill.as_mut(), clamped_rev) {
+                        d.rev = r;
+                    }
                 }
             }
         }

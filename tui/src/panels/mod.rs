@@ -55,11 +55,12 @@ pub fn render(
 }
 
 /// Draw the read-only journal drill-down as a centered overlay. `Clear` wipes
-/// the Overview panels underneath so they never bleed through.
-pub fn render_drill_overlay(frame: &mut Frame, view: &DrillView) {
+/// the Overview panels underneath so they never bleed through. Returns the
+/// scroll position clamped to the rendered content.
+pub fn render_drill_overlay(frame: &mut Frame, view: &DrillView) -> usize {
     let area = centered_rect(frame.area(), 90, 80);
     frame.render_widget(Clear, area);
-    journal::render_drilldown(frame, area, view);
+    journal::render_drilldown(frame, area, view)
 }
 
 fn centered_rect(area: Rect, pct_x: u16, pct_y: u16) -> Rect {
