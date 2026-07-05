@@ -45,6 +45,11 @@ async fn main() -> Result<()> {
     tokio::spawn(app::refresh_systemd(shared.clone()));
     tokio::spawn(app::refresh_journal(shared.clone()));
     tokio::spawn(app::refresh_recorder(shared.clone(), cfg.data_dir.clone()));
+    tokio::spawn(app::refresh_hub_status(shared.clone()));
+    tokio::spawn(app::refresh_scenarios(
+        shared.clone(),
+        cfg.journal_dir.clone(),
+    ));
 
     let mut term = terminal::enter()?;
     let res = run(&mut term, &shared, &feed_state, &cfg).await;
@@ -99,7 +104,7 @@ fn tab_for(event: &Event, current: Tab) -> Option<Tab> {
             return None;
         }
         return match key.code {
-            KeyCode::Char(c @ ('1' | '2')) => Some(current.select(c)),
+            KeyCode::Char(c @ ('1' | '2' | '3')) => Some(current.select(c)),
             KeyCode::Tab => Some(current.next()),
             _ => None,
         };

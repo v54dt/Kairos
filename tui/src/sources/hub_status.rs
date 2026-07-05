@@ -1,0 +1,248 @@
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// One scenario client the order hub is serving, as written to its status file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClientStatus {
+    pub prefix: String,
+    pub pid: i64,
+    pub open: i64,
+    pub submitted: i64,
+    pub filled: i64,
+    pub cancelled: i64,
+    pub last_activity_s: i64,
+}
+
+/// Whole-hub snapshot parsed from `kairos-hub-status.json`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HubStatus {
+    pub start_epoch_s: i64,
+    pub written_epoch_s: i64,
+    pub client_count: i64,
+    pub clients: Vec<ClientStatus>,
+}
+
+/// A parsed snapshot plus how stale the file is (from its mtime).
+#[derive(Clone, Debug)]
+pub struct HubReport {
+    pub status: HubStatus,
+    pub age: Duration,
+}
+
+impl HubReport {
+    pub fn is_stale(&self) -> bool {
+        self.age > STALE_AFTER
+    }
+}
+
+const STALE_AFTER: Duration = Duration::from_secs(10);
+
+fn resolve(explicit: Option<&str>, xdg: Option<&str>, run_user: Option<&str>) -> Option<String> {
+    if let Some(p) = explicit
+        && !p.is_empty()
+    {
+        return Some(p.to_string());
+    }
+    if let Some(dir) = xdg
+        && !dir.is_empty()
+    {
+        return Some(format!("{dir}/kairos-hub-status.json"));
+    }
+    if let Some(dir) = run_user
+        && !dir.is_empty()
+    {
+        return Some(format!("{dir}/kairos-hub-status.json"));
+    }
+    None
+}
+
+fn run_user_dir() -> Option<String> {
+    // SAFETY: getuid() is infallible and has no preconditions.
+    let dir = format!("/run/user/{}", unsafe { libc::getuid() });
+    Path::new(&dir).is_dir().then_some(dir)
+}
+
+/// Hub status file path, mirroring the C++ `HubStatusPath()` resolution:
+/// `$KAIROS_HUB_STATUS`, else `$XDG_RUNTIME_DIR`, else `/run/user/<uid>`.
+pub fn hub_status_path() -> Option<PathBuf> {
+    resolve(
+        std::env::var("KAIROS_HUB_STATUS").ok().as_deref(),
+        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+        run_user_dir().as_deref(),
+    )
+    .map(PathBuf::from)
+}
+
+fn json_int(s: &str, key: &str) -> Option<i64> {
+    let needle = format!("\"{key}\":");
+    let start = s.find(&needle)? + needle.len();
+    let rest = &s[start..];
+    let end = rest
+        .find(|c: char| c != '-' && !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+fn json_str(s: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let start = s.find(&needle)? + needle.len();
+    let rest = &s[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+fn parse_client(obj: &str) -> ClientStatus {
+    ClientStatus {
+        prefix: json_str(obj, "prefix").unwrap_or_default(),
+        pid: json_int(obj, "pid").unwrap_or(0),
+        open: json_int(obj, "open").unwrap_or(0),
+        submitted: json_int(obj, "submitted").unwrap_or(0),
+        filled: json_int(obj, "filled").unwrap_or(0),
+        cancelled: json_int(obj, "cancelled").unwrap_or(0),
+        last_activity_s: json_int(obj, "last_activity_s").unwrap_or(0),
+    }
+}
+
+/// Split the `"clients":[ {..}, {..} ]` array into its top-level `{..}` objects.
+fn client_objects(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let arr_start = match s.find("\"clients\":[") {
+        Some(i) => i + "\"clients\":[".len(),
+        None => return out,
+    };
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut obj_start = None;
+    for i in arr_start..bytes.len() {
+        match bytes[i] {
+            b'{' => {
+                if depth == 0 {
+                    obj_start = Some(i);
+                }
+                depth += 1;
+            }
+            b'}' => {
+                depth -= 1;
+                if depth == 0
+                    && let Some(st) = obj_start.take()
+                {
+                    out.push(&s[st..=i]);
+                }
+            }
+            b']' if depth == 0 => break,
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Parse the hub status JSON. Missing scalar fields default to 0; a payload that
+/// is not a JSON object (garbage/empty) is an error rather than a panic.
+pub fn parse_hub_status(text: &str) -> Result<HubStatus, String> {
+    let t = text.trim();
+    if !t.starts_with('{') {
+        return Err("not a JSON object".to_string());
+    }
+    Ok(HubStatus {
+        start_epoch_s: json_int(t, "start_epoch_s").unwrap_or(0),
+        written_epoch_s: json_int(t, "written_epoch_s").unwrap_or(0),
+        client_count: json_int(t, "client_count").unwrap_or(0),
+        clients: client_objects(t).iter().map(|o| parse_client(o)).collect(),
+    })
+}
+
+/// Read + parse the hub status file, age-stamped from its mtime. `None` when the
+/// file is absent or unparseable (the caller renders "hub offline").
+pub fn read_hub_status(path: &Path) -> Option<HubReport> {
+    let meta = std::fs::metadata(path).ok()?;
+    let age = meta
+        .modified()
+        .ok()
+        .and_then(|m| m.elapsed().ok())
+        .unwrap_or_default();
+    let text = std::fs::read_to_string(path).ok()?;
+    let status = parse_hub_status(&text).ok()?;
+    Some(HubReport { status, age })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GOOD: &str = "{\"start_epoch_s\":1000,\"written_epoch_s\":1042,\"client_count\":2,\
+        \"clients\":[{\"prefix\":\"k100\",\"pid\":100,\"open\":2,\"submitted\":5,\"filled\":3,\
+        \"cancelled\":1,\"last_activity_s\":1040},{\"prefix\":\"k200\",\"pid\":200,\"open\":0,\
+        \"submitted\":1,\"filled\":1,\"cancelled\":0,\"last_activity_s\":1041}]}\n";
+
+    #[test]
+    fn parses_good_snapshot() {
+        let s = parse_hub_status(GOOD).unwrap();
+        assert_eq!(s.start_epoch_s, 1000);
+        assert_eq!(s.written_epoch_s, 1042);
+        assert_eq!(s.client_count, 2);
+        assert_eq!(s.clients.len(), 2);
+        assert_eq!(s.clients[0].prefix, "k100");
+        assert_eq!(s.clients[0].pid, 100);
+        assert_eq!(s.clients[0].open, 2);
+        assert_eq!(s.clients[0].filled, 3);
+        assert_eq!(s.clients[1].prefix, "k200");
+        assert_eq!(s.clients[1].cancelled, 0);
+    }
+
+    #[test]
+    fn garbage_is_err_not_panic() {
+        assert!(parse_hub_status("").is_err());
+        assert!(parse_hub_status("not json").is_err());
+        assert!(parse_hub_status("[1,2,3]").is_err());
+    }
+
+    #[test]
+    fn missing_fields_default_to_zero() {
+        let s = parse_hub_status("{\"client_count\":0,\"clients\":[]}").unwrap();
+        assert_eq!(s.start_epoch_s, 0);
+        assert_eq!(s.written_epoch_s, 0);
+        assert_eq!(s.client_count, 0);
+        assert!(s.clients.is_empty());
+    }
+
+    #[test]
+    fn client_missing_fields_default() {
+        let s = parse_hub_status("{\"clients\":[{\"prefix\":\"k7\"}]}").unwrap();
+        assert_eq!(s.clients.len(), 1);
+        assert_eq!(s.clients[0].prefix, "k7");
+        assert_eq!(s.clients[0].pid, 0);
+        assert_eq!(s.clients[0].open, 0);
+    }
+
+    #[test]
+    fn stale_threshold() {
+        let r = HubReport {
+            status: HubStatus::default(),
+            age: Duration::from_secs(5),
+        };
+        assert!(!r.is_stale());
+        let r = HubReport {
+            status: HubStatus::default(),
+            age: Duration::from_secs(11),
+        };
+        assert!(r.is_stale());
+    }
+
+    #[test]
+    fn resolver_matches_socket_convention() {
+        assert_eq!(
+            resolve(Some("/run/hub.json"), Some("/run/user/1001"), None),
+            Some("/run/hub.json".to_string())
+        );
+        assert_eq!(
+            resolve(None, Some("/run/user/1001"), Some("/run/user/1001")),
+            Some("/run/user/1001/kairos-hub-status.json".to_string())
+        );
+        assert_eq!(
+            resolve(None, None, Some("/run/user/1001")),
+            Some("/run/user/1001/kairos-hub-status.json".to_string())
+        );
+        assert_eq!(resolve(None, None, None), None);
+        assert_eq!(resolve(Some(""), Some(""), Some("")), None);
+    }
+}
