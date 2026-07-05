@@ -98,6 +98,70 @@ fn parse_json_int(line: &str, key: &str) -> Option<i64> {
     rest[..end].parse().ok()
 }
 
+/// The sim child process groups recorded in the pidfile, or empty if it is absent.
+fn read_pgids(pidfile: &Path) -> Vec<i32> {
+    std::fs::read_to_string(pidfile)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once(' ').and_then(|(p, _)| p.trim().parse().ok()))
+        .collect()
+}
+
+/// Owns a spawned child (the sim or the trader) and kills+reaps it on drop, so any
+/// panic between spawn and the explicit teardown cannot orphan the sim pipeline.
+/// SIGTERM first (the sim's own guard tears down its child groups on SIGTERM); for
+/// the sim, force-kill every recorded child process group as a belt against a sim
+/// that ignores SIGTERM, then remove the run's temp dirs. A no-op once the child has
+/// already been reaped by the happy path.
+struct Reaper {
+    child: std::process::Child,
+    pidfile: Option<PathBuf>,
+    cleanup: Vec<PathBuf>,
+}
+
+impl Reaper {
+    fn new(child: std::process::Child) -> Self {
+        Self {
+            child,
+            pidfile: None,
+            cleanup: Vec::new(),
+        }
+    }
+
+    fn with_sim_teardown(mut self, pidfile: PathBuf, cleanup: Vec<PathBuf>) -> Self {
+        self.pidfile = Some(pidfile);
+        self.cleanup = cleanup;
+        self
+    }
+}
+
+impl Drop for Reaper {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            // SAFETY: signalling a child pid we own and have not yet reaped.
+            unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            if let Some(pidfile) = &self.pidfile {
+                for pgid in read_pgids(pidfile) {
+                    // SAFETY: killpg on a recorded sim child group; harmless if gone.
+                    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+                }
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        for dir in &self.cleanup {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 #[test]
 #[ignore = "spawns the sim daemons + C++ sim hub + trader; run with --ignored"]
 fn trader_fills_journal_and_leaves_no_orphans() {
@@ -139,16 +203,22 @@ fn trader_fills_journal_and_leaves_no_orphans() {
     );
     let sim_bin = env!("CARGO_BIN_EXE_kairos-sim");
 
-    let mut sim = Command::new(sim_bin)
-        .arg("replay")
-        .arg(&tape)
-        .args(["--symbols", SYMBOL, "--speed", "8"])
-        .env("KAIROS_SIM_AERON_DIR", &aeron_dir)
-        .env("KAIROS_SIM_QUOTE_SOCK", &quote_sock)
-        .env("KAIROS_SIM_ORDER_SOCK", &order_sock)
-        .env("KAIROS_SIM_HUBD", &hubd)
-        .spawn()
-        .expect("spawn kairos-sim");
+    let mut sim = Reaper::new(
+        Command::new(sim_bin)
+            .arg("replay")
+            .arg(&tape)
+            .args(["--symbols", SYMBOL, "--speed", "8"])
+            .env("KAIROS_SIM_AERON_DIR", &aeron_dir)
+            .env("KAIROS_SIM_QUOTE_SOCK", &quote_sock)
+            .env("KAIROS_SIM_ORDER_SOCK", &order_sock)
+            .env("KAIROS_SIM_HUBD", &hubd)
+            .spawn()
+            .expect("spawn kairos-sim"),
+    )
+    .with_sim_teardown(
+        pidfile.clone(),
+        vec![base.clone(), PathBuf::from(&aeron_dir)],
+    );
 
     assert!(
         wait_for(&quote_sock, Duration::from_secs(20)),
@@ -159,15 +229,17 @@ fn trader_fills_journal_and_leaves_no_orphans() {
         "sim order socket never appeared"
     );
 
-    let mut trader_proc = Command::new(&trader)
-        .arg(&scenario)
-        .args(["--live", "--ignore-window", "--ignore-blacklist", "--yes"])
-        .env("KAIROS_QUOTE_SOCK", &quote_sock)
-        .env("KAIROS_ORDER_SOCK", &order_sock)
-        .env("KAIROS_BLACKLIST_CSV", &blacklist)
-        .stdin(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn kairos_scenario_trader");
+    let mut trader_proc = Reaper::new(
+        Command::new(&trader)
+            .arg(&scenario)
+            .args(["--live", "--ignore-window", "--ignore-blacklist", "--yes"])
+            .env("KAIROS_QUOTE_SOCK", &quote_sock)
+            .env("KAIROS_ORDER_SOCK", &order_sock)
+            .env("KAIROS_BLACKLIST_CSV", &blacklist)
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn kairos_scenario_trader"),
+    );
 
     // (a)+(b): the trader must ACK and FILL, and the fill must land fsynced in the
     // B2 journal. Poll the journal dir until a fill line with shares > 0 appears.
@@ -189,9 +261,9 @@ fn trader_fills_journal_and_leaves_no_orphans() {
 
     // (c): the trader ends cleanly on SIGTERM.
     // SAFETY: signalling a child pid we own.
-    unsafe { libc::kill(trader_proc.id() as i32, libc::SIGTERM) };
+    unsafe { libc::kill(trader_proc.child.id() as i32, libc::SIGTERM) };
     assert!(
-        wait_child(&mut trader_proc, Duration::from_secs(15)),
+        wait_child(&mut trader_proc.child, Duration::from_secs(15)),
         "trader did not exit cleanly after SIGTERM"
     );
 
@@ -206,17 +278,13 @@ fn trader_fills_journal_and_leaves_no_orphans() {
         wait_for(&pidfile, Duration::from_secs(5)),
         "sim pidfile never written"
     );
-    let pgids: Vec<i32> = std::fs::read_to_string(&pidfile)
-        .unwrap()
-        .lines()
-        .filter_map(|l| l.split_once(' ').and_then(|(p, _)| p.trim().parse().ok()))
-        .collect();
+    let pgids = read_pgids(&pidfile);
     assert!(!pgids.is_empty(), "no sim child pgids recorded");
 
     // SAFETY: signalling the sim pid we own; its guard tears down every child.
-    unsafe { libc::kill(sim.id() as i32, libc::SIGTERM) };
+    unsafe { libc::kill(sim.child.id() as i32, libc::SIGTERM) };
     assert!(
-        wait_child(&mut sim, Duration::from_secs(10)),
+        wait_child(&mut sim.child, Duration::from_secs(10)),
         "kairos-sim did not exit after SIGTERM"
     );
 
