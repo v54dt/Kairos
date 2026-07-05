@@ -255,17 +255,27 @@ impl ScenarioRow {
     }
 }
 
-/// Merge available scenarios with running traders into one row list, matching a
-/// trader to a scenario by the toml file stem (the scenario dir is one dir, so
-/// the stem is unique). Available scenarios come first in their sorted order;
-/// any running trader whose stem is not on disk is appended as an orphan row so
-/// it can still be stopped.
+/// Merge available scenarios with running traders into one row list. Each
+/// available scenario becomes a row, attached to at most one running trader that
+/// shares its toml file stem. INVARIANT: every running trader is its own
+/// stoppable row — traders are consumed BY PID, so two traders sharing a stem
+/// (e.g. a daily restart where the old pid is still in SIGINT wind-down) never
+/// collapse: the first fills the scenario's row, every still-unconsumed trader
+/// (same-stem duplicate or no on-disk toml) is appended as its own orphan row.
+/// Available scenarios come first in their sorted order.
 pub fn merge_rows(avail: &[ScenarioToml], running: &[RunningTrader]) -> Vec<ScenarioRow> {
     let run_stem = |t: &RunningTrader| toml_stem(Path::new(&t.toml));
+    let mut consumed: Vec<i32> = Vec::new();
     let mut rows = Vec::new();
     for s in avail {
         let stem = toml_stem(&s.path);
-        let run = running.iter().find(|t| run_stem(t) == stem).cloned();
+        let run = running
+            .iter()
+            .find(|t| run_stem(t) == stem && !consumed.contains(&t.pid))
+            .cloned();
+        if let Some(t) = &run {
+            consumed.push(t.pid);
+        }
         rows.push(ScenarioRow {
             stem,
             symbol: s.symbol.clone(),
@@ -275,12 +285,11 @@ pub fn merge_rows(avail: &[ScenarioToml], running: &[RunningTrader]) -> Vec<Scen
         });
     }
     for t in running {
-        let stem = run_stem(t);
-        if avail.iter().any(|s| toml_stem(&s.path) == stem) {
+        if consumed.contains(&t.pid) {
             continue;
         }
         rows.push(ScenarioRow {
-            stem,
+            stem: run_stem(t),
             symbol: String::new(),
             live: t.live,
             avail: None,
@@ -1108,6 +1117,75 @@ live = maybe
         let r0050 = rows.iter().find(|r| r.stem == "0050").unwrap();
         assert!(!r0050.is_running());
         assert_eq!(r0050.pid(), None);
+    }
+
+    #[test]
+    fn merge_keeps_every_running_pid_as_its_own_row() {
+        // Two traders share the "2330" stem (e.g. a daily restart while the old
+        // pid is still in SIGINT wind-down). Both must remain stoppable rows.
+        let avail = vec![
+            parse_scenario_toml(PathBuf::from("/e/2330.toml"), LIVE_TOML),
+            parse_scenario_toml(PathBuf::from("/e/0050.toml"), PAPER_TOML),
+        ];
+        let running = vec![
+            RunningTrader {
+                pid: 100,
+                toml: "/e/2330.toml".to_string(),
+                live: true,
+            },
+            RunningTrader {
+                pid: 200,
+                toml: "/other/2330.toml".to_string(),
+                live: true,
+            },
+        ];
+        let rows = merge_rows(&avail, &running);
+        let pids: Vec<i32> = rows.iter().filter_map(|r| r.pid()).collect();
+        assert!(pids.contains(&100), "first same-stem pid must render: {pids:?}");
+        assert!(
+            pids.contains(&200),
+            "second same-stem pid must not be dropped: {pids:?}"
+        );
+        assert_eq!(
+            rows.iter().filter(|r| r.is_running()).count(),
+            2,
+            "every running trader is its own row"
+        );
+        // The stopped-only 0050 scenario still renders exactly once.
+        let n0050 = rows.iter().filter(|r| r.stem == "0050").count();
+        assert_eq!(n0050, 1);
+        assert!(rows.iter().find(|r| r.stem == "0050").unwrap().pid().is_none());
+    }
+
+    #[test]
+    fn merge_running_row_count_equals_running_len_for_distinct_pids() {
+        let avail = vec![parse_scenario_toml(PathBuf::from("/e/2330.toml"), LIVE_TOML)];
+        let running = vec![
+            RunningTrader {
+                pid: 1,
+                toml: "/e/2330.toml".to_string(),
+                live: true,
+            },
+            RunningTrader {
+                pid: 2,
+                toml: "/e/ghost.toml".to_string(),
+                live: false,
+            },
+            RunningTrader {
+                pid: 3,
+                toml: "/e/2330.toml".to_string(),
+                live: true,
+            },
+        ];
+        let rows = merge_rows(&avail, &running);
+        assert_eq!(
+            rows.iter().filter(|r| r.is_running()).count(),
+            running.len(),
+            "no running trader is dropped"
+        );
+        let mut pids: Vec<i32> = rows.iter().filter_map(|r| r.pid()).collect();
+        pids.sort_unstable();
+        assert_eq!(pids, vec![1, 2, 3]);
     }
 
     #[test]
