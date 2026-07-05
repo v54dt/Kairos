@@ -171,11 +171,71 @@ void TestFailClosed() {
   hub.Stop();
 }
 
+// ---- notional + per-client caps ----------------------------------------
+
+void TestAccountNotionalCap() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_account_notional_cents = 30000000;  // 300,000 TWD
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  Feed(hub, 7, Order("a", "2330", Side::kBuy, 10000, 1000));  // 10,000,000c open -> fits
+  CHECK(backend.submits.size() == 1);
+  Feed(hub, 7, Order("b", "2330", Side::kBuy, 10000, 1000));  // +10,000,000c -> 20,000,000c, fits
+  CHECK(backend.submits.size() == 2);
+
+  // Realized keeps counting toward the cap: fill "a" fully (10,000,000c realized).
+  backend.FireAck("a", true, "");
+  backend.FireFill("a", Fill{1000, 10000});
+  // Now realized 10,000,000 + open 10,000,000 (b) = 20,000,000; a +15,000,000 order exceeds 30M.
+  Feed(hub, 7, Order("c", "2330", Side::kBuy, 15000, 1000));  // 15,000,000c -> 35M > 30M cap
+  CHECK(backend.submits.size() == 2);                         // not forwarded
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+
+  // A smaller order that still fits routes.
+  Feed(hub, 7, Order("d", "2330", Side::kBuy, 10000, 500));  // 5,000,000c -> 25M <= 30M
+  CHECK(backend.submits.size() == 3);
+
+  hub.Stop();
+}
+
+void TestPerClientCaps() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_open_orders_per_client = 2;
+  cfg.max_open_notional_per_client_cents = 25000000;  // 250,000 TWD
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  Feed(hub, 7, Order("o1", "2330", Side::kBuy, 10000, 1000));  // 10M, 1 order
+  Feed(hub, 7, Order("o2", "2330", Side::kBuy, 10000, 1000));  // 20M, 2 orders
+  CHECK(backend.submits.size() == 2);
+  Feed(hub, 7, Order("o3", "2330", Side::kBuy, 10000, 100));  // 3rd order over count limit
+  CHECK(backend.submits.size() == 2);
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+
+  // A different client has its own budget and routes.
+  Feed(hub, 9, Order("p1", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 3);
+
+  // Per-client notional limit: client 9's second order would exceed 25M.
+  Feed(hub, 9, Order("p2", "2330", Side::kBuy, 20000, 1000));  // +20M -> 30M > 25M
+  CHECK(backend.submits.size() == 3);
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+
+  hub.Stop();
+}
+
 }  // namespace
 
 int main() {
   TestRegistryAccounting();
   TestFailClosed();
+  TestAccountNotionalCap();
+  TestPerClientCaps();
 
   if (g_failures == 0) {
     std::printf("test_hub_risk_gate: OK\n");

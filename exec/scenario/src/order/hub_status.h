@@ -28,6 +28,7 @@ struct HubStatus {
   std::vector<ClientStatus> clients;
   long account_open_notional_cents = 0;  // reserved notional of all live orders
   long account_day_realized_cents = 0;   // filled value since the trading-day boundary
+  long max_account_notional_cents = 0;   // configured whole-account cap (0 = disabled)
 };
 
 // Single-line JSON (no external JSON lib; matches the hand-rolled JSONL style).

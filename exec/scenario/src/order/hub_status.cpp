@@ -39,7 +39,8 @@ std::string SerializeHubStatus(const HubStatus& s) {
            ",\"last_activity_s\":" + std::to_string(c.last_activity_s) + "}";
   }
   out += "],\"account_open_notional_cents\":" + std::to_string(s.account_open_notional_cents) +
-         ",\"account_day_realized_cents\":" + std::to_string(s.account_day_realized_cents) + "}\n";
+         ",\"account_day_realized_cents\":" + std::to_string(s.account_day_realized_cents) +
+         ",\"max_account_notional_cents\":" + std::to_string(s.max_account_notional_cents) + "}\n";
   return out;
 }
 

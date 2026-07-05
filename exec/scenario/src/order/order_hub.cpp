@@ -37,10 +37,14 @@ void ParseId(const std::string& id, std::string* prefix, long* pid) {
 }  // namespace
 
 OrderHub::OrderHub(OrderBackend* backend, SendFn send)
+    : OrderHub(backend, std::move(send), RiskConfig()) {}
+
+OrderHub::OrderHub(OrderBackend* backend, SendFn send, RiskConfig risk)
     : backend_(backend),
       send_(std::move(send)),
       start_epoch_s_(NowUs() / 1000000),
-      current_trading_day_(LocalTradingDay()) {}
+      current_trading_day_(LocalTradingDay()),
+      risk_(std::move(risk)) {}
 
 long OrderHub::CurrentTradingDay() const {
   return forced_trading_day_ >= 0 ? forced_trading_day_ : LocalTradingDay();
@@ -91,8 +95,18 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         reject = "invalid order fields";
       } else if (live != routes_.end() && !live->second.closed) {
         reject = "duplicate live order id";
+      } else if (std::int64_t n = static_cast<std::int64_t>(o.price) * o.shares;
+                 risk_.max_account_notional_cents > 0 &&
+                 account_day_realized_cents_ + account_open_notional_cents_ + n >
+                     risk_.max_account_notional_cents) {
+        reject = "account notional cap exceeded";
+      } else if (risk_.max_open_orders_per_client > 0 &&
+                 clients_[client].open_orders + 1 > risk_.max_open_orders_per_client) {
+        reject = "per-client open-order limit exceeded";
+      } else if (risk_.max_open_notional_per_client_cents > 0 &&
+                 clients_[client].open_notional + n > risk_.max_open_notional_per_client_cents) {
+        reject = "per-client open-notional limit exceeded";
       } else {
-        std::int64_t n = static_cast<std::int64_t>(o.price) * o.shares;
         ClientStats& cs = clients_[client];
         routes_[o.id] = Route{client, o.shares, false, false, o.symbol, o.side, o.price};
         account_open_notional_cents_ += n;
@@ -218,6 +232,7 @@ HubStatus OrderHub::CaptureStatus() const {
   std::lock_guard<std::mutex> lock(mu_);
   s.account_open_notional_cents = account_open_notional_cents_;
   s.account_day_realized_cents = account_day_realized_cents_;
+  s.max_account_notional_cents = risk_.max_account_notional_cents;
   std::unordered_map<int, int> open;
   for (const auto& [id, r] : routes_) {
     if (r.acked && !r.closed) ++open[r.client];

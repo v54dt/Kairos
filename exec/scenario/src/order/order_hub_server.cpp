@@ -17,9 +17,11 @@
 
 namespace kairos::exec {
 
-OrderHubServer::OrderHubServer(OrderBackend* backend, std::string path)
+OrderHubServer::OrderHubServer(OrderBackend* backend, std::string path, OrderHub::RiskConfig risk)
     : path_(std::move(path)),
-      hub_(backend, [this](int c, const std::vector<std::uint8_t>& b) { Send(c, b); }) {}
+      hub_(
+          backend, [this](int c, const std::vector<std::uint8_t>& b) { Send(c, b); },
+          std::move(risk)) {}
 
 OrderHubServer::~OrderHubServer() { Stop(); }
 

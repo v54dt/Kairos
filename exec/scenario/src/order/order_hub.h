@@ -26,7 +26,18 @@ class OrderHub {
   // Deliver a serialized OrderEnvelope to client `client`.
   using SendFn = std::function<void(int client, const std::vector<std::uint8_t>&)>;
 
+  // Account risk-gate limits. All numeric caps are 0 = disabled; notional caps
+  // are in Cents. self_match_protection defaults on so it is fail-closed by default.
+  struct RiskConfig {
+    long max_account_notional_cents = 0;
+    int max_open_orders_per_client = 0;
+    long max_open_notional_per_client_cents = 0;
+    bool self_match_protection = true;
+    std::string halt_file_path;
+  };
+
   OrderHub(OrderBackend* backend, SendFn send);
+  OrderHub(OrderBackend* backend, SendFn send, RiskConfig risk);
 
   bool Start();  // wire backend callbacks + connect
   void Stop();   // disconnect the backend
@@ -90,6 +101,7 @@ class OrderHub {
   std::int64_t account_day_realized_cents_ = 0;   // filled value since the trading-day boundary
   long current_trading_day_ = 0;                  // YYYYMMDD the realized total belongs to
   long forced_trading_day_ = -1;                  // test override; <0 uses wall clock
+  RiskConfig risk_;
 };
 
 }  // namespace kairos::exec

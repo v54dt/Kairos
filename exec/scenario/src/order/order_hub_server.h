@@ -20,7 +20,7 @@ namespace kairos::exec {
 // events back to the owning connection. The client fd is the OrderHub's client id.
 class OrderHubServer {
  public:
-  OrderHubServer(OrderBackend* backend, std::string path);
+  OrderHubServer(OrderBackend* backend, std::string path, OrderHub::RiskConfig risk = {});
   ~OrderHubServer();
 
   bool Start();  // connect the backend, then bind/listen/accept

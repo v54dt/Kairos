@@ -54,6 +54,7 @@ int main(int argc, char** argv) {
 
   UserCreds creds;
   std::string sock = OrderSocketPath();
+  OrderHub::RiskConfig risk;
   try {
     auto t = toml::parse_file(path);
     auto user = [&](const char* k) { return t["user"][k].value<std::string>().value_or(""); };
@@ -63,6 +64,14 @@ int main(int argc, char** argv) {
     creds.pfx_filepath = user("pfx_filepath");
     creds.pfx_password = user("pfx_password");
     if (auto s = t["hub"]["socket_path"].value<std::string>()) sock = *s;
+    // [risk]: TWD notional caps are stored as Cents; 0/absent = disabled.
+    risk.max_account_notional_cents =
+        t["risk"]["max_account_notional_twd"].value<long>().value_or(0) * 100;
+    risk.max_open_orders_per_client =
+        t["risk"]["max_open_orders_per_client"].value<int>().value_or(0);
+    risk.max_open_notional_per_client_cents =
+        t["risk"]["max_open_notional_per_client_twd"].value<long>().value_or(0) * 100;
+    risk.self_match_protection = t["risk"]["self_match_protection"].value<bool>().value_or(true);
   } catch (const toml::parse_error& e) {
     std::fprintf(stderr, "kairos-order-hub: bad config %s: %s\n", path.c_str(),
                  std::string(e.description()).c_str());
@@ -84,7 +93,7 @@ int main(int argc, char** argv) {
   std::signal(SIGINT, OnSig);
   std::signal(SIGTERM, OnSig);
 
-  OrderHubServer server(backend.get(), sock);
+  OrderHubServer server(backend.get(), sock, risk);
   if (!server.Start()) return 1;
   while (!g_stop) std::this_thread::sleep_for(std::chrono::milliseconds(200));
   std::printf("kairos-order-hub: shutting down\n");
