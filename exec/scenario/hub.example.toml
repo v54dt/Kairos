@@ -40,6 +40,14 @@ pfx_password = ""
 #                                          # leaves the collar INACTIVE for it — only the absolute
 #                                          # kMaxTwStockPriceCents field bound applies until the
 #                                          # first fill, a residual fat-finger exposure at cold start.
+#                                          # That first fill DEFINES the scale: if the cold-start
+#                                          # order is itself a wrong-scale fat-finger that fills, the
+#                                          # reference anchors to the wrong scale until it is cleared,
+#                                          # which then blocks correct-scale orders and still admits a
+#                                          # repeat same-scale fat-finger. The reference is cleared at
+#                                          # the trading-day boundary (and on hub restart), so this
+#                                          # exposure is bounded to the session; it is not fully
+#                                          # closable without an external reference-price source.
 #
 # Admin halt kill switch (no config key): create the sentinel file
 #   $KAIROS_HUB_HALT, else $XDG_RUNTIME_DIR/kairos-hub-halt
