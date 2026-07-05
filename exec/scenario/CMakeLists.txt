@@ -117,6 +117,12 @@ add_library(kairos_scenario_process src/scenario/scenario_process.cpp)
 target_include_directories(kairos_scenario_process PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario_process PUBLIC kairos_scenario_state pthread)
 
+# Scenario supervisor: UDS control server + the Supervisor that owns the process manager and answers
+# list/start/stop with a status snapshot.
+add_library(kairos_scenario_ctl_server src/scenario/scenario_ctl_server.cpp)
+target_include_directories(kairos_scenario_ctl_server PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_scenario_ctl_server PUBLIC kairos_scenario_process pthread)
+
 add_library(kairos_scenario src/engine/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
@@ -167,6 +173,10 @@ target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_l
 add_executable(kairos_sim_hubd src/bin/sim_hub_main.cpp)
 target_link_libraries(kairos_sim_hubd PRIVATE kairos_sim_backend kairos_order_hub_server kairos_uds)
 
+# Scenario supervisor daemon: single owner of every scenario-trader lifecycle.
+add_executable(kairos_scenario_supervisord src/bin/scenario_supervisor_main.cpp)
+target_link_libraries(kairos_scenario_supervisord PRIVATE kairos_scenario_ctl_server)
+
 # --- tests ---
 enable_testing()
 add_executable(test_scenario_ctl_proto tests/test_scenario_ctl_proto.cpp)
@@ -180,6 +190,10 @@ add_test(NAME test_scenario_state COMMAND test_scenario_state)
 add_executable(test_scenario_process tests/test_scenario_process.cpp)
 target_link_libraries(test_scenario_process PRIVATE kairos_scenario_process)
 add_test(NAME test_scenario_process COMMAND test_scenario_process)
+
+add_executable(test_scenario_ctl_server tests/test_scenario_ctl_server.cpp)
+target_link_libraries(test_scenario_ctl_server PRIVATE kairos_scenario_ctl_server)
+add_test(NAME test_scenario_ctl_server COMMAND test_scenario_ctl_server)
 
 add_executable(test_market_fees tests/test_market_fees.cpp)
 target_include_directories(test_market_fees PRIVATE ${KAIROS_INC})
