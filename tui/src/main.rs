@@ -159,6 +159,16 @@ async fn run(
                         }
                         redraw = true;
                     }
+                } else if drill.is_some() {
+                    if should_quit(&event) {
+                        return Ok(());
+                    }
+                    if let Some(dk) = journal_drill_key(&key) {
+                        if apply_drill_key(dk, drill.as_mut().unwrap()) {
+                            drill = None;
+                        }
+                        redraw = true;
+                    }
                 } else if let Some(ok) = overview_key(tab, &key) {
                     if ok == OverviewKey::OpenJournal {
                         if let Some(unit) =
@@ -534,6 +544,47 @@ fn risk_tab_key(tab: Tab, key: &KeyEvent) -> Option<RiskKey> {
     }
 }
 
+const DRILL_PAGE: usize = 10;
+
+#[derive(Debug, PartialEq, Eq)]
+enum DrillKey {
+    Close,
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+}
+
+// Ctrl+C carries CONTROL and 'q'/'Q' are the global quit keys; both must fall
+// through to should_quit rather than being swallowed by the drill-down.
+fn journal_drill_key(key: &KeyEvent) -> Option<DrillKey> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Char('Q') => None,
+        KeyCode::Esc => Some(DrillKey::Close),
+        KeyCode::Up => Some(DrillKey::Up),
+        KeyCode::Down => Some(DrillKey::Down),
+        KeyCode::PageUp => Some(DrillKey::PageUp),
+        KeyCode::PageDown => Some(DrillKey::PageDown),
+        _ => None,
+    }
+}
+
+// `rev` is lines-from-bottom; Up/PageUp walk toward older lines. Returns true
+// when the view should close. All-saturating so scrolling never overflows.
+fn apply_drill_key(dk: DrillKey, drill: &mut JournalDrill) -> bool {
+    match dk {
+        DrillKey::Close => return true,
+        DrillKey::Up => drill.rev = drill.rev.saturating_add(1),
+        DrillKey::Down => drill.rev = drill.rev.saturating_sub(1),
+        DrillKey::PageUp => drill.rev = drill.rev.saturating_add(DRILL_PAGE),
+        DrillKey::PageDown => drill.rev = drill.rev.saturating_sub(DRILL_PAGE),
+    }
+    false
+}
+
 fn should_quit(event: &Event) -> bool {
     if let Event::Key(key) = event {
         if key.kind != KeyEventKind::Press {
@@ -853,6 +904,59 @@ mod tests {
         assert_eq!(overview_key(Tab::Risk, &enter), None);
         let ctrl_enter = press(KeyCode::Enter, KeyModifiers::CONTROL);
         assert_eq!(overview_key(Tab::Overview, &ctrl_enter), None);
+    }
+
+    #[test]
+    fn ctrl_c_and_q_from_drilldown_still_quit() {
+        let ctrl_c = press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(journal_drill_key(&ctrl_c), None);
+        assert!(should_quit(&Event::Key(ctrl_c)));
+        for c in ['q', 'Q'] {
+            let q = press(KeyCode::Char(c), KeyModifiers::NONE);
+            assert_eq!(journal_drill_key(&q), None);
+            assert!(should_quit(&Event::Key(q)));
+        }
+    }
+
+    #[test]
+    fn esc_closes_the_drilldown() {
+        let esc = press(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(journal_drill_key(&esc), Some(DrillKey::Close));
+        let mut d = JournalDrill::new("kairos-orderhub.service".to_string());
+        assert!(apply_drill_key(DrillKey::Close, &mut d));
+    }
+
+    #[test]
+    fn scroll_keys_map_and_adjust_rev_saturating() {
+        let cases = [
+            (KeyCode::Up, DrillKey::Up),
+            (KeyCode::Down, DrillKey::Down),
+            (KeyCode::PageUp, DrillKey::PageUp),
+            (KeyCode::PageDown, DrillKey::PageDown),
+        ];
+        for (code, want) in cases {
+            let k = press(code, KeyModifiers::NONE);
+            assert_eq!(journal_drill_key(&k), Some(want));
+        }
+        let mut d = JournalDrill::new("u".to_string());
+        assert!(!apply_drill_key(DrillKey::Down, &mut d));
+        assert_eq!(d.rev, 0, "Down at bottom stays pinned");
+        apply_drill_key(DrillKey::Up, &mut d);
+        assert_eq!(d.rev, 1);
+        apply_drill_key(DrillKey::PageUp, &mut d);
+        assert_eq!(d.rev, 1 + DRILL_PAGE);
+        apply_drill_key(DrillKey::PageDown, &mut d);
+        assert_eq!(d.rev, 1);
+    }
+
+    #[test]
+    fn overview_action_chars_are_not_drill_keys() {
+        // While a drill is open these route to the drill branch; none is a drill
+        // key, so no service action can fire behind the modal.
+        for c in ['r', 's', 'x', 'f', 'S', 'X'] {
+            let k = press(KeyCode::Char(c), KeyModifiers::NONE);
+            assert_eq!(journal_drill_key(&k), None);
+        }
     }
 
     #[test]
