@@ -66,6 +66,14 @@ struct Scenario {
   // Run-state journal dir (restart-safe fill accounting). Empty => disabled.
   std::string journal_dir;
 
+  // [blacklist] F1 restricted-symbol safety gate. Empty path => env/default.
+  std::string blacklist_path;
+  int blacklist_max_stale_days = 4;
+  bool blacklist_block_disposal = true;
+  bool blacklist_block_attention = false;
+  bool blacklist_block_margin_suspension = true;
+  bool blacklist_block_sell_first = true;
+
   bool live = false;
 
   NotifyConfig notify;

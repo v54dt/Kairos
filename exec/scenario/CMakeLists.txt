@@ -10,7 +10,14 @@ endif()
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # Sources are grouped into subdirs; includes stay flat (`#include "foo.h"`), so every target gets
 # all the subdirs on its include path.
-set(KAIROS_INC ${SRC}/market ${SRC}/quote ${SRC}/order ${SRC}/notify ${SRC}/engine ${SRC}/sim)
+set(KAIROS_INC
+    ${SRC}/market
+    ${SRC}/quote
+    ${SRC}/order
+    ${SRC}/notify
+    ${SRC}/engine
+    ${SRC}/sim
+    ${SRC}/blacklist)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -84,6 +91,9 @@ add_library(kairos_sim_backend src/sim/sim_order_backend.cpp)
 target_include_directories(kairos_sim_backend PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_sim_backend PUBLIC kairos_sim)
 
+add_library(kairos_blacklist src/blacklist/blacklist.cpp)
+target_include_directories(kairos_blacklist PUBLIC ${KAIROS_INC})
+
 add_library(kairos_scenario src/engine/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
@@ -123,7 +133,7 @@ target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
 target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_notify
-                                                     kairos_uds)
+                                                     kairos_uds kairos_blacklist)
 
 add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
@@ -150,6 +160,10 @@ add_test(NAME test_order_journal COMMAND test_order_journal)
 add_executable(test_scenario tests/test_scenario.cpp)
 target_link_libraries(test_scenario PRIVATE kairos_scenario)
 add_test(NAME test_scenario COMMAND test_scenario)
+
+add_executable(test_blacklist tests/test_blacklist.cpp)
+target_link_libraries(test_blacklist PRIVATE kairos_blacklist)
+add_test(NAME test_blacklist COMMAND test_blacklist)
 
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
