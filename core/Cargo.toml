@@ -36,6 +36,10 @@ path = "src/bin/feed_compare.rs"
 name = "kairos-kqr-export"
 path = "src/bin/kqr_export.rs"
 
+[[bin]]
+name = "kairos-sim"
+path = "src/bin/sim.rs"
+
 [dependencies]
 capnp = "0.20"
 libc = "0.2"
