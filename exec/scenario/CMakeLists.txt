@@ -111,6 +111,12 @@ target_include_directories(kairos_scenario_state PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario_state PUBLIC kairos_scenario_ctl_proto
                                                    tomlplusplus::tomlplusplus)
 
+# Scenario supervisor: process manager. Fork/execv + owns each trader child, one monitor thread per
+# child (stdout -> state machine, EOF -> waitpid). No setsid.
+add_library(kairos_scenario_process src/scenario/scenario_process.cpp)
+target_include_directories(kairos_scenario_process PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_scenario_process PUBLIC kairos_scenario_state pthread)
+
 add_library(kairos_scenario src/engine/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
@@ -170,6 +176,10 @@ add_test(NAME test_scenario_ctl_proto COMMAND test_scenario_ctl_proto)
 add_executable(test_scenario_state tests/test_scenario_state.cpp)
 target_link_libraries(test_scenario_state PRIVATE kairos_scenario_state)
 add_test(NAME test_scenario_state COMMAND test_scenario_state)
+
+add_executable(test_scenario_process tests/test_scenario_process.cpp)
+target_link_libraries(test_scenario_process PRIVATE kairos_scenario_process)
+add_test(NAME test_scenario_process COMMAND test_scenario_process)
 
 add_executable(test_market_fees tests/test_market_fees.cpp)
 target_include_directories(test_market_fees PRIVATE ${KAIROS_INC})

@@ -1,0 +1,215 @@
+#include "scenario_process.h"
+
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <chrono>
+#include <cstring>
+#include <ctime>
+#include <utility>
+
+namespace kairos::exec {
+
+namespace {
+
+constexpr std::chrono::seconds kStopGrace{5};
+
+}  // namespace
+
+ProcessManager::~ProcessManager() { StopAll(); }
+
+bool ProcessManager::IsAlive(const Child& c) { return c.pid > 0 && !c.reaped; }
+
+bool ProcessManager::Spawn(const std::string& name, const std::vector<std::string>& argv,
+                           bool live) {
+  if (argv.empty()) return false;
+
+  // Reap-and-replace a prior terminal child for the same name (outside the lock).
+  std::unique_ptr<Child> old;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = children_.find(name);
+    if (it != children_.end()) {
+      if (IsAlive(*it->second)) return false;  // already running
+      old = std::move(it->second);
+      children_.erase(it);
+    }
+  }
+  if (old && old->monitor.joinable()) old->monitor.join();
+  old.reset();
+
+  int fds[2];
+  if (::pipe2(fds, O_CLOEXEC) != 0) return false;
+
+  pid_t pid = ::fork();
+  if (pid < 0) {
+    ::close(fds[0]);
+    ::close(fds[1]);
+    return false;
+  }
+  if (pid == 0) {
+    // Child: merge stdout+stderr onto the pipe write end, stdin from /dev/null.
+    ::close(fds[0]);
+    ::dup2(fds[1], STDOUT_FILENO);
+    ::dup2(fds[1], STDERR_FILENO);
+    if (fds[1] != STDOUT_FILENO && fds[1] != STDERR_FILENO) ::close(fds[1]);
+    int devnull = ::open("/dev/null", O_RDONLY);
+    if (devnull >= 0) {
+      ::dup2(devnull, STDIN_FILENO);
+      if (devnull != STDIN_FILENO) ::close(devnull);
+    }
+    std::vector<char*> cargv;
+    cargv.reserve(argv.size() + 1);
+    for (const std::string& a : argv) cargv.push_back(const_cast<char*>(a.c_str()));
+    cargv.push_back(nullptr);
+    ::execv(cargv[0], cargv.data());
+    ::_exit(127);  // exec failed
+  }
+
+  ::close(fds[1]);  // parent keeps the read end only
+  auto child = std::make_unique<Child>();
+  child->name = name;
+  child->pid = pid;
+  child->read_fd = fds[0];
+  child->live = live;
+  child->state = ScenarioState::kStarting;
+  Child* raw = child.get();
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    children_[name] = std::move(child);  // table entry exists before the monitor runs
+    raw->monitor = std::thread([this, raw] { MonitorLoop(raw); });
+  }
+  return true;
+}
+
+void ProcessManager::MonitorLoop(Child* c) {
+  std::string buf;
+  bool dropping = false;  // discarding an over-length line until its newline
+  char chunk[4096];
+  while (true) {
+    ssize_t n = ::read(c->read_fd, chunk, sizeof(chunk));
+    if (n <= 0) break;  // EOF (child closed all fds) or error
+    for (ssize_t i = 0; i < n; ++i) {
+      char ch = chunk[i];
+      if (ch == '\n') {
+        if (!dropping) {
+          std::lock_guard<std::mutex> lock(mu_);
+          long now = static_cast<long>(std::time(nullptr));
+          c->state = ApplyStdoutLine(c->state, buf, &c->counters, now);
+          std::string reason = ExtractFailureReason(buf);
+          if (!reason.empty()) c->last_fail_reason = reason;
+          if (buf.rfind("kairos-exec: end - ", 0) == 0) c->saw_end_line = true;
+        }
+        buf.clear();
+        dropping = false;
+        continue;
+      }
+      if (dropping) continue;
+      buf.push_back(ch);
+      if (buf.size() > kMaxCtlLineLen) {  // never grow without bound on a runaway line
+        buf.clear();
+        dropping = true;
+      }
+    }
+  }
+
+  int status = 0;
+  ::waitpid(c->pid, &status, 0);  // our own child: returns promptly, no zombie
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    ExitOutcome o = ClassifyExit(c->requested_stop, status, c->saw_end_line, c->last_fail_reason);
+    c->state = o.state;
+    c->last_exit_reason = o.reason;
+    c->reaped = true;
+    ::close(c->read_fd);
+    c->read_fd = -1;
+  }
+  exit_cv_.notify_all();
+}
+
+void ProcessManager::StopChild(const std::string& name) {
+  pid_t pid = -1;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = children_.find(name);
+    if (it == children_.end() || !IsAlive(*it->second)) return;
+    it->second->requested_stop = true;
+    it->second->state = ScenarioState::kStopping;
+    pid = it->second->pid;
+  }
+  ::kill(pid, SIGINT);
+  {
+    std::unique_lock<std::mutex> lock(mu_);
+    auto reaped = [&] {
+      auto it = children_.find(name);
+      return it == children_.end() || it->second->reaped;
+    };
+    if (!exit_cv_.wait_for(lock, kStopGrace, reaped)) {
+      ::kill(pid, SIGKILL);  // ignored the SIGINT: force it, the monitor still reaps
+      exit_cv_.wait(lock, reaped);
+    }
+  }
+}
+
+void ProcessManager::StopAll() {
+  std::vector<pid_t> pids;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (auto& [name, c] : children_) {
+      if (!IsAlive(*c)) continue;
+      c->requested_stop = true;
+      c->state = ScenarioState::kStopping;
+      pids.push_back(c->pid);
+    }
+  }
+  for (pid_t pid : pids) ::kill(pid, SIGINT);
+
+  {
+    std::unique_lock<std::mutex> lock(mu_);
+    auto all_reaped = [&] {
+      for (auto& [name, c] : children_)
+        if (!c->reaped && c->pid > 0) return false;
+      return true;
+    };
+    if (!exit_cv_.wait_for(lock, kStopGrace, all_reaped)) {
+      for (auto& [name, c] : children_)
+        if (!c->reaped && c->pid > 0) ::kill(c->pid, SIGKILL);
+      exit_cv_.wait(lock, all_reaped);
+    }
+  }
+
+  std::map<std::string, std::unique_ptr<Child>> drained;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    drained.swap(children_);
+  }
+  for (auto& [name, c] : drained)
+    if (c->monitor.joinable()) c->monitor.join();
+}
+
+ProcessManager::ChildStatus ProcessManager::StatusOf(const std::string& name) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  ChildStatus s;
+  auto it = children_.find(name);
+  if (it == children_.end()) return s;
+  const Child& c = *it->second;
+  s.present = true;
+  s.state = c.state;
+  s.pid = c.reaped ? 0 : static_cast<long>(c.pid);
+  s.counters = c.counters;
+  s.last_exit_reason = c.last_exit_reason;
+  s.live = c.live;
+  return s;
+}
+
+std::vector<std::string> ProcessManager::Names() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  std::vector<std::string> names;
+  names.reserve(children_.size());
+  for (const auto& [name, c] : children_) names.push_back(name);
+  return names;
+}
+
+}  // namespace kairos::exec
