@@ -59,6 +59,11 @@ async fn main() -> Result<()> {
         shared.clone(),
         cfg.journal_dir.clone(),
     ));
+    tokio::spawn(app::refresh_available(
+        shared.clone(),
+        cfg.scenario_dir.clone(),
+    ));
+    tokio::spawn(app::refresh_running(shared.clone()));
     tokio::spawn(app::refresh_timers(shared.clone()));
     tokio::spawn(app::refresh_blacklist(shared.clone(), blacklist_path));
     tokio::spawn(app::refresh_archive(shared.clone(), kqr_dir));
