@@ -3,17 +3,23 @@
 // FakeQuoteSource delivers synthetic quotes synchronously (production delivers
 // on the UDS reader thread); the fake clock makes session gating deterministic.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "engine.h"
+#include "event.h"
 #include "event_sink.h"
 #include "order_backend.h"
+#include "queue_sim_backend.h"
 #include "quote_book.h"
 #include "quote_source.h"
 #include "scenario.h"
@@ -38,14 +44,22 @@ namespace {
 class FakeQuoteSource : public QuoteSource {
  public:
   void SetCallback(QuoteFn on_quote) override { on_quote_ = std::move(on_quote); }
+  void SetTradeCallback(TradeFn on_trade) override { on_trade_ = std::move(on_trade); }
   void Start() override {}
   void Stop() override {}
   void Push(const std::string& symbol, const TopOfBook& tob) {
     if (on_quote_) on_quote_(symbol, tob);
   }
+  // Exercises the engine's trade subscription, registered only when the backend
+  // asks for trades (WantsMarketTrades()).
+  void PushTrade(const std::string& symbol, const Trade& t) {
+    if (on_trade_) on_trade_(symbol, t);
+  }
+  bool HasTradeCallback() const { return static_cast<bool>(on_trade_); }
 
  private:
   QuoteFn on_quote_;
+  TradeFn on_trade_;
 };
 
 // Paper backend that counts Submit calls; fills are still synchronous.
@@ -200,12 +214,118 @@ void TestTwapPacingSteppedClock() {
   runner.join();
 }
 
+// Captures fill sizes and the terminal event's fee so the test can assert
+// non-instant fills and that the fee model ran on sim fills.
+class RecordingSink : public EventSink {
+ public:
+  void Emit(const Event& ev) override {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (ev.category == EventCategory::kFill) {
+      for (const auto& [k, v] : ev.fields)
+        if (k == "shares") fills_.push_back(std::stol(v));
+    } else if (ev.category == EventCategory::kComplete || ev.category == EventCategory::kShutdown ||
+               ev.category == EventCategory::kIncomplete) {
+      for (const auto& [k, v] : ev.fields)
+        if (k == "fee") final_fee_ = std::stol(v);
+    }
+  }
+  long TotalFilled() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    long n = 0;
+    for (long f : fills_) n += f;
+    return n;
+  }
+  long MaxSingleFill() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    long m = 0;
+    for (long f : fills_) m = std::max(m, f);
+    return m;
+  }
+  long FinalFee() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return final_fee_;
+  }
+
+ private:
+  mutable std::mutex mu_;
+  std::vector<long> fills_;
+  long final_fee_ = 0;
+};
+
+// Queue-sim backend that counts Submit so the test can wait for the engine to
+// rest an order before printing trades against it.
+class CountingQueueSim : public QueueSimBackend {
+ public:
+  using QueueSimBackend::QueueSimBackend;
+  void Submit(const OrderSubmitMsg& o) override {
+    ++submit_count;
+    QueueSimBackend::Submit(o);
+  }
+  std::atomic<int> submit_count{0};
+};
+
+// A passive join order fed through the engine + queue-sim backend fills only
+// partially against a print that clears the displayed queue ahead, and the fee
+// model runs on the sim fill (fee > 0) exactly as it would on paper/live.
+void TestQueueSimEngineFills() {
+  constexpr std::int64_t kCont = 7200LL * 1000000;  // 10:00 Taipei, continuous
+  Scenario s = BaseScenario();
+  s.board = Board::kRoundLot;  // the fill model rejects odd-lot submits
+  s.price_policy = PricePolicy::kJoin;
+  s.pacing = Pacing::kAsap;
+  s.shares_per_order = 2000;
+  s.budget_twd = 100000000;  // never completes on its own; stopped explicitly
+
+  CountingQueueSim backend(FillMode::kProbQueue, {"2330"});
+  RecordingSink sink;
+  FakeQuoteSource quotes;
+  std::atomic<long> mono_ns{0};
+  EngineClock clock;
+  clock.mono = [&mono_ns] {
+    long v = mono_ns.fetch_add(2'000'000'000L);  // +2s per read: never gates
+    return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(v));
+  };
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes, clock);
+  engine.set_ignore_window(true);
+
+  // The engine registers the trade subscription only because the queue-sim
+  // backend asks for trades.
+  CHECK(quotes.HasTradeCallback());
+
+  std::thread runner([&engine] { engine.Run(); });
+
+  // Two-sided book: 1000 displayed at the bid the join order joins; ask a tick
+  // above so the join BUY rests behind the 1000 queue.
+  TopOfBook book;
+  book.bids[0] = {10000, 1000};
+  book.asks[0] = {10010, 1000};
+  book.n_bids = 1;
+  book.n_asks = 1;
+  book.quote_ts_us = kCont;
+  book.valid = true;
+  quotes.Push("2330", book);
+  CHECK(PollUntil([&] { return backend.submit_count.load() >= 1; }, 3000));
+
+  // A 1500-share print clears the 1000 ahead and fills only the 500 beyond it.
+  quotes.PushTrade("2330", Trade{10000, 1500, kCont + 1000, false});
+  CHECK(PollUntil([&] { return sink.TotalFilled() >= 500; }, 3000));
+  CHECK(sink.TotalFilled() == 500);  // partial: NOT the 2000 an instant fill gives
+  CHECK(sink.MaxSingleFill() < 2000);
+
+  engine.RequestStop();
+  runner.join();
+  CHECK(sink.FinalFee() > 0);  // the fee model ran on the sim fill
+  std::printf("queue-sim engine: filled %ld / 2000 sh, fee NT$ %ld\n", sink.TotalFilled(),
+              sink.FinalFee());
+}
+
 }  // namespace
 
 int main() {
   TestQuoteDrivenComplete();
   TestHardStopAtClose();
   TestTwapPacingSteppedClock();
+  TestQueueSimEngineFills();
   if (g_failures == 0) {
     std::printf("test_engine: OK\n");
     return 0;

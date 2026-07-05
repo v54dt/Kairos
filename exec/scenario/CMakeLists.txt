@@ -136,8 +136,9 @@ add_executable(kairos_quote_tap src/bin/quote_tap_main.cpp)
 target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
-target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_notify
-                                                     kairos_uds kairos_blacklist)
+target_link_libraries(
+  kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_sim_backend kairos_notify
+                                 kairos_uds kairos_blacklist)
 
 add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
@@ -235,7 +236,7 @@ target_include_directories(test_engine_logic PRIVATE ${KAIROS_INC})
 add_test(NAME test_engine_logic COMMAND test_engine_logic)
 
 add_executable(test_engine tests/test_engine.cpp)
-target_link_libraries(test_engine PRIVATE kairos_engine)
+target_link_libraries(test_engine PRIVATE kairos_engine kairos_sim_backend)
 add_test(NAME test_engine COMMAND test_engine)
 
 add_executable(test_event tests/test_event.cpp)
