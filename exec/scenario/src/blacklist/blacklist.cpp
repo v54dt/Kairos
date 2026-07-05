@@ -154,6 +154,12 @@ Blacklist Blacklist::Parse(const std::string& csv_text) {
           std::format("malformed blacklist row {}: got {} fields, header has {}", r, fields.size(),
                       header.size()));
     }
+    for (const std::string& f : fields) {
+      if (f.find('\n') != std::string::npos || f.find('\r') != std::string::npos) {
+        throw std::runtime_error(std::format(
+            "malformed blacklist row {}: embedded newline in field (corrupt or truncated file)", r));
+      }
+    }
     BlacklistEntry e;
     e.symbol = NormalizeSymbol(fields[i_symbol]);
     if (e.symbol.empty()) {

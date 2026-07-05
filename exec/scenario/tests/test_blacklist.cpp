@@ -178,6 +178,14 @@ static void TestGate() {
   std::string bad_cat = WriteTemp("badc", std::string(kHeader) + "2330,frozen,x,,\n");
   GateRefuses(bad_cat, cfg, "2330", Fresh(bad_cat));
 
+  // FAIL-CLOSED: an unbalanced quote that re-balances swallows the next row into
+  // a note field; the field count still looks right, so refuse on the embedded
+  // newline rather than silently dropping the 2330 suspension row.
+  std::string swallow = WriteTemp(
+      "swallow", std::string(kHeader) + "1101,disposal,\"oops,2026,2026\n" +
+                     "2330,suspension,halt,2026-07-01,2026-07-10\n" + "9999,disposal,\"end\",,\n");
+  GateRefuses(swallow, cfg, "2330", Fresh(swallow));
+
   // FAIL-CLOSED: stale file (mtime older than the threshold).
   std::string stale = WriteTemp("stale", std::string(kHeader) + "1101,disposal,x,,\n");
   std::time_t stale_now = Mtime(stale) + (cfg.max_stale_days + 1) * 86400 + 1;
@@ -197,8 +205,8 @@ static void TestGate() {
   CHECK(!empty_out.has_warning);
 
   std::filesystem::remove_all(dir);
-  for (const char* t :
-       {"susp", "disp", "marg", "sell", "att", "badq", "badh", "short", "badc", "stale", "empty"}) {
+  for (const char* t : {"susp", "disp", "marg", "sell", "att", "badq", "badh", "short", "badc",
+                        "swallow", "stale", "empty"}) {
     std::remove(TempPath(t).c_str());
   }
 }
