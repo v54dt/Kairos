@@ -11,7 +11,7 @@ which map exactly to the command below.
 
 | File | Command | Expected behavior |
 |------|---------|-------------------|
-| `quotes_only_2330.kqr` | `kairos-tapegen --scenario quotes-only --symbol 2330 --out quotes_only_2330.kqr` | Pure quote flow, no trades; drives the TUI/data-source, zero fills possible. |
+| `quotes_only_2330.kqr` | `kairos-tapegen --scenario quotes-only --symbol 2330 --out quotes_only_2330.kqr` | Pure quote flow, no trades; drives the TUI/data-source, no fills for a passive/resting order (a marketable order would still walk the standing book). |
 | `trend_day_2330.kqr` | `kairos-tapegen --scenario trend-day --symbol 2330 --out trend_day_2330.kqr` | Steady downward drift; trades walk a descending ladder that prints strictly below the join reference, so a resting join/TWAP BUY fills. |
 | `limit_lock_2330.kqr` | `kairos-tapegen --scenario limit-lock --symbol 2330 --out limit_lock_2330.kqr` | Locked limit-up board: bid pinned at the daily limit with a growing queue and no offer at/below the ceiling (empty ask side); trades still print AT the limit, so a BUY at the limit has nothing to cross and stays unbuyable. |
 
