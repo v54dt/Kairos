@@ -65,6 +65,51 @@ fn wait_child(child: &mut std::process::Child, timeout: Duration) -> bool {
     false
 }
 
+/// The sim child process groups recorded in the pidfile, or empty if it is absent.
+fn read_pgids(pidfile: &Path) -> Vec<i32> {
+    std::fs::read_to_string(pidfile)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once(' ').and_then(|(p, _)| p.trim().parse().ok()))
+        .collect()
+}
+
+/// Owns the spawned sim and kills+reaps it on drop, so any panic between spawn and
+/// the explicit teardown cannot orphan the sim pipeline. SIGTERM first (the sim's
+/// own guard tears down its child groups on SIGTERM), then force-kill every recorded
+/// child process group as a belt and remove the run's temp dirs. A no-op once the
+/// sim has already been reaped by the happy path.
+struct SimReaper {
+    child: std::process::Child,
+    pidfile: PathBuf,
+    cleanup: Vec<PathBuf>,
+}
+
+impl Drop for SimReaper {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            // SAFETY: signalling a child pid we own and have not yet reaped.
+            unsafe { libc::kill(self.child.id() as i32, libc::SIGTERM) };
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if matches!(self.child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            for pgid in read_pgids(&self.pidfile) {
+                // SAFETY: killpg on a recorded sim child group; harmless if gone.
+                unsafe { libc::killpg(pgid, libc::SIGKILL) };
+            }
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        for dir in &self.cleanup {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
 #[test]
 #[ignore = "spawns the sim daemons + C++ sim hub; run with --ignored"]
 fn tui_feed_source_receives_sim_quotes() {
@@ -90,16 +135,20 @@ fn tui_feed_source_receives_sim_quotes() {
         tape.display()
     );
 
-    let mut sim = Command::new(&sim_bin)
-        .arg("replay")
-        .arg(&tape)
-        .args(["--symbols", SYMBOL, "--speed", "8"])
-        .env("KAIROS_SIM_AERON_DIR", &aeron_dir)
-        .env("KAIROS_SIM_QUOTE_SOCK", &quote_sock)
-        .env("KAIROS_SIM_ORDER_SOCK", &order_sock)
-        .env("KAIROS_SIM_HUBD", &hubd)
-        .spawn()
-        .expect("spawn kairos-sim");
+    let mut sim = SimReaper {
+        child: Command::new(&sim_bin)
+            .arg("replay")
+            .arg(&tape)
+            .args(["--symbols", SYMBOL, "--speed", "8"])
+            .env("KAIROS_SIM_AERON_DIR", &aeron_dir)
+            .env("KAIROS_SIM_QUOTE_SOCK", &quote_sock)
+            .env("KAIROS_SIM_ORDER_SOCK", &order_sock)
+            .env("KAIROS_SIM_HUBD", &hubd)
+            .spawn()
+            .expect("spawn kairos-sim"),
+        pidfile: pidfile.clone(),
+        cleanup: vec![base.clone(), PathBuf::from(&aeron_dir)],
+    };
 
     assert!(
         wait_for(&quote_sock, Duration::from_secs(20)),
@@ -152,17 +201,13 @@ fn tui_feed_source_receives_sim_quotes() {
         wait_for(&pidfile, Duration::from_secs(5)),
         "sim pidfile never written"
     );
-    let pgids: Vec<i32> = std::fs::read_to_string(&pidfile)
-        .unwrap()
-        .lines()
-        .filter_map(|l| l.split_once(' ').and_then(|(p, _)| p.trim().parse().ok()))
-        .collect();
+    let pgids = read_pgids(&pidfile);
     assert!(!pgids.is_empty(), "no sim child pgids recorded");
 
     // SAFETY: signalling the sim pid we own; its guard tears down every child.
-    unsafe { libc::kill(sim.id() as i32, libc::SIGTERM) };
+    unsafe { libc::kill(sim.child.id() as i32, libc::SIGTERM) };
     assert!(
-        wait_child(&mut sim, Duration::from_secs(10)),
+        wait_child(&mut sim.child, Duration::from_secs(10)),
         "kairos-sim did not exit after SIGTERM"
     );
 
