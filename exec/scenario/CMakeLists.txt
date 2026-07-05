@@ -161,6 +161,10 @@ add_executable(test_scenario tests/test_scenario.cpp)
 target_link_libraries(test_scenario PRIVATE kairos_scenario)
 add_test(NAME test_scenario COMMAND test_scenario)
 
+add_executable(test_blacklist tests/test_blacklist.cpp)
+target_link_libraries(test_blacklist PRIVATE kairos_blacklist)
+add_test(NAME test_blacklist COMMAND test_blacklist)
+
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
 add_test(NAME test_quote_codec COMMAND test_quote_codec)
