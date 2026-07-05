@@ -7,7 +7,7 @@ use super::hub_status::HubReport;
 /// One file per (symbol, side, day) — not strictly one per scenario.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ScenarioJournal {
-    pub name: String,   // file stem, e.g. "2330-Buy-20260705"
+    pub name: String, // file stem, e.g. "2330-Buy-20260705"
     pub symbol: String,
     pub side: String,
     pub fills: u64,
