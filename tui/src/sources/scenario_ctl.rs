@@ -137,8 +137,9 @@ pub fn enumerate_available(dir: &Path) -> (Vec<ScenarioToml>, usize) {
     (out, skipped)
 }
 
-/// The scenario-trader binary name (a PATH lookup). Override for tests/installs
-/// with `$KAIROS_SCENARIO_TRADER`.
+/// The scenario-trader binary file name. It is the leaf of the derived default
+/// path (`<scenario_dir>/build/kairos_scenario_trader`) and the argv[0] basename
+/// a running trader is matched by.
 pub const TRADER_BIN: &str = "kairos_scenario_trader";
 
 /// A running `kairos_scenario_trader` process, seen by scanning the process
@@ -389,10 +390,44 @@ fn rebuild_typed(toml: &Path, name: &str, symbol: &str, stem: &str, buf: String)
     }
 }
 
-/// The scenario-trader executable to spawn: `$KAIROS_SCENARIO_TRADER` if set,
-/// else [`TRADER_BIN`] (resolved on PATH).
-pub fn trader_bin() -> String {
-    std::env::var("KAIROS_SCENARIO_TRADER").unwrap_or_else(|_| TRADER_BIN.to_string())
+/// Resolve the scenario-trader executable to spawn, in precedence order:
+/// (a) the `--trader-bin` flag if given non-empty, else (b)
+/// `$KAIROS_SCENARIO_TRADER` if set non-empty, else (c) a path DERIVED from the
+/// scenario dir: `<scenario_dir>/build/kairos_scenario_trader` (the tomls and the
+/// built binary are colocated under `exec/scenario`). The default is a real
+/// derived path, never a bare PATH name — so a START works out of the box and
+/// never fails with a raw ENOENT from a missing PATH lookup.
+pub fn resolve_trader_bin(flag: Option<&str>, env: Option<&str>, scenario_dir: &Path) -> PathBuf {
+    if let Some(f) = flag.filter(|s| !s.is_empty()) {
+        return PathBuf::from(f);
+    }
+    if let Some(e) = env.filter(|s| !s.is_empty()) {
+        return PathBuf::from(e);
+    }
+    scenario_dir.join("build").join(TRADER_BIN)
+}
+
+/// Verify the resolved trader binary is a runnable file before spawning, turning
+/// a would-be raw `os error 2` into a clear, actionable message.
+pub fn ensure_trader_bin(bin: &Path) -> Result<(), String> {
+    let not_found = || {
+        format!(
+            "trader binary not found: {} (set --trader-bin or KAIROS_SCENARIO_TRADER)",
+            bin.display()
+        )
+    };
+    let meta = std::fs::metadata(bin).map_err(|_| not_found())?;
+    if !meta.is_file() {
+        return Err(not_found());
+    }
+    use std::os::unix::fs::PermissionsExt;
+    if meta.permissions().mode() & 0o111 == 0 {
+        return Err(format!(
+            "trader binary is not executable: {} (set --trader-bin or KAIROS_SCENARIO_TRADER)",
+            bin.display()
+        ));
+    }
+    Ok(())
 }
 
 /// The exact argv for a start. PAPER is just `[bin, toml]`; LIVE appends
@@ -924,5 +959,97 @@ live = maybe
     fn run_stop_surfaces_kill_failure() {
         let res = run_stop(1, |_| true, |_, _| -1);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn default_trader_bin_is_derived_from_scenario_dir() {
+        let bin = resolve_trader_bin(None, None, Path::new("/home/u/Kairos/exec/scenario"));
+        assert_eq!(
+            bin,
+            PathBuf::from("/home/u/Kairos/exec/scenario/build/kairos_scenario_trader")
+        );
+    }
+
+    #[test]
+    fn default_trader_bin_is_not_a_bare_path_name() {
+        // Regression guard for `os error 2`: the default must be a derived,
+        // multi-component path, never the bare `kairos_scenario_trader` name that
+        // relies on a PATH lookup (which is what made every START fail).
+        let bin = resolve_trader_bin(None, None, Path::new("/some/scenario/dir"));
+        assert_ne!(bin, PathBuf::from(TRADER_BIN));
+        assert!(
+            bin.components().count() > 1,
+            "default trader-bin must be a derived path, not a bare PATH name"
+        );
+        assert!(bin.is_absolute() || bin.parent().is_some());
+    }
+
+    #[test]
+    fn trader_bin_flag_overrides_env_and_default() {
+        let bin = resolve_trader_bin(
+            Some("/opt/custom/trader"),
+            Some("/env/trader"),
+            Path::new("/scenario"),
+        );
+        assert_eq!(bin, PathBuf::from("/opt/custom/trader"));
+    }
+
+    #[test]
+    fn trader_bin_env_overrides_default_but_not_flag() {
+        let bin = resolve_trader_bin(None, Some("/env/trader"), Path::new("/scenario"));
+        assert_eq!(bin, PathBuf::from("/env/trader"));
+    }
+
+    #[test]
+    fn trader_bin_empty_flag_and_env_fall_through_to_default() {
+        let bin = resolve_trader_bin(Some(""), Some(""), Path::new("/scenario"));
+        assert_eq!(bin, PathBuf::from("/scenario/build/kairos_scenario_trader"));
+    }
+
+    #[test]
+    fn ensure_trader_bin_missing_yields_clear_error() {
+        let dir = std::env::temp_dir().join(format!("kairos-nobin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("build").join(TRADER_BIN);
+        let err = ensure_trader_bin(&missing).unwrap_err();
+        assert!(err.contains("trader binary not found"), "got: {err}");
+        assert!(err.contains(&missing.display().to_string()), "got: {err}");
+        assert!(
+            err.contains("--trader-bin") && err.contains("KAIROS_SCENARIO_TRADER"),
+            "got: {err}"
+        );
+        assert!(
+            !err.contains("os error 2"),
+            "must not surface a raw os error: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_trader_bin_accepts_an_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kairos-okbin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("kairos_scenario_trader");
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(ensure_trader_bin(&bin).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_trader_bin_rejects_a_non_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kairos-noexe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("kairos_scenario_trader");
+        std::fs::write(&bin, b"not exec\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let err = ensure_trader_bin(&bin).unwrap_err();
+        assert!(err.contains("not executable"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

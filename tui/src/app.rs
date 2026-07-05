@@ -43,6 +43,7 @@ pub struct Config {
     pub journal_dir: PathBuf,
     pub blacklist_path: Option<PathBuf>,
     pub scenario_dir: PathBuf,
+    pub trader_bin: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +95,7 @@ Options:
   --journal-dir <PATH>   Order-journal directory (default: <data-dir>/journal)
   --blacklist-path <PATH> Restricted-symbol blacklist CSV (F1 gate)
   --scenario-dir <PATH>  Scenario .toml directory (default: ~/Kairos/exec/scenario)
+  --trader-bin <PATH>    Scenario-trader executable (default: <scenario-dir>/build/kairos_scenario_trader)
   -h, --help             Print this help and exit
   -V, --version          Print version and exit
 
@@ -103,7 +105,7 @@ Overview tab: [up/down] select unit  [Enter] open its journal  [r]estart [s]tart
               in the journal view: [up/down][PgUp/PgDn] scroll (newest at bottom)  [Esc] close
 Scenarios tab: [left/right] focus Available/Running  [up/down] select  [s]tart selected  [x]stop selected
                starting a LIVE toml needs a typed confirm (the toml stem); a PAPER start and any stop are y/N
-               the trader binary is found on PATH as kairos_scenario_trader ($KAIROS_SCENARIO_TRADER overrides)
+               the trader binary defaults to <scenario-dir>/build/kairos_scenario_trader (--trader-bin or KAIROS_SCENARIO_TRADER override)
 Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)";
 
 pub fn version_line() -> String {
@@ -120,6 +122,7 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
     let mut journal_dir: Option<PathBuf> = None;
     let mut blacklist_path: Option<PathBuf> = None;
     let mut scenario_dir: Option<PathBuf> = None;
+    let mut trader_bin_flag: Option<String> = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -150,17 +153,28 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
                     scenario_dir = Some(PathBuf::from(v));
                 }
             }
+            "--trader-bin" => {
+                if let Some(v) = args.next() {
+                    trader_bin_flag = Some(v);
+                }
+            }
             _ => {}
         }
     }
     let journal_dir = journal_dir.unwrap_or_else(|| data_dir.join("journal"));
     let scenario_dir = scenario_dir.unwrap_or_else(default_scenario_dir);
+    let trader_bin = scenario_ctl::resolve_trader_bin(
+        trader_bin_flag.as_deref(),
+        std::env::var("KAIROS_SCENARIO_TRADER").ok().as_deref(),
+        &scenario_dir,
+    );
     Cli::Run(Config {
         symbols,
         data_dir,
         journal_dir,
         blacklist_path,
         scenario_dir,
+        trader_bin,
     })
 }
 
@@ -479,6 +493,27 @@ mod tests {
     fn scenario_dir_defaults_under_home() {
         match parse_cli(args(&[])) {
             Cli::Run(cfg) => assert!(cfg.scenario_dir.ends_with("exec/scenario")),
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn trader_bin_flag_honored() {
+        match parse_cli(args(&["--trader-bin", "/opt/kairos_scenario_trader"])) {
+            Cli::Run(cfg) => {
+                assert_eq!(cfg.trader_bin, PathBuf::from("/opt/kairos_scenario_trader"))
+            }
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn trader_bin_defaults_under_scenario_dir_build() {
+        match parse_cli(args(&["--scenario-dir", "/tmp/s"])) {
+            Cli::Run(cfg) => assert_eq!(
+                cfg.trader_bin,
+                PathBuf::from("/tmp/s/build/kairos_scenario_trader")
+            ),
             _ => panic!("expected Run"),
         }
     }
