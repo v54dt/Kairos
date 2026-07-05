@@ -39,7 +39,11 @@ fn col_span(chars: &[char], start: usize, end: usize) -> String {
     if start >= end {
         return String::new();
     }
-    chars[start..end].iter().collect::<String>().trim().to_string()
+    chars[start..end]
+        .iter()
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 pub fn parse_list_timers(text: &str) -> Vec<TimerRow> {
@@ -99,13 +103,7 @@ pub fn parse_show_kv(text: &str) -> ServiceResult {
 
 pub async fn list_timers() -> Result<Vec<TimerRow>> {
     let output = Command::new("systemctl")
-        .args([
-            "--user",
-            "list-timers",
-            "kairos-*",
-            "--all",
-            "--no-pager",
-        ])
+        .args(["--user", "list-timers", "kairos-*", "--all", "--no-pager"])
         .output()
         .await
         .context("spawn systemctl")?;
@@ -166,7 +164,14 @@ mod tests {
 
     fn sample() -> String {
         let mut s = String::new();
-        s.push_str(&line(["NEXT", "LEFT", "LAST", "PASSED", "UNIT", "ACTIVATES"]));
+        s.push_str(&line([
+            "NEXT",
+            "LEFT",
+            "LAST",
+            "PASSED",
+            "UNIT",
+            "ACTIVATES",
+        ]));
         s.push_str(&line([
             "Sun 2026-07-05 14:00:00 CST",
             "3h left",

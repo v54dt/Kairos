@@ -8,6 +8,27 @@ pub struct LogLine {
     pub message: String,
 }
 
+/// Log severity inferred from the message text, for highlighting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warn,
+    Info,
+}
+
+/// Classify a log message case-insensitively: `error`/`fail`/`panic` => Error,
+/// `warn` => Warn, otherwise Info.
+pub fn classify_severity(message: &str) -> Severity {
+    let m = message.to_ascii_lowercase();
+    if m.contains("error") || m.contains("fail") || m.contains("panic") {
+        Severity::Error
+    } else if m.contains("warn") {
+        Severity::Warn
+    } else {
+        Severity::Info
+    }
+}
+
 /// Parse `journalctl -o short-iso` output for one unit. Each line is
 /// `<iso-ts> <host> <ident>[<pid>]: <message>`; meta lines starting with `--`
 /// (e.g. `-- No entries --`) are dropped.
@@ -85,5 +106,14 @@ mod tests {
         let logs = parse_short_iso("u", "2026-07-04T11:57:54+08:00 barelog");
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].message, "2026-07-04T11:57:54+08:00 barelog");
+    }
+
+    #[test]
+    fn severity_classification() {
+        assert_eq!(classify_severity("write ERROR on stream"), Severity::Error);
+        assert_eq!(classify_severity("VERIFY FAILED: x"), Severity::Error);
+        assert_eq!(classify_severity("thread panicked"), Severity::Error);
+        assert_eq!(classify_severity("Warning: slow tick"), Severity::Warn);
+        assert_eq!(classify_severity("stream 1002 records=12"), Severity::Info);
     }
 }

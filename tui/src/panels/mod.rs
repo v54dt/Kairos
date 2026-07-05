@@ -1,4 +1,5 @@
 mod book;
+mod data;
 mod feed;
 mod journal;
 mod recorder;
@@ -27,6 +28,7 @@ pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config, tab: Tab) {
         Tab::Overview => render_overview(frame, outer[1], snap, cfg),
         Tab::FeedsBooks => book::render(frame, outer[1], &snap.feed, cfg),
         Tab::Scenarios => scenarios::render(frame, outer[1], &snap.scenarios),
+        Tab::Data => data::render(frame, outer[1], snap),
     }
 }
 
@@ -57,6 +59,11 @@ fn tab_bar(tab: Tab) -> Paragraph<'static> {
         Span::styled(
             " 3 Scenarios ",
             if tab == Tab::Scenarios { active } else { idle },
+        ),
+        Span::raw(" "),
+        Span::styled(
+            " 4 Data & Events ",
+            if tab == Tab::Data { active } else { idle },
         ),
         Span::raw("   "),
         Span::styled(

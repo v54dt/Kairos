@@ -146,11 +146,7 @@ mod tests {
         std::fs::write(kqr.join(today).join("s1001-20260705.kqr"), b"aaaa").unwrap();
         std::fs::write(kqr.join(today).join("s1002-20260705.kqr"), b"bb").unwrap();
         std::fs::write(kqr.join(today).join("notes.txt"), b"skip").unwrap();
-        std::fs::write(
-            kqr.join(yesterday).join("s1001-20260704.kqr.zst"),
-            b"zzz",
-        )
-        .unwrap();
+        std::fs::write(kqr.join(yesterday).join("s1001-20260704.kqr.zst"), b"zzz").unwrap();
 
         let scan = scan_archive(&kqr, today, yesterday);
         let _ = std::fs::remove_dir_all(&kqr);
@@ -186,7 +182,8 @@ mod tests {
 
     #[test]
     fn parses_verify_failed() {
-        let text = format!("{PREFIX}kairos-record-verify: /data/s1001.kqr.zst FAILED: bad header\n");
+        let text =
+            format!("{PREFIX}kairos-record-verify: /data/s1001.kqr.zst FAILED: bad header\n");
         let sv = parse_ship_verify(&text).unwrap();
         assert!(!sv.ok);
         assert!(sv.detail.contains("bad header"));
