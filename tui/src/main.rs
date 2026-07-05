@@ -114,7 +114,7 @@ fn tab_for(event: &Event, current: Tab) -> Option<Tab> {
             return None;
         }
         return match key.code {
-            KeyCode::Char(c @ ('1' | '2' | '3' | '4')) => Some(current.select(c)),
+            KeyCode::Char(c @ ('1' | '2' | '3' | '4' | '5')) => Some(current.select(c)),
             KeyCode::Tab => Some(current.next()),
             _ => None,
         };
