@@ -99,6 +99,15 @@ fn blacklist_lines(state: &Fetch<BlacklistFreshness>) -> Vec<Line<'static>> {
             ),
         ])];
     }
+    if f.clock_anomaly {
+        return vec![Line::from(vec![
+            Span::styled("CLOCK ANOMALY: mtime in future (traders fail closed)", red),
+            Span::styled(
+                format!("  {}", f.path),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])];
+    }
     let age = f.age.map(format_age).unwrap_or_else(|| "?".to_string());
     let badge = if f.stale {
         Span::styled(format!("STALE {age} (traders fail closed)"), red)

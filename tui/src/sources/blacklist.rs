@@ -17,6 +17,7 @@ pub struct BlacklistFreshness {
     pub entry_count: Option<usize>,
     pub stale: bool,
     pub malformed: bool,
+    pub clock_anomaly: bool,
 }
 
 /// RFC4180 reader faithful to exec/scenario `ParseCsv`: quoted fields, embedded
@@ -110,8 +111,9 @@ pub fn resolve_blacklist_path(flag: Option<&str>, env: Option<&str>) -> PathBuf 
 }
 
 /// Stat + parse the blacklist relative to `now`. Never panics: an absent path is
-/// `present: false`, an unreadable/malformed file is `malformed: true`, and a
-/// file older than the 4-day gate threshold is `stale: true`.
+/// `present: false`, an unreadable/malformed file is `malformed: true`, a file
+/// older than the 4-day gate threshold is `stale: true`, and a file whose mtime
+/// is in the future is `clock_anomaly: true` (the trader fails closed on it).
 pub fn read_blacklist(path: &Path, now: SystemTime) -> BlacklistFreshness {
     let mut f = BlacklistFreshness {
         path: path.display().to_string(),
@@ -123,9 +125,14 @@ pub fn read_blacklist(path: &Path, now: SystemTime) -> BlacklistFreshness {
     };
     f.present = true;
     if let Ok(mtime) = meta.modified() {
-        let age = now.duration_since(mtime).unwrap_or(Duration::ZERO);
-        f.stale = age > Duration::from_secs(MAX_STALE_DAYS * 86_400);
-        f.age = Some(age);
+        match now.duration_since(mtime) {
+            Ok(age) => {
+                f.stale = age > Duration::from_secs(MAX_STALE_DAYS * 86_400);
+                f.age = Some(age);
+            }
+            // A future mtime is a clock anomaly; the trader fails closed on it.
+            Err(_) => f.clock_anomaly = true,
+        }
     }
     match std::fs::read_to_string(path) {
         Ok(text) => match parse_entry_count(&text) {
@@ -221,6 +228,19 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert!(f.present);
         assert!(f.stale);
+    }
+
+    #[test]
+    fn future_mtime_is_clock_anomaly_not_fresh() {
+        let path = tmp_path("future");
+        std::fs::write(&path, format!("{HEADER}2330,disposal,x,,\n")).unwrap();
+        let past = SystemTime::now() - Duration::from_secs(5 * 86_400);
+        let f = read_blacklist(&path, past);
+        let _ = std::fs::remove_file(&path);
+        assert!(f.present);
+        assert!(f.clock_anomaly);
+        assert!(!f.stale);
+        assert!(f.age.is_none());
     }
 
     #[test]
