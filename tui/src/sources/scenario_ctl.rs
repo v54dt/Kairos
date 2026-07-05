@@ -1109,7 +1109,11 @@ live = maybe
             live: true,
         }];
         let rows = merge_rows(&avail, &running);
-        assert_eq!(rows.len(), 2, "no orphan row: the trader matched a scenario");
+        assert_eq!(
+            rows.len(),
+            2,
+            "no orphan row: the trader matched a scenario"
+        );
         let r2330 = rows.iter().find(|r| r.stem == "2330").unwrap();
         assert!(r2330.is_running());
         assert_eq!(r2330.pid(), Some(4242));
@@ -1141,7 +1145,10 @@ live = maybe
         ];
         let rows = merge_rows(&avail, &running);
         let pids: Vec<i32> = rows.iter().filter_map(|r| r.pid()).collect();
-        assert!(pids.contains(&100), "first same-stem pid must render: {pids:?}");
+        assert!(
+            pids.contains(&100),
+            "first same-stem pid must render: {pids:?}"
+        );
         assert!(
             pids.contains(&200),
             "second same-stem pid must not be dropped: {pids:?}"
@@ -1154,12 +1161,21 @@ live = maybe
         // The stopped-only 0050 scenario still renders exactly once.
         let n0050 = rows.iter().filter(|r| r.stem == "0050").count();
         assert_eq!(n0050, 1);
-        assert!(rows.iter().find(|r| r.stem == "0050").unwrap().pid().is_none());
+        assert!(
+            rows.iter()
+                .find(|r| r.stem == "0050")
+                .unwrap()
+                .pid()
+                .is_none()
+        );
     }
 
     #[test]
     fn merge_running_row_count_equals_running_len_for_distinct_pids() {
-        let avail = vec![parse_scenario_toml(PathBuf::from("/e/2330.toml"), LIVE_TOML)];
+        let avail = vec![parse_scenario_toml(
+            PathBuf::from("/e/2330.toml"),
+            LIVE_TOML,
+        )];
         let running = vec![
             RunningTrader {
                 pid: 1,
@@ -1190,7 +1206,10 @@ live = maybe
 
     #[test]
     fn merge_appends_orphan_trader_not_on_disk() {
-        let avail = vec![parse_scenario_toml(PathBuf::from("/e/2330.toml"), LIVE_TOML)];
+        let avail = vec![parse_scenario_toml(
+            PathBuf::from("/e/2330.toml"),
+            LIVE_TOML,
+        )];
         let running = vec![RunningTrader {
             pid: 9001,
             toml: "/e/ghost.toml".to_string(),

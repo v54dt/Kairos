@@ -86,15 +86,20 @@ fn header_line() -> Line<'static> {
 
 fn row_line(row: &ScenarioRow, selected: bool) -> Line<'static> {
     let marker = if selected { "> " } else { "  " };
-    let pid = row
-        .pid()
-        .map(|p| format!("pid {p}"))
-        .unwrap_or_default();
+    let pid = row.pid().map(|p| format!("pid {p}")).unwrap_or_default();
     let mut line = Line::from(vec![
         Span::raw(marker),
         dot_span(row.is_running()),
-        Span::raw(format!(" {:<w$} ", trunc(&row.stem, STEM_WIDTH), w = STEM_WIDTH)),
-        Span::raw(format!("{:<s$} ", trunc(&row.symbol, SYMBOL_WIDTH), s = SYMBOL_WIDTH)),
+        Span::raw(format!(
+            " {:<w$} ",
+            trunc(&row.stem, STEM_WIDTH),
+            w = STEM_WIDTH
+        )),
+        Span::raw(format!(
+            "{:<s$} ",
+            trunc(&row.symbol, SYMBOL_WIDTH),
+            s = SYMBOL_WIDTH
+        )),
         orders_span(row.live),
         Span::raw("  "),
         Span::raw(pid),
@@ -439,7 +444,10 @@ mod tests {
             &running,
             &ScenarioUi::default(),
         );
-        assert!(text.contains('\u{25cf}'), "row must show a status dot:\n{text}");
+        assert!(
+            text.contains('\u{25cf}'),
+            "row must show a status dot:\n{text}"
+        );
         assert!(
             text.contains("pid 4242"),
             "running row must show its pid:\n{text}"
@@ -458,7 +466,10 @@ mod tests {
             &[],
             &ScenarioUi::default(),
         );
-        assert!(text.contains('\u{25cf}'), "stopped row still shows a dot:\n{text}");
+        assert!(
+            text.contains('\u{25cf}'),
+            "stopped row still shows a dot:\n{text}"
+        );
         assert_eq!(
             text.matches("pid").count(),
             1,
@@ -503,7 +514,10 @@ mod tests {
             &running,
             &ScenarioUi::default(),
         );
-        assert!(text.contains("ghost"), "orphan trader must be listed:\n{text}");
+        assert!(
+            text.contains("ghost"),
+            "orphan trader must be listed:\n{text}"
+        );
         assert!(text.contains("pid 9001"), "orphan shows its pid:\n{text}");
     }
 
