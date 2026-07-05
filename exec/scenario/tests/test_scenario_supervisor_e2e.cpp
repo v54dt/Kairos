@@ -229,14 +229,38 @@ int main() {
     std::printf("e2e: trader pid %d reaped (ESRCH)\n", trader_pid);
   }
 
-  // 6) Shut the supervisor down; it must leave no orphan trader.
+  // 5b) Restart the trader and leave it ALIVE, so supervisor shutdown must reap a
+  //     live child -- not the pid already stopped above (which would prove nothing).
+  std::string restart = Request(ctl_sock, R"({"cmd":"start","name":"2330","mode":"test"})");
+  std::printf("e2e: restart -> %s\n", restart.c_str());
+  pid_t live_pid = 0;
+  auto rdeadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+  while (std::chrono::steady_clock::now() < rdeadline) {
+    long pid = FieldLong(Request(ctl_sock, R"({"cmd":"list"})"), "pid");
+    if (pid > 0) {
+      live_pid = static_cast<pid_t>(pid);
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+  if (live_pid <= 0 || ::kill(live_pid, 0) != 0) {
+    std::printf("test_scenario_supervisor_e2e: FAIL (restarted trader never came up live)\n");
+    rc = 1;
+  } else {
+    std::printf("e2e: restarted trader pid %d is live\n", live_pid);
+  }
+
+  // 6) Shut the supervisor down while that trader is LIVE; it must reap it, so the
+  //    live child is gone afterwards (no orphan reparented to init).
   ::kill(sup, SIGTERM);
   int st = 0;
   ::waitpid(sup, &st, 0);
   std::printf("e2e: supervisor exited\n");
-  if (trader_pid > 0 && !(::kill(trader_pid, 0) == -1 && errno == ESRCH)) {
+  if (live_pid > 0 && !WaitPidGone(live_pid, 6000)) {
     std::printf("test_scenario_supervisor_e2e: FAIL (orphan trader after supervisor shutdown)\n");
     rc = 1;
+  } else if (live_pid > 0) {
+    std::printf("e2e: live trader pid %d reaped by shutdown (ESRCH)\n", live_pid);
   }
 
   // 7) Tear the sim down and prove its process group is gone.

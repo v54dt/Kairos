@@ -12,6 +12,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <thread>
 #include <vector>
@@ -31,6 +32,15 @@ static int g_failures = 0;
   } while (0)
 
 static std::vector<std::string> Sh(const std::string& script) { return {"/bin/sh", "-c", script}; }
+
+static bool WaitForFile(const std::string& path, int ms) {
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (::access(path.c_str(), F_OK) == 0) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return ::access(path.c_str(), F_OK) == 0;
+}
 
 // Wait until StatusOf(name).state satisfies `pred`, or the timeout elapses.
 template <typename Pred>
@@ -104,19 +114,36 @@ int main() {
     CHECK(::kill(pid, 0) == -1 && errno == ESRCH);
   }
 
-  // 4) A child that ignores SIGINT is still reaped via SIGKILL escalation.
+  // 4) A child that IGNORES SIGINT is still reaped via SIGKILL escalation. The
+  //    child arms SIG_IGN and only then touches a marker file; we wait for the
+  //    marker before StopChild so the SIGINT is genuinely ignored and the grace ->
+  //    SIGKILL path is exercised (not a race where SIGINT kills it outright). Uses
+  //    a single execv'd process so there is no shell grandchild holding the pipe.
   {
     ProcessManager pm;
-    CHECK(pm.Spawn("stubborn", Sh("trap '' INT; sleep 30"), false));
+    char marker[] = "/tmp/kairos-stubborn-XXXXXX";
+    int mfd = ::mkstemp(marker);
+    CHECK(mfd >= 0);
+    ::close(mfd);
+    ::unlink(marker);  // the child re-creates it once its SIGINT handler is armed
+    const std::string prog =
+        "import signal,sys,time\n"
+        "signal.signal(signal.SIGINT, signal.SIG_IGN)\n"
+        "open(sys.argv[1],'w').close()\n"
+        "time.sleep(30)\n";
+    CHECK(pm.Spawn("stubborn", {"/usr/bin/env", "python3", "-c", prog, marker}, false));
     pid_t pid = static_cast<pid_t>(pm.StatusOf("stubborn").pid);
     CHECK(pid > 0);
+    CHECK(WaitForFile(marker, 5000));  // SIGINT handler is now armed
     auto t0 = std::chrono::steady_clock::now();
     pm.StopChild("stubborn");  // SIGINT ignored -> SIGKILL after the grace window
     auto elapsed = std::chrono::steady_clock::now() - t0;
     CHECK(pm.StatusOf("stubborn").state == ScenarioState::kStopped);
     CHECK(::kill(pid, 0) == -1 && errno == ESRCH);
-    // Escalation happens (bounded), so this returns within a bit over the grace.
+    // SIGINT was ignored, so StopChild must have waited the grace, then SIGKILL'd.
+    CHECK(elapsed >= std::chrono::seconds(4));
     CHECK(elapsed < std::chrono::seconds(8));
+    ::unlink(marker);
   }
 
   // 5) StopAll SIGINTs + reaps every live child, leaving no orphan.
