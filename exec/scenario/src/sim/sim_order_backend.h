@@ -37,6 +37,13 @@ class SimOrderBackend : public OrderBackend {
   void OnBook(const std::string& symbol, const TopOfBook& book);
   void OnTrade(const std::string& symbol, const Trade& trade);
 
+  // OrderBackend market-event hooks (in-process paper): forward the engine's
+  // stream into the fill model. WantsMarketTrades() opts the engine's trade feed
+  // in so passive fills advance on real trades.
+  void OnMarketBook(const std::string& symbol, const TopOfBook& book, std::int64_t ts_us) override;
+  void OnMarketTrade(const std::string& symbol, const Trade& trade, std::int64_t ts_us) override;
+  bool WantsMarketTrades() const override { return true; }
+
   // Flush pending closing-auction orders at end of tape / shutdown (see
   // FillEngine::Finalize). Safe to call once the market-event stream has ended.
   void Finalize();
