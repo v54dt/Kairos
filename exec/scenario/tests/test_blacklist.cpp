@@ -178,6 +178,13 @@ static void TestGate() {
   std::string bad_cat = WriteTemp("badc", std::string(kHeader) + "2330,frozen,x,,\n");
   GateRefuses(bad_cat, cfg, "2330", Fresh(bad_cat));
 
+  // FAIL-CLOSED: a non-ASCII byte (NBSP 0xA0) in the symbol cell would store a
+  // key the scenario's ASCII "2330" never matches — refuse rather than allow.
+  std::string nbsp_sym = WriteTemp("nbsp", std::string(kHeader) +
+                                               "\xA0"
+                                               "2330,suspension,x,,\n");
+  GateRefuses(nbsp_sym, cfg, "2330", Fresh(nbsp_sym));
+
   // FAIL-CLOSED: an unbalanced quote that re-balances swallows the next row into
   // a note field; the field count still looks right, so refuse on the embedded
   // newline rather than silently dropping the 2330 suspension row.

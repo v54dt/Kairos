@@ -166,6 +166,15 @@ Blacklist Blacklist::Parse(const std::string& csv_text) {
     if (e.symbol.empty()) {
       throw std::runtime_error(std::format("malformed blacklist row {}: empty symbol", r));
     }
+    // TWSE codes are ASCII alphanumeric; any other byte (NBSP, BOM, NUL,
+    // full-width digit) would store a key the scenario symbol never matches,
+    // silently un-blocking the row — refuse instead (fail-closed).
+    for (unsigned char c : e.symbol) {
+      if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z'))) {
+        throw std::runtime_error(std::format(
+            "malformed blacklist row {}: non-alphanumeric byte in symbol (corrupt file)", r));
+      }
+    }
     e.category = ParseBlacklistCategory(fields[i_category]);
     e.note = fields[i_note];
     e.start_date = fields[i_start];
