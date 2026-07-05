@@ -10,7 +10,14 @@ endif()
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # Sources are grouped into subdirs; includes stay flat (`#include "foo.h"`), so every target gets
 # all the subdirs on its include path.
-set(KAIROS_INC ${SRC}/market ${SRC}/quote ${SRC}/order ${SRC}/notify ${SRC}/engine ${SRC}/sim)
+set(KAIROS_INC
+    ${SRC}/market
+    ${SRC}/quote
+    ${SRC}/order
+    ${SRC}/notify
+    ${SRC}/engine
+    ${SRC}/sim
+    ${SRC}/blacklist)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -83,6 +90,9 @@ target_include_directories(kairos_sim PUBLIC ${KAIROS_INC})
 add_library(kairos_sim_backend src/sim/sim_order_backend.cpp)
 target_include_directories(kairos_sim_backend PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_sim_backend PUBLIC kairos_sim)
+
+add_library(kairos_blacklist src/blacklist/blacklist.cpp)
+target_include_directories(kairos_blacklist PUBLIC ${KAIROS_INC})
 
 add_library(kairos_scenario src/engine/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
