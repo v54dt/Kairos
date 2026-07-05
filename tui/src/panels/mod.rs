@@ -3,6 +3,7 @@ mod data;
 mod feed;
 mod journal;
 mod recorder;
+mod risk;
 mod scenarios;
 mod systemd;
 
@@ -13,10 +14,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{Config, Snapshot, Tab};
+use crate::sources::halt::HaltUi;
 
 const JOURNAL_HEIGHT: u16 = 14;
 
-pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config, tab: Tab) {
+pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config, tab: Tab, halt: &HaltUi) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -28,6 +30,7 @@ pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config, tab: Tab) {
         Tab::Overview => render_overview(frame, outer[1], snap, cfg),
         Tab::FeedsBooks => book::render(frame, outer[1], &snap.feed, cfg),
         Tab::Scenarios => scenarios::render(frame, outer[1], &snap.scenarios),
+        Tab::Risk => risk::render(frame, outer[1], &snap.scenarios.hub, &snap.blacklist, halt),
         Tab::Data => data::render(frame, outer[1], snap),
     }
 }
@@ -61,8 +64,10 @@ fn tab_bar(tab: Tab) -> Paragraph<'static> {
             if tab == Tab::Scenarios { active } else { idle },
         ),
         Span::raw(" "),
+        Span::styled(" 4 Risk ", if tab == Tab::Risk { active } else { idle }),
+        Span::raw(" "),
         Span::styled(
-            " 4 Data & Events ",
+            " 5 Data & Events ",
             if tab == Tab::Data { active } else { idle },
         ),
         Span::raw("   "),

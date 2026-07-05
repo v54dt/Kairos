@@ -5,15 +5,17 @@ mod sources;
 mod terminal;
 
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 
 use app::{Cli, Config, Shared, Snapshot, Tab};
 use sources::feed::{self, FeedState};
+use sources::halt::{self, HaltAction, HaltKey, HaltPrompt, HaltUi};
 
 const TICK: Duration = Duration::from_millis(750);
 
@@ -61,8 +63,10 @@ async fn main() -> Result<()> {
     tokio::spawn(app::refresh_archive(shared.clone(), kqr_dir));
     tokio::spawn(app::refresh_events(shared.clone()));
 
+    let halt_path = halt::hub_halt_path();
+
     let mut term = terminal::enter()?;
-    let res = run(&mut term, &shared, &feed_state, &cfg).await;
+    let res = run(&mut term, &shared, &feed_state, &cfg, halt_path).await;
     terminal::restore()?;
     res
 }
@@ -72,27 +76,111 @@ async fn run(
     shared: &Shared,
     feed_state: &Mutex<FeedState>,
     cfg: &Config,
+    halt_path: Option<PathBuf>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
     let mut tab = Tab::Overview;
+    let mut prompt = HaltPrompt::Idle;
+    let mut halt_result: Option<String> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 let snap = Snapshot::capture(shared, feed_state);
-                term.draw(|frame| panels::render(frame, &snap, cfg, tab))?;
+                let ui = halt_ui(&halt_path, &prompt, &halt_result);
+                term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui))?;
             }
             Some(Ok(event)) = events.next() => {
-                if should_quit(&event) {
+                let key = match &event {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => *k,
+                    _ => continue,
+                };
+                let mut redraw = false;
+                if prompt.is_active() {
+                    if let Some(hk) = to_halt_key(&key) {
+                        let (next, action) = halt::handle_key(&prompt, hk);
+                        prompt = next;
+                        if let Some(a) = action {
+                            halt_result = Some(apply_halt(a, halt_path.as_deref()));
+                        }
+                        redraw = true;
+                    }
+                } else if let Some(rk) = risk_tab_key(tab, &key) {
+                    if halt_path.is_some() {
+                        prompt = match rk {
+                            RiskKey::Halt => HaltPrompt::ConfirmHalt(String::new()),
+                            RiskKey::Resume => HaltPrompt::ConfirmResume(String::new()),
+                        };
+                    } else {
+                        halt_result = Some("kill switch unavailable (no runtime dir)".to_string());
+                    }
+                    redraw = true;
+                } else if should_quit(&event) {
                     return Ok(());
-                }
-                if let Some(next) = tab_for(&event, tab) {
+                } else if let Some(next) = tab_for(&event, tab) {
                     tab = next;
+                    redraw = true;
+                }
+                if redraw {
                     let snap = Snapshot::capture(shared, feed_state);
-                    term.draw(|frame| panels::render(frame, &snap, cfg, tab))?;
+                    let ui = halt_ui(&halt_path, &prompt, &halt_result);
+                    term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui))?;
                 }
             }
         }
+    }
+}
+
+fn halt_ui(path: &Option<PathBuf>, prompt: &HaltPrompt, last_result: &Option<String>) -> HaltUi {
+    HaltUi {
+        path: path.clone(),
+        prompt: prompt.clone(),
+        last_result: last_result.clone(),
+    }
+}
+
+fn to_halt_key(key: &KeyEvent) -> Option<HaltKey> {
+    match key.code {
+        KeyCode::Char(c) => Some(HaltKey::Char(c)),
+        KeyCode::Enter => Some(HaltKey::Enter),
+        KeyCode::Backspace => Some(HaltKey::Backspace),
+        KeyCode::Esc => Some(HaltKey::Cancel),
+        _ => None,
+    }
+}
+
+fn apply_halt(action: HaltAction, path: Option<&Path>) -> String {
+    let path = match path {
+        Some(p) => p,
+        None => return "kill switch unavailable (no runtime dir)".to_string(),
+    };
+    match action {
+        HaltAction::Arm => match halt::arm_halt(path) {
+            Ok(()) => "adminHalt armed".to_string(),
+            Err(e) => format!("arm failed: {e}"),
+        },
+        HaltAction::Clear => match halt::clear_halt(path) {
+            Ok(()) => "halt cleared".to_string(),
+            Err(e) => format!("clear failed: {e}"),
+        },
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RiskKey {
+    Halt,
+    Resume,
+}
+
+// Ctrl+C carries CONTROL and must reach should_quit, not the kill-switch guard.
+fn risk_tab_key(tab: Tab, key: &KeyEvent) -> Option<RiskKey> {
+    if tab != Tab::Risk || key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('k') => Some(RiskKey::Halt),
+        KeyCode::Char('c') => Some(RiskKey::Resume),
+        _ => None,
     }
 }
 
@@ -114,10 +202,43 @@ fn tab_for(event: &Event, current: Tab) -> Option<Tab> {
             return None;
         }
         return match key.code {
-            KeyCode::Char(c @ ('1' | '2' | '3' | '4')) => Some(current.select(c)),
+            KeyCode::Char(c @ ('1' | '2' | '3' | '4' | '5')) => Some(current.select(c)),
             KeyCode::Tab => Some(current.next()),
             _ => None,
         };
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEventKind;
+
+    fn press(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        let mut k = KeyEvent::new(code, mods);
+        k.kind = KeyEventKind::Press;
+        k
+    }
+
+    #[test]
+    fn ctrl_c_on_risk_tab_is_not_a_kill_switch_key() {
+        let ctrl_c = press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(risk_tab_key(Tab::Risk, &ctrl_c), None);
+        assert!(should_quit(&Event::Key(ctrl_c)));
+    }
+
+    #[test]
+    fn bare_keys_on_risk_tab_drive_the_kill_switch() {
+        let c = press(KeyCode::Char('c'), KeyModifiers::NONE);
+        let k = press(KeyCode::Char('k'), KeyModifiers::NONE);
+        assert_eq!(risk_tab_key(Tab::Risk, &c), Some(RiskKey::Resume));
+        assert_eq!(risk_tab_key(Tab::Risk, &k), Some(RiskKey::Halt));
+    }
+
+    #[test]
+    fn kill_switch_keys_ignored_off_risk_tab() {
+        let c = press(KeyCode::Char('c'), KeyModifiers::NONE);
+        assert_eq!(risk_tab_key(Tab::Overview, &c), None);
+    }
 }

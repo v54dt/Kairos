@@ -47,6 +47,7 @@ pub enum Tab {
     Overview,
     FeedsBooks,
     Scenarios,
+    Risk,
     Data,
 }
 
@@ -56,7 +57,8 @@ impl Tab {
             '1' => Tab::Overview,
             '2' => Tab::FeedsBooks,
             '3' => Tab::Scenarios,
-            '4' => Tab::Data,
+            '4' => Tab::Risk,
+            '5' => Tab::Data,
             _ => self,
         }
     }
@@ -65,7 +67,8 @@ impl Tab {
         match self {
             Tab::Overview => Tab::FeedsBooks,
             Tab::FeedsBooks => Tab::Scenarios,
-            Tab::Scenarios => Tab::Data,
+            Tab::Scenarios => Tab::Risk,
+            Tab::Risk => Tab::Data,
             Tab::Data => Tab::Overview,
         }
     }
@@ -90,7 +93,8 @@ Options:
   -h, --help             Print this help and exit
   -V, --version          Print version and exit
 
-Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Data & Events  [Tab] switch  [q] quit";
+Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Events  [Tab] switch  [q] quit
+Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)";
 
 pub fn version_line() -> String {
     format!("kairos-top {}", env!("CARGO_PKG_VERSION"))
@@ -360,7 +364,8 @@ mod tests {
         assert_eq!(Tab::FeedsBooks.select('1'), Tab::Overview);
         assert_eq!(Tab::Overview.select('3'), Tab::Scenarios);
         assert_eq!(Tab::Scenarios.select('2'), Tab::FeedsBooks);
-        assert_eq!(Tab::Overview.select('4'), Tab::Data);
+        assert_eq!(Tab::Overview.select('4'), Tab::Risk);
+        assert_eq!(Tab::Overview.select('5'), Tab::Data);
         assert_eq!(Tab::Data.select('1'), Tab::Overview);
     }
 
@@ -369,6 +374,7 @@ mod tests {
         assert_eq!(Tab::FeedsBooks.select('x'), Tab::FeedsBooks);
         assert_eq!(Tab::Overview.select('9'), Tab::Overview);
         assert_eq!(Tab::Scenarios.select('z'), Tab::Scenarios);
+        assert_eq!(Tab::Risk.select('z'), Tab::Risk);
         assert_eq!(Tab::Data.select('z'), Tab::Data);
     }
 
@@ -376,7 +382,8 @@ mod tests {
     fn tab_next_cycles() {
         assert_eq!(Tab::Overview.next(), Tab::FeedsBooks);
         assert_eq!(Tab::FeedsBooks.next(), Tab::Scenarios);
-        assert_eq!(Tab::Scenarios.next(), Tab::Data);
+        assert_eq!(Tab::Scenarios.next(), Tab::Risk);
+        assert_eq!(Tab::Risk.next(), Tab::Data);
         assert_eq!(Tab::Data.next(), Tab::Overview);
     }
 
