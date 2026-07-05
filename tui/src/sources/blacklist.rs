@@ -137,7 +137,10 @@ pub fn parse_entry_count(text: &str) -> Result<usize, String> {
             return Err(format!("row {r}: non-alphanumeric byte in symbol"));
         }
         if !CATEGORIES.contains(&fields[i_category].as_str()) {
-            return Err(format!("row {r}: unknown category '{}'", fields[i_category]));
+            return Err(format!(
+                "row {r}: unknown category '{}'",
+                fields[i_category]
+            ));
         }
     }
     Ok(rows.len() - 1)
