@@ -15,8 +15,19 @@ use crate::sources::scenario_ctl::{
 
 const HUB_HEIGHT: u16 = 9;
 const ACTIONS_HEIGHT: u16 = 5;
-const RUNNING_HEIGHT: u16 = 8;
+const RUNNING_HEIGHT: u16 = 6;
 const TODAY_WIDTH: u16 = 50;
+
+/// Vertical scroll so the selected list row (at line `sel_line`, header-adjusted)
+/// stays visible inside a `height`-tall bordered box.
+fn scroll_offset(height: u16, sel_line: usize) -> u16 {
+    let inner_h = height.saturating_sub(2) as usize;
+    if inner_h > 0 && sel_line >= inner_h {
+        (sel_line - inner_h + 1) as u16
+    } else {
+        0
+    }
+}
 
 fn now_us() -> i64 {
     SystemTime::now()
@@ -274,20 +285,36 @@ pub fn render(
         ])
         .split(area);
 
+    let avail_offset = if ui.focus == Focus::Available && !avail.0.is_empty() {
+        let sel = ui.avail_sel.min(avail.0.len() - 1);
+        scroll_offset(rows[0].height, sel + 1)
+    } else {
+        0
+    };
     frame.render_widget(
-        Paragraph::new(available_lines(&avail.0, avail.1, ui)).block(
-            Block::default()
-                .title("available scenarios")
-                .borders(Borders::ALL),
-        ),
+        Paragraph::new(available_lines(&avail.0, avail.1, ui))
+            .scroll((avail_offset, 0))
+            .block(
+                Block::default()
+                    .title("available scenarios")
+                    .borders(Borders::ALL),
+            ),
         rows[0],
     );
+    let run_offset = if ui.focus == Focus::Running && !running.is_empty() {
+        let sel = ui.run_sel.min(running.len() - 1);
+        scroll_offset(rows[1].height, sel + 1)
+    } else {
+        0
+    };
     frame.render_widget(
-        Paragraph::new(running_lines(running, ui)).block(
-            Block::default()
-                .title("running traders")
-                .borders(Borders::ALL),
-        ),
+        Paragraph::new(running_lines(running, ui))
+            .scroll((run_offset, 0))
+            .block(
+                Block::default()
+                    .title("running traders")
+                    .borders(Borders::ALL),
+            ),
         rows[1],
     );
     frame.render_widget(
@@ -353,6 +380,29 @@ mod tests {
             .unwrap();
     }
 
+    fn buffer_text(
+        w: u16,
+        h: u16,
+        view: &ScenariosView,
+        avail: &(Vec<ScenarioToml>, usize),
+        running: &[RunningTrader],
+        ui: &ScenarioUi,
+    ) -> String {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, f.area(), view, avail, running, ui))
+            .unwrap();
+        let buf = term.backend().buffer().clone();
+        let area = buf.area;
+        let mut s = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                s.push_str(buf[(x, y)].symbol());
+            }
+            s.push('\n');
+        }
+        s
+    }
+
     #[test]
     fn renders_empty_without_panic() {
         let view = ScenariosView::default();
@@ -378,6 +428,49 @@ mod tests {
             &(avail, 3),
             &running,
             &ui,
+        );
+    }
+
+    #[test]
+    fn available_selection_scrolls_into_view_on_small_terminal() {
+        let avail: Vec<_> = (0..40)
+            .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
+            .collect();
+        let ui = ScenarioUi {
+            focus: Focus::Available,
+            avail_sel: 39,
+            ..Default::default()
+        };
+        let text = buffer_text(80, 24, &ScenariosView::default(), &(avail, 0), &[], &ui);
+        assert!(
+            text.contains("s39 "),
+            "selected scenario scrolled off-screen:\n{text}"
+        );
+        assert!(
+            text.contains("[up/down] select"),
+            "action/confirm banner squeezed out:\n{text}"
+        );
+    }
+
+    #[test]
+    fn running_selection_scrolls_into_view_on_small_terminal() {
+        let running: Vec<_> = (0..12).map(|i| trader(2000 + i, i % 2 == 0)).collect();
+        let ui = ScenarioUi {
+            focus: Focus::Running,
+            run_sel: 11,
+            ..Default::default()
+        };
+        let text = buffer_text(
+            80,
+            24,
+            &ScenariosView::default(),
+            &(vec![], 0),
+            &running,
+            &ui,
+        );
+        assert!(
+            text.contains("2011 "),
+            "selected trader scrolled off-screen:\n{text}"
         );
     }
 
