@@ -103,7 +103,8 @@ Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Event
 Overview tab: [up/down] select unit  [Enter] open its journal  [r]estart [s]tart [x]stop [f] reset-failed  [S]/[X] kairos.target up/down
               trading units require a typed confirm (the unit name); research crons and reset-failed are y/N
               in the journal view: [up/down][PgUp/PgDn] scroll (newest at bottom)  [Esc] close
-Scenarios tab: [left/right] focus Available/Running  [up/down] select  [s]tart selected  [x]stop selected
+Scenarios tab: [up/down] select  [PgUp/PgDn] page  [s]tart a stopped row  [x]stop a running row
+               a green dot marks running, red marks stopped; a running trader started elsewhere is still listed and stoppable
                starting a LIVE toml needs a typed confirm (the toml stem); a PAPER start and any stop are y/N
                the trader binary defaults to <scenario-dir>/build/kairos_scenario_trader (--trader-bin or KAIROS_SCENARIO_TRADER override)
 Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)";

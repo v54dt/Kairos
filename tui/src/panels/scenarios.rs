@@ -10,20 +10,21 @@ use crate::sources::age::format_age;
 use crate::sources::hub_status::HubReport;
 use crate::sources::order_journal::{ScenarioJournal, ScenariosView};
 use crate::sources::scenario_ctl::{
-    Focus, RunningTrader, ScenarioPrompt, ScenarioToml, ScenarioUi,
+    RunningTrader, ScenarioPrompt, ScenarioRow, ScenarioToml, ScenarioUi, merge_rows,
 };
 
 const HUB_HEIGHT: u16 = 9;
 const ACTIONS_HEIGHT: u16 = 5;
-const RUNNING_HEIGHT: u16 = 6;
 const TODAY_WIDTH: u16 = 50;
+const STEM_WIDTH: usize = 22;
+const SYMBOL_WIDTH: usize = 8;
 
-/// Vertical scroll so the selected list row (at line `sel_line`, header-adjusted)
-/// stays visible inside a `height`-tall bordered box.
-fn scroll_offset(height: u16, sel_line: usize) -> u16 {
-    let inner_h = height.saturating_sub(2) as usize;
-    if inner_h > 0 && sel_line >= inner_h {
-        (sel_line - inner_h + 1) as u16
+/// Vertical scroll so the 0-indexed selected data row stays visible inside a
+/// `view_h`-tall list area (header rendered separately, so no border/header
+/// adjustment here).
+fn scroll_offset(view_h: usize, sel: usize) -> u16 {
+    if view_h > 0 && sel >= view_h {
+        (sel - view_h + 1) as u16
     } else {
         0
     }
@@ -43,82 +44,99 @@ fn dim(text: &str) -> Line<'static> {
     ))
 }
 
-fn mode_span(live: bool) -> Span<'static> {
+fn orders_span(live: bool) -> Span<'static> {
     if live {
         Span::styled(
-            "LIVE",
+            format!("{:<5}", "LIVE"),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )
     } else {
-        Span::styled("PAPER", Style::default().fg(Color::Green))
+        Span::styled(format!("{:<5}", "PAPER"), Style::default().fg(Color::Green))
     }
 }
 
-fn select_line(cells: Vec<Span<'static>>, selected: bool) -> Line<'static> {
+fn dot_span(running: bool) -> Span<'static> {
+    let color = if running { Color::Green } else { Color::Red };
+    Span::styled("\u{25cf}", Style::default().fg(color))
+}
+
+fn trunc(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
+    out.push('\u{2026}');
+    out
+}
+
+fn header_line() -> Line<'static> {
+    Line::from(Span::styled(
+        format!(
+            "    {:<w$} {:<s$} {:<5}  {}",
+            "toml",
+            "symbol",
+            "orders",
+            "pid",
+            w = STEM_WIDTH,
+            s = SYMBOL_WIDTH,
+        ),
+        Style::default().fg(Color::DarkGray),
+    ))
+}
+
+fn row_line(row: &ScenarioRow, selected: bool) -> Line<'static> {
     let marker = if selected { "> " } else { "  " };
-    let mut spans = vec![Span::raw(marker)];
-    spans.extend(cells);
-    let mut line = Line::from(spans);
+    let pid = row.pid().map(|p| format!("pid {p}")).unwrap_or_default();
+    let mut line = Line::from(vec![
+        Span::raw(marker),
+        dot_span(row.is_running()),
+        Span::raw(format!(
+            " {:<w$} ",
+            trunc(&row.stem, STEM_WIDTH),
+            w = STEM_WIDTH
+        )),
+        Span::raw(format!(
+            "{:<s$} ",
+            trunc(&row.symbol, SYMBOL_WIDTH),
+            s = SYMBOL_WIDTH
+        )),
+        orders_span(row.live),
+        Span::raw("  "),
+        Span::raw(pid),
+    ]);
     if selected {
         line = line.style(Style::default().add_modifier(Modifier::REVERSED));
     }
     line
 }
 
-fn available_lines(avail: &[ScenarioToml], skipped: usize, ui: &ScenarioUi) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(Span::styled(
-        format!("  {:<22} {:<8} {:>6}", "toml", "symbol", "mode"),
-        Style::default().fg(Color::DarkGray),
-    ))];
-    if avail.is_empty() {
-        lines.push(dim("no scenario tomls in scenario dir"));
+fn data_lines(rows: &[ScenarioRow], sel: usize) -> Vec<Line<'static>> {
+    if rows.is_empty() {
+        return vec![dim("no scenarios in scenario dir")];
     }
-    let focused = ui.focus == Focus::Available;
-    let sel = ui.avail_sel.min(avail.len().saturating_sub(1));
-    for (i, s) in avail.iter().enumerate() {
-        let stem = s
-            .path
-            .file_stem()
-            .map(|x| x.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let cells = vec![
-            Span::raw(format!("{stem:<22} ")),
-            Span::raw(format!("{:<8} ", s.symbol)),
-            mode_span(s.live),
-        ];
-        lines.push(select_line(cells, focused && i == sel));
-    }
-    if skipped > 0 {
-        lines.push(dim(&format!("({skipped} unreadable toml skipped)")));
-    }
-    lines
+    rows.iter()
+        .enumerate()
+        .map(|(i, r)| row_line(r, i == sel))
+        .collect()
 }
 
-fn running_lines(running: &[RunningTrader], ui: &ScenarioUi) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(Span::styled(
-        format!("  {:>7} {:<26} {:>5}", "pid", "toml", "mode"),
-        Style::default().fg(Color::DarkGray),
-    ))];
-    if running.is_empty() {
-        lines.push(dim("no running scenario traders"));
+fn footer_line(total: usize, offset: usize, view_h: usize, skipped: usize) -> Line<'static> {
+    let skip = if skipped > 0 {
+        format!("  ({skipped} skipped)")
+    } else {
+        String::new()
+    };
+    if total == 0 {
+        return dim(&format!("showing 0\u{2013}0 of 0{skip}"));
     }
-    let focused = ui.focus == Focus::Running;
-    let sel = ui.run_sel.min(running.len().saturating_sub(1));
-    for (i, t) in running.iter().enumerate() {
-        let toml = t.toml.rsplit('/').next().unwrap_or(&t.toml).to_string();
-        let cells = vec![
-            Span::raw(format!("{:>7} ", t.pid)),
-            Span::raw(format!("{toml:<26} ")),
-            mode_span(t.live),
-        ];
-        lines.push(select_line(cells, focused && i == sel));
-    }
-    lines
+    let first = offset + 1;
+    let last = (offset + view_h.max(1)).min(total);
+    dim(&format!("showing {first}\u{2013}{last} of {total}{skip}"))
 }
 
 fn legend_line() -> Line<'static> {
     Line::from(Span::styled(
-        "[left/right] focus  [up/down] select  [s]tart  [x]stop   LIVE start needs typed confirm",
+        "[up/down] select  [PgUp/PgDn] page  [s]tart  [x]stop   LIVE start needs typed confirm",
         Style::default().fg(Color::DarkGray),
     ))
 }
@@ -279,54 +297,47 @@ pub fn render(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(RUNNING_HEIGHT),
             Constraint::Length(ACTIONS_HEIGHT),
             Constraint::Length(HUB_HEIGHT),
         ])
         .split(area);
 
-    let avail_offset = if ui.focus == Focus::Available && !avail.0.is_empty() {
-        let sel = ui.avail_sel.min(avail.0.len() - 1);
-        scroll_offset(rows[0].height, sel + 1)
-    } else {
-        0
-    };
+    let merged = merge_rows(&avail.0, running);
+    let sel = ui.sel.min(merged.len().saturating_sub(1));
+
+    let list_block = Block::default().title("scenarios").borders(Borders::ALL);
+    let inner = list_block.inner(rows[0]);
+    frame.render_widget(list_block, rows[0]);
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+    frame.render_widget(Paragraph::new(header_line()), parts[0]);
+    let view_h = parts[1].height as usize;
+    let offset = scroll_offset(view_h, sel);
     frame.render_widget(
-        Paragraph::new(available_lines(&avail.0, avail.1, ui))
-            .scroll((avail_offset, 0))
-            .block(
-                Block::default()
-                    .title("available scenarios")
-                    .borders(Borders::ALL),
-            ),
-        rows[0],
+        Paragraph::new(data_lines(&merged, sel)).scroll((offset, 0)),
+        parts[1],
     );
-    let run_offset = if ui.focus == Focus::Running && !running.is_empty() {
-        let sel = ui.run_sel.min(running.len() - 1);
-        scroll_offset(rows[1].height, sel + 1)
-    } else {
-        0
-    };
     frame.render_widget(
-        Paragraph::new(running_lines(running, ui))
-            .scroll((run_offset, 0))
-            .block(
-                Block::default()
-                    .title("running traders")
-                    .borders(Borders::ALL),
-            ),
-        rows[1],
+        Paragraph::new(footer_line(merged.len(), offset as usize, view_h, avail.1)),
+        parts[2],
     );
+
     frame.render_widget(
         Paragraph::new(actions_lines(ui))
             .block(Block::default().title("actions").borders(Borders::ALL)),
-        rows[2],
+        rows[1],
     );
 
     let bottom = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(TODAY_WIDTH), Constraint::Min(0)])
-        .split(rows[3]);
+        .split(rows[2]);
     frame.render_widget(
         Paragraph::new(scenario_lines(&view.scenarios, now_us())).block(
             Block::default()
@@ -359,10 +370,10 @@ mod tests {
         }
     }
 
-    fn trader(pid: i32, live: bool) -> RunningTrader {
+    fn trader(pid: i32, stem: &str, live: bool) -> RunningTrader {
         RunningTrader {
             pid,
-            toml: "/e/2330.toml".to_string(),
+            toml: format!("/e/{stem}.toml"),
             live,
         }
     }
@@ -414,31 +425,109 @@ mod tests {
         let avail: Vec<_> = (0..40)
             .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
             .collect();
-        let running: Vec<_> = (0..6).map(|i| trader(1000 + i, i % 2 == 0)).collect();
         let ui = ScenarioUi {
-            focus: Focus::Available,
-            avail_sel: 39,
-            run_sel: 5,
+            sel: 39,
             ..Default::default()
         };
-        draw(
+        draw(100, 30, &ScenariosView::default(), &(avail, 3), &[], &ui);
+    }
+
+    #[test]
+    fn running_row_shows_green_dot_and_pid() {
+        let avail = vec![scen("2330", "2330", true)];
+        let running = vec![trader(4242, "2330", true)];
+        let text = buffer_text(
             100,
             30,
             &ScenariosView::default(),
-            &(avail, 3),
+            &(avail, 0),
             &running,
-            &ui,
+            &ScenarioUi::default(),
+        );
+        assert!(
+            text.contains('\u{25cf}'),
+            "row must show a status dot:\n{text}"
+        );
+        assert!(
+            text.contains("pid 4242"),
+            "running row must show its pid:\n{text}"
+        );
+        assert!(text.contains("LIVE"), "orders column shows LIVE:\n{text}");
+    }
+
+    #[test]
+    fn stopped_row_shows_dot_but_no_pid() {
+        let avail = vec![scen("0050", "0050", false)];
+        let text = buffer_text(
+            100,
+            30,
+            &ScenariosView::default(),
+            &(avail, 0),
+            &[],
+            &ScenarioUi::default(),
+        );
+        assert!(
+            text.contains('\u{25cf}'),
+            "stopped row still shows a dot:\n{text}"
+        );
+        assert_eq!(
+            text.matches("pid").count(),
+            1,
+            "only the header 'pid' appears; a stopped row shows no pid value:\n{text}"
+        );
+        assert!(text.contains("PAPER"), "orders column shows PAPER:\n{text}");
+    }
+
+    #[test]
+    fn footer_shows_visible_range_of_total() {
+        let avail: Vec<_> = (0..40)
+            .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
+            .collect();
+        let text = buffer_text(
+            100,
+            30,
+            &ScenariosView::default(),
+            &(avail, 0),
+            &[],
+            &ScenarioUi::default(),
+        );
+        assert!(
+            text.contains("showing 1"),
+            "footer must show the visible range start:\n{text}"
+        );
+        assert!(
+            text.contains("of 40"),
+            "footer must show the total:\n{text}"
         );
     }
 
     #[test]
-    fn available_selection_scrolls_into_view_on_small_terminal() {
+    fn orphan_running_trader_is_stoppable_row() {
+        // A trader whose toml is not on disk still appears (stoppable), matched
+        // by stem to nothing in `avail`.
+        let running = vec![trader(9001, "ghost", true)];
+        let text = buffer_text(
+            100,
+            30,
+            &ScenariosView::default(),
+            &(vec![], 0),
+            &running,
+            &ScenarioUi::default(),
+        );
+        assert!(
+            text.contains("ghost"),
+            "orphan trader must be listed:\n{text}"
+        );
+        assert!(text.contains("pid 9001"), "orphan shows its pid:\n{text}");
+    }
+
+    #[test]
+    fn selection_scrolls_into_view_on_small_terminal() {
         let avail: Vec<_> = (0..40)
             .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
             .collect();
         let ui = ScenarioUi {
-            focus: Focus::Available,
-            avail_sel: 39,
+            sel: 39,
             ..Default::default()
         };
         let text = buffer_text(80, 24, &ScenariosView::default(), &(avail, 0), &[], &ui);
@@ -449,28 +538,6 @@ mod tests {
         assert!(
             text.contains("[up/down] select"),
             "action/confirm banner squeezed out:\n{text}"
-        );
-    }
-
-    #[test]
-    fn running_selection_scrolls_into_view_on_small_terminal() {
-        let running: Vec<_> = (0..12).map(|i| trader(2000 + i, i % 2 == 0)).collect();
-        let ui = ScenarioUi {
-            focus: Focus::Running,
-            run_sel: 11,
-            ..Default::default()
-        };
-        let text = buffer_text(
-            80,
-            24,
-            &ScenariosView::default(),
-            &(vec![], 0),
-            &running,
-            &ui,
-        );
-        assert!(
-            text.contains("2011 "),
-            "selected trader scrolled off-screen:\n{text}"
         );
     }
 
@@ -497,7 +564,6 @@ mod tests {
         );
 
         let ui_stop = ScenarioUi {
-            focus: Focus::Running,
             confirm: ScenarioPrompt::SimpleStop {
                 pid: 4242,
                 toml: "/e/2330.toml".to_string(),

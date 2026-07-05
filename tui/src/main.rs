@@ -19,7 +19,7 @@ use panels::DrillView;
 use sources::feed::{self, FeedState};
 use sources::halt::{self, HaltAction, HaltKey, HaltPrompt, HaltUi};
 use sources::journald::{self, LogLine};
-use sources::scenario_ctl::{self, Focus, ScenarioAction, ScenarioPrompt, ScenarioUi};
+use sources::scenario_ctl::{self, ScenarioAction, ScenarioPrompt, ScenarioUi};
 use sources::service::{self, ConfirmPrompt, ServiceUi, Verb};
 
 const TICK: Duration = Duration::from_millis(750);
@@ -319,12 +319,10 @@ fn service_ui(
     }
 }
 
-/// Scenario-tab interaction state: which sub-list is focused, the two cursors,
-/// the active confirm, and the shared last-action result.
+/// Scenario-tab interaction state: a single cursor over the merged row list, the
+/// active confirm, and the shared last-action result.
 struct ScenState {
-    focus: Focus,
-    avail_sel: usize,
-    run_sel: usize,
+    sel: usize,
     confirm: ScenarioPrompt,
     result: Arc<Mutex<Option<String>>>,
 }
@@ -332,9 +330,7 @@ struct ScenState {
 impl Default for ScenState {
     fn default() -> Self {
         ScenState {
-            focus: Focus::default(),
-            avail_sel: 0,
-            run_sel: 0,
+            sel: 0,
             confirm: ScenarioPrompt::Idle,
             result: Arc::new(Mutex::new(None)),
         }
@@ -344,9 +340,7 @@ impl Default for ScenState {
 impl ScenState {
     fn ui(&self) -> ScenarioUi {
         ScenarioUi {
-            focus: self.focus,
-            avail_sel: self.avail_sel,
-            run_sel: self.run_sel,
+            sel: self.sel,
             confirm: self.confirm.clone(),
             last_result: self.result.lock().unwrap().clone(),
         }
@@ -375,13 +369,15 @@ fn apply_scenario_action(action: ScenarioAction, trader_bin: &Path) -> String {
 
 #[derive(Debug, PartialEq, Eq)]
 enum ScenariosKey {
-    FocusAvailable,
-    FocusRunning,
     Up,
     Down,
+    PageUp,
+    PageDown,
     Start,
     Stop,
 }
+
+const SCEN_PAGE: usize = 10;
 
 // Ctrl+C carries CONTROL and must reach should_quit, not a Scenarios action;
 // 'q' and digits are unbound here so they still quit / switch tabs.
@@ -390,10 +386,10 @@ fn scenarios_key(tab: Tab, key: &KeyEvent) -> Option<ScenariosKey> {
         return None;
     }
     match key.code {
-        KeyCode::Left | KeyCode::Char('h') => Some(ScenariosKey::FocusAvailable),
-        KeyCode::Right | KeyCode::Char('l') => Some(ScenariosKey::FocusRunning),
         KeyCode::Up | KeyCode::Char('k') => Some(ScenariosKey::Up),
         KeyCode::Down | KeyCode::Char('j') => Some(ScenariosKey::Down),
+        KeyCode::PageUp => Some(ScenariosKey::PageUp),
+        KeyCode::PageDown => Some(ScenariosKey::PageDown),
         KeyCode::Char('s') => Some(ScenariosKey::Start),
         KeyCode::Char('x') => Some(ScenariosKey::Stop),
         _ => None,
@@ -405,31 +401,37 @@ fn bump(sel: usize, len: usize) -> usize {
 }
 
 fn apply_scenarios_key(sk: ScenariosKey, snap: &Snapshot, scen: &mut ScenState) {
-    let avail = &snap.available.0;
-    let running = &snap.running;
+    let rows = scenario_ctl::merge_rows(&snap.available.0, &snap.running);
+    let len = rows.len();
     match sk {
-        ScenariosKey::FocusAvailable => scen.focus = Focus::Available,
-        ScenariosKey::FocusRunning => scen.focus = Focus::Running,
-        ScenariosKey::Up => match scen.focus {
-            Focus::Available => scen.avail_sel = scen.avail_sel.saturating_sub(1),
-            Focus::Running => scen.run_sel = scen.run_sel.saturating_sub(1),
-        },
-        ScenariosKey::Down => match scen.focus {
-            Focus::Available => scen.avail_sel = bump(scen.avail_sel, avail.len()),
-            Focus::Running => scen.run_sel = bump(scen.run_sel, running.len()),
-        },
-        // Start acts only on the Available list; a mis-key while focused on
-        // Running is a no-op, so a start can never cross-fire onto a stop target.
+        ScenariosKey::Up => scen.sel = scen.sel.saturating_sub(1),
+        ScenariosKey::Down => scen.sel = bump(scen.sel, len),
+        ScenariosKey::PageUp => scen.sel = scen.sel.saturating_sub(SCEN_PAGE),
+        ScenariosKey::PageDown => scen.sel = (scen.sel + SCEN_PAGE).min(len.saturating_sub(1)),
+        // Start acts only on a stopped row carrying an on-disk toml; 's' on a
+        // running or orphan row is a no-op with a brief note, so a start can
+        // never cross-fire onto a stop target.
         ScenariosKey::Start => {
-            if scen.focus == Focus::Available && !avail.is_empty() {
-                let sel = scen.avail_sel.min(avail.len() - 1);
-                scen.confirm = scenario_ctl::begin_start(&avail[sel]);
+            if let Some(row) = rows.get(scen.sel.min(len.saturating_sub(1))) {
+                match (&row.avail, row.is_running()) {
+                    (Some(s), false) => scen.confirm = scenario_ctl::begin_start(s),
+                    (_, true) => {
+                        *scen.result.lock().unwrap() = Some("already running".to_string());
+                    }
+                    (None, false) => {}
+                }
             }
         }
+        // Stop acts only on a running row's re-validated pid; 'x' on a stopped
+        // row is a no-op with a brief note.
         ScenariosKey::Stop => {
-            if scen.focus == Focus::Running && !running.is_empty() {
-                let sel = scen.run_sel.min(running.len() - 1);
-                scen.confirm = scenario_ctl::begin_stop(&running[sel]);
+            if let Some(row) = rows.get(scen.sel.min(len.saturating_sub(1))) {
+                match &row.running {
+                    Some(t) => scen.confirm = scenario_ctl::begin_stop(t),
+                    None => {
+                        *scen.result.lock().unwrap() = Some("not running".to_string());
+                    }
+                }
             }
         }
     }
@@ -756,10 +758,10 @@ mod tests {
     #[test]
     fn bare_keys_on_scenarios_tab_map_to_actions() {
         let cases = [
-            (KeyCode::Left, ScenariosKey::FocusAvailable),
-            (KeyCode::Right, ScenariosKey::FocusRunning),
             (KeyCode::Up, ScenariosKey::Up),
             (KeyCode::Down, ScenariosKey::Down),
+            (KeyCode::PageUp, ScenariosKey::PageUp),
+            (KeyCode::PageDown, ScenariosKey::PageDown),
             (KeyCode::Char('s'), ScenariosKey::Start),
             (KeyCode::Char('x'), ScenariosKey::Stop),
         ];
@@ -770,11 +772,10 @@ mod tests {
     }
 
     #[test]
-    fn start_on_available_opens_confirm_bound_to_selection() {
+    fn start_on_stopped_row_opens_confirm_bound_to_selection() {
         let snap = scen_snapshot(vec![paper_toml(), live_toml()], vec![]);
         let mut scen = ScenState {
-            focus: Focus::Available,
-            avail_sel: 1, // the live toml
+            sel: 1, // the live toml
             ..Default::default()
         };
         apply_scenarios_key(ScenariosKey::Start, &snap, &mut scen);
@@ -787,42 +788,64 @@ mod tests {
     }
 
     #[test]
-    fn start_while_focused_on_running_is_a_no_op() {
+    fn start_on_a_running_row_is_a_no_op() {
         let running = vec![RunningTrader {
             pid: 10,
             toml: "/e/2330.toml".to_string(),
             live: true,
         }];
         let snap = scen_snapshot(vec![live_toml()], running);
-        let mut scen = ScenState {
-            focus: Focus::Running,
-            ..Default::default()
-        };
+        let mut scen = ScenState::default(); // sel 0 = the running 2330 row
         apply_scenarios_key(ScenariosKey::Start, &snap, &mut scen);
         assert_eq!(
             scen.confirm,
             ScenarioPrompt::Idle,
-            "start must not cross-fire"
+            "start on a running row must not open a confirm"
         );
     }
 
     #[test]
-    fn stop_while_focused_on_available_is_a_no_op() {
-        let running = vec![RunningTrader {
-            pid: 10,
-            toml: "/e/2330.toml".to_string(),
-            live: true,
-        }];
-        let snap = scen_snapshot(vec![live_toml()], running);
-        let mut scen = ScenState {
-            focus: Focus::Available,
-            ..Default::default()
-        };
+    fn stop_on_a_stopped_row_is_a_no_op() {
+        let snap = scen_snapshot(vec![live_toml()], vec![]);
+        let mut scen = ScenState::default(); // sel 0 = the stopped 2330 row
         apply_scenarios_key(ScenariosKey::Stop, &snap, &mut scen);
         assert_eq!(
             scen.confirm,
             ScenarioPrompt::Idle,
-            "stop must not cross-fire"
+            "stop on a stopped row must not open a confirm"
+        );
+    }
+
+    #[test]
+    fn stop_on_a_running_row_opens_confirm() {
+        let running = vec![RunningTrader {
+            pid: 4242,
+            toml: "/e/2330.toml".to_string(),
+            live: true,
+        }];
+        let snap = scen_snapshot(vec![live_toml()], running);
+        let mut scen = ScenState::default();
+        apply_scenarios_key(ScenariosKey::Stop, &snap, &mut scen);
+        assert!(
+            matches!(scen.confirm, ScenarioPrompt::SimpleStop { pid: 4242, .. }),
+            "stop on a running row must open a SimpleStop confirm"
+        );
+    }
+
+    #[test]
+    fn stop_on_an_orphan_row_opens_confirm() {
+        // A running trader whose toml is not on disk is still stoppable.
+        let running = vec![RunningTrader {
+            pid: 9001,
+            toml: "/e/ghost.toml".to_string(),
+            live: false,
+        }];
+        let snap = scen_snapshot(vec![], running);
+        let mut scen = ScenState::default();
+        apply_scenarios_key(ScenariosKey::Stop, &snap, &mut scen);
+        assert!(
+            matches!(scen.confirm, ScenarioPrompt::SimpleStop { pid: 9001, .. }),
+            "an orphan trader must remain stoppable"
         );
     }
 
