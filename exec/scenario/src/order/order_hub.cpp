@@ -40,6 +40,12 @@ bool OrderHub::Start() {
 
 void OrderHub::Stop() { backend_->Disconnect(); }
 
+void OrderHub::OnClientConnect(int client) {
+  std::lock_guard<std::mutex> lock(mu_);
+  ClientStats& cs = clients_[client];
+  if (cs.last_activity_us == 0) cs.last_activity_us = NowUs();
+}
+
 void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t len) {
   OrderMessage msg;
   if (!DecodeOrder(data, len, &msg)) return;

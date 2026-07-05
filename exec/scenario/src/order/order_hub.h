@@ -29,6 +29,9 @@ class OrderHub {
   bool Start();  // wire backend callbacks + connect
   void Stop();   // disconnect the backend
 
+  // Register a client the moment its connection is accepted, so the status
+  // snapshot counts connected-but-idle traders (before any submit).
+  void OnClientConnect(int client);
   // Feed one client frame (a serialized OrderEnvelope). Malformed frames and
   // hub->client message kinds (ack/fill/...) are ignored.
   void OnClientMessage(int client, const std::uint8_t* data, std::size_t len);

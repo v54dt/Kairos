@@ -75,6 +75,7 @@ void OrderHubServer::AcceptLoop() {
       std::lock_guard<std::mutex> lock(clients_mu_);
       live_.insert(fd);
     }
+    hub_.OnClientConnect(fd);
     ++active_clients_;
     std::thread([this, fd] {
       ClientLoop(fd);

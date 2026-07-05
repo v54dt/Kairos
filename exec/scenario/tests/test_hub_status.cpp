@@ -147,6 +147,16 @@ int main() {
   CHECK(Find(s3, "k100") == nullptr);
   CHECK(Find(s3, "k200") != nullptr);
 
+  // (d) a connected-but-idle client (no submit) is counted from connect time
+  hub.OnClientConnect(13);
+  HubStatus s4 = hub.CaptureStatus();
+  CHECK(s4.client_count == 2);  // k200 + the idle client 13
+  const ClientStatus* idle = Find(s4, "");
+  CHECK(idle != nullptr);
+  CHECK(idle->submitted == 0);
+  CHECK(idle->open == 0);
+  CHECK(idle->last_activity_s > 0);  // stamped at connect, not epoch 0
+
   hub.Stop();
 
   if (g_failures == 0) {
