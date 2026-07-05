@@ -16,7 +16,7 @@ use futures::StreamExt;
 use app::{Cli, Config, Shared, Snapshot, Tab};
 use sources::feed::{self, FeedState};
 use sources::halt::{self, HaltAction, HaltKey, HaltPrompt, HaltUi};
-use sources::scenario_ctl::ScenarioUi;
+use sources::scenario_ctl::{self, Focus, ScenarioAction, ScenarioPrompt, ScenarioUi};
 use sources::service::{self, ConfirmPrompt, ServiceUi, Verb};
 
 const TICK: Duration = Duration::from_millis(750);
@@ -93,13 +93,14 @@ async fn run(
     let mut sel: usize = 0;
     let mut confirm = ConfirmPrompt::Idle;
     let action_result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let mut scen = ScenState::default();
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 let snap = Snapshot::capture(shared, feed_state);
                 let ui = halt_ui(&halt_path, &prompt, &halt_result);
                 let service = service_ui(sel, &confirm, &action_result);
-                let scenario = ScenarioUi::default();
+                let scenario = scen.ui();
                 term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario))?;
             }
             Some(Ok(event)) = events.next() => {
@@ -133,8 +134,20 @@ async fn run(
                         }
                         redraw = true;
                     }
+                } else if scen.confirm.is_active() {
+                    if let Some(hk) = to_halt_key(&key) {
+                        let (next, action) = scenario_ctl::handle_key(&scen.confirm, hk);
+                        scen.confirm = next;
+                        if let Some(a) = action {
+                            *scen.result.lock().unwrap() = Some(apply_scenario_action(a));
+                        }
+                        redraw = true;
+                    }
                 } else if let Some(ok) = overview_key(tab, &key) {
                     apply_overview_key(ok, &mut sel, &mut confirm, &snap);
+                    redraw = true;
+                } else if let Some(sk) = scenarios_key(tab, &key) {
+                    apply_scenarios_key(sk, &snap, &mut scen);
                     redraw = true;
                 } else if let Some(rk) = risk_tab_key(tab, &key) {
                     if halt_path.is_some() {
@@ -155,7 +168,7 @@ async fn run(
                 if redraw {
                     let ui = halt_ui(&halt_path, &prompt, &halt_result);
                     let service = service_ui(sel, &confirm, &action_result);
-                    let scenario = ScenarioUi::default();
+                    let scenario = scen.ui();
                     term.draw(|frame| {
                         panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario)
                     })?;
@@ -174,6 +187,119 @@ fn service_ui(
         selected,
         confirm: confirm.clone(),
         last_result: action_result.lock().unwrap().clone(),
+    }
+}
+
+/// Scenario-tab interaction state: which sub-list is focused, the two cursors,
+/// the active confirm, and the shared last-action result.
+struct ScenState {
+    focus: Focus,
+    avail_sel: usize,
+    run_sel: usize,
+    confirm: ScenarioPrompt,
+    result: Arc<Mutex<Option<String>>>,
+}
+
+impl Default for ScenState {
+    fn default() -> Self {
+        ScenState {
+            focus: Focus::default(),
+            avail_sel: 0,
+            run_sel: 0,
+            confirm: ScenarioPrompt::Idle,
+            result: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+impl ScenState {
+    fn ui(&self) -> ScenarioUi {
+        ScenarioUi {
+            focus: self.focus,
+            avail_sel: self.avail_sel,
+            run_sel: self.run_sel,
+            confirm: self.confirm.clone(),
+            last_result: self.result.lock().unwrap().clone(),
+        }
+    }
+}
+
+/// Run a confirmed scenario action. START spawns a detached trader; STOP sends a
+/// validated SIGINT. Both surface a human result line; neither panics.
+fn apply_scenario_action(action: ScenarioAction) -> String {
+    match action {
+        ScenarioAction::Start { toml, launch } => {
+            let bin = scenario_ctl::trader_bin();
+            let argv = scenario_ctl::build_spawn_argv(&bin, &toml, launch);
+            match scenario_ctl::spawn_detached(&argv) {
+                Ok(m) | Err(m) => m,
+            }
+        }
+        ScenarioAction::Stop { pid } => match scenario_ctl::stop_trader(pid) {
+            Ok(m) | Err(m) => m,
+        },
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ScenariosKey {
+    FocusAvailable,
+    FocusRunning,
+    Up,
+    Down,
+    Start,
+    Stop,
+}
+
+// Ctrl+C carries CONTROL and must reach should_quit, not a Scenarios action;
+// 'q' and digits are unbound here so they still quit / switch tabs.
+fn scenarios_key(tab: Tab, key: &KeyEvent) -> Option<ScenariosKey> {
+    if tab != Tab::Scenarios || key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Left | KeyCode::Char('h') => Some(ScenariosKey::FocusAvailable),
+        KeyCode::Right | KeyCode::Char('l') => Some(ScenariosKey::FocusRunning),
+        KeyCode::Up | KeyCode::Char('k') => Some(ScenariosKey::Up),
+        KeyCode::Down | KeyCode::Char('j') => Some(ScenariosKey::Down),
+        KeyCode::Char('s') => Some(ScenariosKey::Start),
+        KeyCode::Char('x') => Some(ScenariosKey::Stop),
+        _ => None,
+    }
+}
+
+fn bump(sel: usize, len: usize) -> usize {
+    (sel + 1).min(len.saturating_sub(1))
+}
+
+fn apply_scenarios_key(sk: ScenariosKey, snap: &Snapshot, scen: &mut ScenState) {
+    let avail = &snap.available.0;
+    let running = &snap.running;
+    match sk {
+        ScenariosKey::FocusAvailable => scen.focus = Focus::Available,
+        ScenariosKey::FocusRunning => scen.focus = Focus::Running,
+        ScenariosKey::Up => match scen.focus {
+            Focus::Available => scen.avail_sel = scen.avail_sel.saturating_sub(1),
+            Focus::Running => scen.run_sel = scen.run_sel.saturating_sub(1),
+        },
+        ScenariosKey::Down => match scen.focus {
+            Focus::Available => scen.avail_sel = bump(scen.avail_sel, avail.len()),
+            Focus::Running => scen.run_sel = bump(scen.run_sel, running.len()),
+        },
+        // Start acts only on the Available list; a mis-key while focused on
+        // Running is a no-op, so a start can never cross-fire onto a stop target.
+        ScenariosKey::Start => {
+            if scen.focus == Focus::Available && !avail.is_empty() {
+                let sel = scen.avail_sel.min(avail.len() - 1);
+                scen.confirm = scenario_ctl::begin_start(&avail[sel]);
+            }
+        }
+        ScenariosKey::Stop => {
+            if scen.focus == Focus::Running && !running.is_empty() {
+                let sel = scen.run_sel.min(running.len() - 1);
+                scen.confirm = scenario_ctl::begin_stop(&running[sel]);
+            }
+        }
     }
 }
 
@@ -389,5 +515,149 @@ mod tests {
         let q = press(KeyCode::Char('q'), KeyModifiers::NONE);
         assert_eq!(overview_key(Tab::Overview, &q), None);
         assert!(should_quit(&Event::Key(q)));
+    }
+
+    use sources::scenario_ctl::{Launch, RunningTrader, ScenarioToml};
+
+    fn scen_snapshot(avail: Vec<ScenarioToml>, running: Vec<RunningTrader>) -> Snapshot {
+        Snapshot {
+            systemd: app::Fetch::Loading,
+            journal: app::Fetch::Loading,
+            recorder: app::Fetch::Loading,
+            disk_free: None,
+            feed: FeedState::default(),
+            scenarios: Default::default(),
+            available: (avail, 0),
+            running,
+            timers: app::Fetch::Loading,
+            blacklist: app::Fetch::Loading,
+            archive: app::Fetch::Loading,
+            ship_verify: app::Fetch::Loading,
+            events: app::Fetch::Loading,
+        }
+    }
+
+    fn live_toml() -> ScenarioToml {
+        ScenarioToml {
+            path: PathBuf::from("/e/2330.toml"),
+            name: "2330-plan".to_string(),
+            symbol: "2330".to_string(),
+            live: true,
+        }
+    }
+
+    fn paper_toml() -> ScenarioToml {
+        ScenarioToml {
+            path: PathBuf::from("/e/0050.toml"),
+            name: "0050-plan".to_string(),
+            symbol: "0050".to_string(),
+            live: false,
+        }
+    }
+
+    #[test]
+    fn ctrl_c_on_scenarios_tab_is_not_an_action_key() {
+        let ctrl_c = press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(scenarios_key(Tab::Scenarios, &ctrl_c), None);
+        assert!(should_quit(&Event::Key(ctrl_c)));
+    }
+
+    #[test]
+    fn q_and_digits_are_not_scenarios_actions() {
+        let q = press(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(scenarios_key(Tab::Scenarios, &q), None);
+        assert!(should_quit(&Event::Key(q)));
+        let three = press(KeyCode::Char('3'), KeyModifiers::NONE);
+        assert_eq!(scenarios_key(Tab::Scenarios, &three), None);
+    }
+
+    #[test]
+    fn scenarios_keys_ignored_off_scenarios_tab() {
+        let s = press(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(scenarios_key(Tab::Overview, &s), None);
+    }
+
+    #[test]
+    fn bare_keys_on_scenarios_tab_map_to_actions() {
+        let cases = [
+            (KeyCode::Left, ScenariosKey::FocusAvailable),
+            (KeyCode::Right, ScenariosKey::FocusRunning),
+            (KeyCode::Up, ScenariosKey::Up),
+            (KeyCode::Down, ScenariosKey::Down),
+            (KeyCode::Char('s'), ScenariosKey::Start),
+            (KeyCode::Char('x'), ScenariosKey::Stop),
+        ];
+        for (code, want) in cases {
+            let k = press(code, KeyModifiers::NONE);
+            assert_eq!(scenarios_key(Tab::Scenarios, &k), Some(want));
+        }
+    }
+
+    #[test]
+    fn start_on_available_opens_confirm_bound_to_selection() {
+        let snap = scen_snapshot(vec![paper_toml(), live_toml()], vec![]);
+        let mut scen = ScenState {
+            focus: Focus::Available,
+            avail_sel: 1, // the live toml
+            ..Default::default()
+        };
+        apply_scenarios_key(ScenariosKey::Start, &snap, &mut scen);
+        match &scen.confirm {
+            ScenarioPrompt::TypedStart { toml, .. } => {
+                assert_eq!(toml, &PathBuf::from("/e/2330.toml"));
+            }
+            other => panic!("expected TypedStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_while_focused_on_running_is_a_no_op() {
+        let running = vec![RunningTrader {
+            pid: 10,
+            toml: "/e/2330.toml".to_string(),
+            live: true,
+        }];
+        let snap = scen_snapshot(vec![live_toml()], running);
+        let mut scen = ScenState {
+            focus: Focus::Running,
+            ..Default::default()
+        };
+        apply_scenarios_key(ScenariosKey::Start, &snap, &mut scen);
+        assert_eq!(
+            scen.confirm,
+            ScenarioPrompt::Idle,
+            "start must not cross-fire"
+        );
+    }
+
+    #[test]
+    fn stop_while_focused_on_available_is_a_no_op() {
+        let running = vec![RunningTrader {
+            pid: 10,
+            toml: "/e/2330.toml".to_string(),
+            live: true,
+        }];
+        let snap = scen_snapshot(vec![live_toml()], running);
+        let mut scen = ScenState {
+            focus: Focus::Available,
+            ..Default::default()
+        };
+        apply_scenarios_key(ScenariosKey::Stop, &snap, &mut scen);
+        assert_eq!(
+            scen.confirm,
+            ScenarioPrompt::Idle,
+            "stop must not cross-fire"
+        );
+    }
+
+    #[test]
+    fn paper_start_action_argv_has_no_live() {
+        // The action produced by confirming a paper start builds a paper argv.
+        let argv = scenario_ctl::build_spawn_argv(
+            "kairos_scenario_trader",
+            &PathBuf::from("/e/0050.toml"),
+            Launch::Paper,
+        );
+        assert!(!argv.iter().any(|a| a == "--live"));
     }
 }

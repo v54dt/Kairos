@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::sources::age::format_age;
 use crate::sources::hub_status::HubReport;
-use crate::sources::order_journal::ScenariosView;
+use crate::sources::order_journal::{ScenarioJournal, ScenariosView};
 use crate::sources::scenario_ctl::{
     Focus, RunningTrader, ScenarioPrompt, ScenarioToml, ScenarioUi,
 };
@@ -16,6 +16,7 @@ use crate::sources::scenario_ctl::{
 const HUB_HEIGHT: u16 = 9;
 const ACTIONS_HEIGHT: u16 = 5;
 const RUNNING_HEIGHT: u16 = 8;
+const TODAY_WIDTH: u16 = 50;
 
 fn now_us() -> i64 {
     SystemTime::now()
@@ -167,6 +168,30 @@ fn age_from_us(now: i64, event_us: i64) -> String {
     format_age(Duration::from_micros((now - event_us) as u64))
 }
 
+fn scenario_lines(scenarios: &[ScenarioJournal], now: i64) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        format!(
+            "{:<16} {:>6} {:>10} {:>6}",
+            "journal", "fills", "shares", "last"
+        ),
+        Style::default().fg(Color::DarkGray),
+    ))];
+    if scenarios.is_empty() {
+        lines.push(dim("no journal files for today"));
+        return lines;
+    }
+    for s in scenarios {
+        lines.push(Line::from(format!(
+            "{:<16} {:>6} {:>10} {:>6}",
+            s.name,
+            s.fills,
+            s.filled_shares,
+            age_from_us(now, s.last_event_us),
+        )));
+    }
+    lines
+}
+
 fn hub_lines(hub: &Option<HubReport>) -> Vec<Line<'static>> {
     let now_s = now_us() / 1_000_000;
     let report = match hub {
@@ -270,10 +295,23 @@ pub fn render(
             .block(Block::default().title("actions").borders(Borders::ALL)),
         rows[2],
     );
+
+    let bottom = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(TODAY_WIDTH), Constraint::Min(0)])
+        .split(rows[3]);
+    frame.render_widget(
+        Paragraph::new(scenario_lines(&view.scenarios, now_us())).block(
+            Block::default()
+                .title("scenarios (today)")
+                .borders(Borders::ALL),
+        ),
+        bottom[0],
+    );
     frame.render_widget(
         Paragraph::new(hub_lines(&view.hub))
             .block(Block::default().title("order hub").borders(Borders::ALL)),
-        rows[3],
+        bottom[1],
     );
 }
 

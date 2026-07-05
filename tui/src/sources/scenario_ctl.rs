@@ -1,4 +1,6 @@
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use crate::sources::halt::HaltKey;
 
@@ -218,15 +220,6 @@ pub enum Focus {
     Running,
 }
 
-impl Focus {
-    pub fn toggle(self) -> Focus {
-        match self {
-            Focus::Available => Focus::Running,
-            Focus::Running => Focus::Available,
-        }
-    }
-}
-
 /// An action authorized by a completed confirmation. `Start` carries the launch
 /// mode captured at confirm time, so a paper confirm can never emit a live start.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -367,6 +360,93 @@ fn rebuild_typed(toml: &Path, name: &str, symbol: &str, stem: &str, buf: String)
         stem: stem.to_string(),
         buf,
     }
+}
+
+/// The scenario-trader executable to spawn: `$KAIROS_SCENARIO_TRADER` if set,
+/// else [`TRADER_BIN`] (resolved on PATH).
+pub fn trader_bin() -> String {
+    std::env::var("KAIROS_SCENARIO_TRADER").unwrap_or_else(|_| TRADER_BIN.to_string())
+}
+
+/// The exact argv for a start. PAPER is just `[bin, toml]`; LIVE appends
+/// `--live --yes` — `--yes` skips the trader's stdin "type LIVE" gate, which a
+/// detached process (no controlling terminal) could never answer, making the
+/// TUI's typed confirm the sole real-money gate. Only the LIVE path adds `--yes`.
+pub fn build_spawn_argv(bin: &str, toml_path: &Path, launch: Launch) -> Vec<String> {
+    let mut argv = vec![bin.to_string(), toml_path.to_string_lossy().to_string()];
+    if launch == Launch::Live {
+        argv.push("--live".to_string());
+        argv.push("--yes".to_string());
+    }
+    argv
+}
+
+/// Spawn a scenario trader fully DETACHED so it survives the TUI exiting:
+/// `setsid` drops the controlling terminal (no SIGHUP) and a second fork
+/// reparents the trader to init; the intermediate is reaped so no zombie
+/// remains. Stdio goes to /dev/null. Returns a human launched/failed line.
+pub fn spawn_detached(argv: &[String]) -> Result<String, String> {
+    let bin = argv.first().ok_or_else(|| "empty argv".to_string())?;
+    let mut cmd = Command::new(bin);
+    cmd.args(&argv[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // SAFETY: only async-signal-safe libc calls run in the forked child.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            match libc::fork() {
+                -1 => Err(std::io::Error::last_os_error()),
+                0 => Ok(()),
+                _ => libc::_exit(0),
+            }
+        });
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let _ = child.wait();
+            Ok(format!("launched: {}", argv.join(" ")))
+        }
+        Err(e) => Err(format!("spawn failed: {e}")),
+    }
+}
+
+/// The signal a STOP may send: `SIGINT` (graceful wind-down) only when the pid
+/// was validated as a scenario trader, else `None` — never SIGKILL, never an
+/// unvalidated pid.
+pub fn stop_signal(is_trader: bool) -> Option<i32> {
+    is_trader.then_some(libc::SIGINT)
+}
+
+/// Stop a trader: re-`validate` the pid immediately before signalling (closing
+/// the poll-to-action pid-reuse window), then send exactly one SIGINT via
+/// `signal`. `validate`/`signal` are injected so tests never touch a real
+/// process; a pid that fails validation is refused and never signalled.
+pub fn run_stop(
+    pid: i32,
+    validate: impl Fn(i32) -> bool,
+    mut signal: impl FnMut(i32, i32) -> i32,
+) -> Result<String, String> {
+    match stop_signal(validate(pid)) {
+        Some(sig) => {
+            if signal(pid, sig) == 0 {
+                Ok(format!("sent SIGINT to pid {pid}"))
+            } else {
+                Err(format!("kill pid {pid} failed"))
+            }
+        }
+        None => Err(format!("pid {pid} is not a scenario trader")),
+    }
+}
+
+/// Stop a running trader by pid, validating via `/proc` and sending SIGINT.
+pub fn stop_trader(pid: i32) -> Result<String, String> {
+    run_stop(pid, is_scenario_trader_pid, |pid, sig| unsafe {
+        libc::kill(pid, sig)
+    })
 }
 
 /// Read-only state the Scenarios panel needs to render process control.
@@ -666,8 +746,72 @@ live = false
     }
 
     #[test]
-    fn focus_toggles() {
-        assert_eq!(Focus::Available.toggle(), Focus::Running);
-        assert_eq!(Focus::Running.toggle(), Focus::Available);
+    fn live_argv_has_live_and_yes() {
+        let argv = build_spawn_argv(
+            "kairos_scenario_trader",
+            Path::new("/e/2330.toml"),
+            Launch::Live,
+        );
+        assert_eq!(
+            argv,
+            vec!["kairos_scenario_trader", "/e/2330.toml", "--live", "--yes"]
+        );
+    }
+
+    #[test]
+    fn paper_argv_has_neither_live_nor_yes() {
+        let argv = build_spawn_argv(
+            "kairos_scenario_trader",
+            Path::new("/e/0050.toml"),
+            Launch::Paper,
+        );
+        assert_eq!(argv, vec!["kairos_scenario_trader", "/e/0050.toml"]);
+        assert!(!argv.iter().any(|a| a == "--live"));
+        assert!(!argv.iter().any(|a| a == "--yes"));
+    }
+
+    #[test]
+    fn stop_signal_is_sigint_only_for_a_trader() {
+        assert_eq!(stop_signal(true), Some(libc::SIGINT));
+        assert_eq!(stop_signal(false), None);
+    }
+
+    #[test]
+    fn run_stop_fires_exactly_once_when_validated() {
+        let calls = std::cell::RefCell::new(Vec::<(i32, i32)>::new());
+        let res = run_stop(
+            4242,
+            |_| true,
+            |pid, sig| {
+                calls.borrow_mut().push((pid, sig));
+                0
+            },
+        );
+        assert!(res.is_ok());
+        assert_eq!(*calls.borrow(), vec![(4242, libc::SIGINT)]);
+    }
+
+    #[test]
+    fn run_stop_never_fires_for_a_non_trader_pid() {
+        let calls = std::cell::RefCell::new(Vec::<(i32, i32)>::new());
+        let res = run_stop(
+            99999,
+            |_| false,
+            |pid, sig| {
+                calls.borrow_mut().push((pid, sig));
+                0
+            },
+        );
+        assert!(res.is_err());
+        assert!(
+            calls.borrow().is_empty(),
+            "must not signal an unvalidated pid"
+        );
+    }
+
+    #[test]
+    fn run_stop_surfaces_kill_failure() {
+        let res = run_stop(1, |_| true, |_, _| -1);
+        assert!(res.is_err());
     }
 }
