@@ -53,7 +53,10 @@ long OrderHub::CurrentTradingDay() const {
 }
 
 bool OrderHub::SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const {
-  for (const auto& [rid, r] : routes_) {
+  for (const auto& rid : open_ids_) {
+    auto it = routes_.find(rid);
+    if (it == routes_.end()) continue;
+    const Route& r = it->second;
     if (r.closed || r.side == o.side || r.symbol != o.symbol) continue;
     bool cross = o.side == Side::kBuy ? o.price >= r.price : o.price <= r.price;
     if (cross) {
@@ -136,6 +139,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       } else {
         ClientStats& cs = clients_[client];
         routes_[o.id] = Route{client, o.shares, false, false, o.symbol, o.side, o.price};
+        open_ids_.insert(o.id);
         account_open_notional_cents_ += n;
         cs.open_notional += n;
         ++cs.open_orders;
@@ -159,6 +163,7 @@ void OrderHub::OnClientDisconnect(int client) {
   for (auto it = routes_.begin(); it != routes_.end();) {
     if (it->second.client == client) {
       ReleaseOpen(it->second);  // free any still-open reserved notional before dropping
+      open_ids_.erase(it->first);
       it = routes_.erase(it);
     } else {
       ++it;
@@ -196,6 +201,7 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
         it->second.acked = true;
       } else {
         ReleaseOpen(it->second);  // backend rejected: free its reserved notional
+        open_ids_.erase(it->first);
       }
       auto cs = clients_.find(client);
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
@@ -222,6 +228,7 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
         if (cs != clients_.end()) cs->second.open_notional -= open_delta;
         if (it->second.shares_remaining <= 0) {
           it->second.closed = true;
+          open_ids_.erase(it->first);
           if (cs != clients_.end()) --cs->second.open_orders;
         }
       }
@@ -244,6 +251,7 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
       auto cs = clients_.find(client);
       if (ok) {
         ReleaseOpen(it->second);  // successful cancel: free reserved notional
+        open_ids_.erase(it->first);
         if (cs != clients_.end()) ++cs->second.cancelled;
       }
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();

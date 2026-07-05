@@ -355,6 +355,13 @@ void TestSelfMatch() {
   Feed(hub, 9, Order("E", "1101", Side::kSell, 5000, 1000));
   CHECK(backend.submits.size() == 4);
 
+  // Once the resting buy A is cancelled it no longer blocks a crossing sell:
+  // closed orders are dropped from the self-match scan.
+  Cancel(hub, 7, "A");
+  backend.FireCancel("A", true);
+  Feed(hub, 9, Order("F", "2330", Side::kSell, 10000, 1000));  // would cross A, but A is gone
+  CHECK(backend.submits.size() == 5);
+
   hub.Stop();
 }
 

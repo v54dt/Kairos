@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "hub_status.h"
@@ -104,6 +105,9 @@ class OrderHub {
   SendFn send_;
   mutable std::mutex mu_;
   std::unordered_map<std::string, Route> routes_;
+  // Ids of currently-open routes; bounds the per-submit self-match scan to live
+  // orders instead of every route accumulated since the connection opened.
+  std::unordered_set<std::string> open_ids_;
   std::unordered_map<int, ClientStats> clients_;
   long start_epoch_s_ = 0;
   std::int64_t account_open_notional_cents_ = 0;  // reserved notional of all live orders
