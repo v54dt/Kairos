@@ -40,6 +40,10 @@ path = "src/bin/kqr_export.rs"
 name = "kairos-sim"
 path = "src/bin/sim.rs"
 
+[[bin]]
+name = "kairos-tapegen"
+path = "src/bin/tapegen.rs"
+
 [dependencies]
 capnp = "0.20"
 libc = "0.2"
