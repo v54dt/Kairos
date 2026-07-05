@@ -8,6 +8,13 @@ use std::time::{Duration, SystemTime};
 const DEFAULT_PATH: &str = "/home/coder/kairos-lab/data/blacklist/current.csv";
 const MAX_STALE_DAYS: u64 = 4;
 
+/// One active restriction: normalized symbol plus its category.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlacklistEntry {
+    pub symbol: String,
+    pub category: String,
+}
+
 /// Freshness of the blacklist CSV as the trader would see it at startup.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlacklistFreshness {
@@ -15,6 +22,7 @@ pub struct BlacklistFreshness {
     pub present: bool,
     pub age: Option<Duration>,
     pub entry_count: Option<usize>,
+    pub entries: Vec<BlacklistEntry>,
     pub stale: bool,
     pub malformed: bool,
     pub clock_anomaly: bool,
@@ -105,7 +113,7 @@ fn normalize_symbol(s: &str) -> String {
 /// `Blacklist::Parse`: errors on a malformed CSV, a missing header column, a row
 /// whose field count differs from the header, an embedded newline in a field, an
 /// empty or non-ASCII-alphanumeric symbol, or an unknown category.
-pub fn parse_entry_count(text: &str) -> Result<usize, String> {
+pub fn parse_entries(text: &str) -> Result<Vec<BlacklistEntry>, String> {
     let rows = parse_csv(text)?;
     let header = rows.first().ok_or("no header row")?;
     for name in REQUIRED_COLS {
@@ -115,6 +123,7 @@ pub fn parse_entry_count(text: &str) -> Result<usize, String> {
     }
     let i_symbol = header.iter().position(|h| h == "symbol").unwrap();
     let i_category = header.iter().position(|h| h == "category").unwrap();
+    let mut entries = Vec::with_capacity(rows.len().saturating_sub(1));
     for (r, fields) in rows.iter().enumerate().skip(1) {
         if fields.len() != header.len() {
             return Err(format!(
@@ -142,8 +151,12 @@ pub fn parse_entry_count(text: &str) -> Result<usize, String> {
                 fields[i_category]
             ));
         }
+        entries.push(BlacklistEntry {
+            symbol,
+            category: fields[i_category].clone(),
+        });
     }
-    Ok(rows.len() - 1)
+    Ok(entries)
 }
 
 /// Precedence: flag (if non-empty) > env `KAIROS_BLACKLIST_CSV` > lab default.
@@ -187,8 +200,11 @@ pub fn read_blacklist(path: &Path, now: SystemTime) -> BlacklistFreshness {
         }
     }
     match std::fs::read_to_string(path) {
-        Ok(text) => match parse_entry_count(&text) {
-            Ok(c) => f.entry_count = Some(c),
+        Ok(text) => match parse_entries(&text) {
+            Ok(entries) => {
+                f.entry_count = Some(entries.len());
+                f.entries = entries;
+            }
             Err(_) => f.malformed = true,
         },
         Err(_) => f.malformed = true,
@@ -202,6 +218,10 @@ mod tests {
 
     const HEADER: &str = "symbol,category,note,start_date,end_date\n";
 
+    fn parse_entry_count(text: &str) -> Result<usize, String> {
+        parse_entries(text).map(|e| e.len())
+    }
+
     fn tmp_path(tag: &str) -> PathBuf {
         std::env::temp_dir().join(format!("kairos-bl-{}-{}.csv", std::process::id(), tag))
     }
@@ -210,6 +230,17 @@ mod tests {
     fn counts_data_rows() {
         let text = format!("{HEADER}2330,disposal,note,20260701,20260710\n2317,attention,x,,\n");
         assert_eq!(parse_entry_count(&text).unwrap(), 2);
+    }
+
+    #[test]
+    fn entries_carry_symbol_and_category() {
+        let text = format!("{HEADER}tsm,disposal,note,20260701,20260710\n2317,attention,x,,\n");
+        let entries = parse_entries(&text).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].symbol, "TSM");
+        assert_eq!(entries[0].category, "disposal");
+        assert_eq!(entries[1].symbol, "2317");
+        assert_eq!(entries[1].category, "attention");
     }
 
     #[test]
@@ -305,6 +336,8 @@ mod tests {
         assert!(!f.stale);
         assert!(!f.malformed);
         assert_eq!(f.entry_count, Some(1));
+        assert_eq!(f.entries.len(), 1);
+        assert_eq!(f.entries[0].symbol, "2330");
     }
 
     #[test]
