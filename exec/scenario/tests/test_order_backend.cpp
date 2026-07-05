@@ -51,6 +51,12 @@ int main() {
   CHECK(backend.Connect());
   CHECK(backend.IsConnected());
 
+  // The instant-paper backend ignores the market-event hooks: it never asks for
+  // trades and the hooks don't perturb its instant-fill contract.
+  CHECK(!backend.WantsMarketTrades());
+  backend.OnMarketBook("2330", TopOfBook{}, 1);
+  backend.OnMarketTrade("2330", Trade{}, 2);
+
   backend.Submit(
       {"ord-1", "2330", Market::kTse, Board::kOddLot, Side::kBuy, "Cash", "ROD", 58000, 100});
   CHECK(acked_id == "ord-1");
