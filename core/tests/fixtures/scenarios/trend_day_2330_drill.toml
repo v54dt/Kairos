@@ -1,0 +1,57 @@
+# E2E drill scenario for the trend_day_2330 tape. Rests a passive join BUY at the
+# best bid so the descending trend-day trades print strictly through it and fill via
+# the sim hub's conservative trade-through model (OnTrade) — coverage that actually
+# depends on the trend-day tape's trades, not the standing ask book.
+# The drill harness injects [journal].dir (per-run temp path) before launching the
+# trader; the committed fixture omits it to avoid a machine-specific absolute path.
+
+[scenario]
+name = "trend-day-drill-2330"
+symbol = "2330"
+market = "TSE"
+board = "RoundLot"
+side = "Buy"
+product = "stock"
+funding_type = "Cash"
+time_in_force = "ROD"
+budget_twd = 5000000
+shares_per_order = 1000
+pacing = "twap"
+
+[fees]
+base_rate = 0.001425
+discount = 1.0
+min_fee_oddlot = 1
+min_fee_roundlot = 20
+sell_tax_rate = 0.003
+daytrade_tax_rate = 0.0015
+max_order_value_twd = 0
+
+[pricing]
+policy = "join"
+tick_offset = 0
+peg_level = 1
+reference_price = 0.0
+max_deviation_pct = 9.0
+use_trial_quotes = false
+
+[window]
+start_time = "09:00"
+end_time = "13:25"
+weekdays_only = true
+
+[risk]
+require_two_sided = true
+quote_max_age_ms = 60000
+quote_stall_alert_ms = 30000
+ack_timeout_ms = 3000
+stop_on_disconnect = false
+
+[mode]
+live = true
+
+[notify]
+enabled = false
+
+[dashboard]
+enabled = false
