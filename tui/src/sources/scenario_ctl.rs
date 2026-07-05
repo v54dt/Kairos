@@ -282,16 +282,24 @@ impl ScenarioPrompt {
 
 /// Open a start confirmation for a scenario. Routes through [`classify_launch`]
 /// so a LIVE toml always gets the typed confirm and a PAPER toml the y/N — a
-/// single key can never spawn a live trader.
+/// single key can never spawn a live trader. An empty toml stem yields no
+/// startable prompt (`Idle`), so a bare Enter can never confirm a LIVE start
+/// against an empty required buffer.
 pub fn begin_start(s: &ScenarioToml) -> ScenarioPrompt {
     match classify_launch(s.live) {
-        Launch::Live => ScenarioPrompt::TypedStart {
-            toml: s.path.clone(),
-            name: s.name.clone(),
-            symbol: s.symbol.clone(),
-            stem: toml_stem(&s.path),
-            buf: String::new(),
-        },
+        Launch::Live => {
+            let stem = toml_stem(&s.path);
+            if stem.is_empty() {
+                return ScenarioPrompt::Idle;
+            }
+            ScenarioPrompt::TypedStart {
+                toml: s.path.clone(),
+                name: s.name.clone(),
+                symbol: s.symbol.clone(),
+                stem,
+                buf: String::new(),
+            }
+        }
         Launch::Paper => ScenarioPrompt::SimpleStart {
             toml: s.path.clone(),
             name: s.name.clone(),
@@ -738,6 +746,23 @@ live = maybe
             begin_start(&ambiguous),
             ScenarioPrompt::TypedStart { .. }
         ));
+    }
+
+    #[test]
+    fn empty_stem_live_start_is_not_startable() {
+        // A path with no file stem yields an empty stem; a LIVE toml must then
+        // produce no startable prompt, so a bare Enter can never fire a start.
+        let s = parse_scenario_toml(PathBuf::from(""), LIVE_TOML);
+        assert!(toml_stem(&s.path).is_empty());
+        assert!(s.live);
+        let p = begin_start(&s);
+        assert_eq!(p, ScenarioPrompt::Idle);
+        let (next, action) = handle_key(&p, HaltKey::Enter);
+        assert_eq!(
+            action, None,
+            "a bare Enter must never confirm an empty-stem LIVE start"
+        );
+        assert_eq!(next, ScenarioPrompt::Idle);
     }
 
     #[test]
