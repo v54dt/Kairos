@@ -17,7 +17,8 @@ set(KAIROS_INC
     ${SRC}/notify
     ${SRC}/engine
     ${SRC}/sim
-    ${SRC}/blacklist)
+    ${SRC}/blacklist
+    ${SRC}/scenario)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -98,6 +99,30 @@ target_link_libraries(kairos_sim_backend PUBLIC kairos_sim)
 add_library(kairos_blacklist src/blacklist/blacklist.cpp)
 target_include_directories(kairos_blacklist PUBLIC ${KAIROS_INC})
 
+# Scenario supervisor: JSON-lines control protocol (fail-closed request decode + status snapshot
+# encode). Pure, no I/O.
+add_library(kairos_scenario_ctl_proto src/scenario/scenario_ctl_proto.cpp)
+target_include_directories(kairos_scenario_ctl_proto PUBLIC ${KAIROS_INC})
+
+# Scenario supervisor: per-scenario state machine, trader stdout parsing, spawn argv, and
+# scenario-dir enumeration. Pure logic (toml++ for enumeration).
+add_library(kairos_scenario_state src/scenario/scenario_state.cpp)
+target_include_directories(kairos_scenario_state PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_scenario_state PUBLIC kairos_scenario_ctl_proto
+                                                   tomlplusplus::tomlplusplus)
+
+# Scenario supervisor: process manager. Fork/execv + owns each trader child, one monitor thread per
+# child (stdout -> state machine, EOF -> waitpid). No setsid.
+add_library(kairos_scenario_process src/scenario/scenario_process.cpp)
+target_include_directories(kairos_scenario_process PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_scenario_process PUBLIC kairos_scenario_state pthread)
+
+# Scenario supervisor: UDS control server + the Supervisor that owns the process manager and answers
+# list/start/stop with a status snapshot.
+add_library(kairos_scenario_ctl_server src/scenario/scenario_ctl_server.cpp)
+target_include_directories(kairos_scenario_ctl_server PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_scenario_ctl_server PUBLIC kairos_scenario_process pthread)
+
 add_library(kairos_scenario src/engine/scenario.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
@@ -148,8 +173,33 @@ target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_l
 add_executable(kairos_sim_hubd src/bin/sim_hub_main.cpp)
 target_link_libraries(kairos_sim_hubd PRIVATE kairos_sim_backend kairos_order_hub_server kairos_uds)
 
+# Scenario supervisor daemon: single owner of every scenario-trader lifecycle.
+add_executable(kairos_scenario_supervisord src/bin/scenario_supervisor_main.cpp)
+target_link_libraries(kairos_scenario_supervisord PRIVATE kairos_scenario_ctl_server)
+
 # --- tests ---
 enable_testing()
+add_executable(test_scenario_ctl_proto tests/test_scenario_ctl_proto.cpp)
+target_link_libraries(test_scenario_ctl_proto PRIVATE kairos_scenario_ctl_proto)
+add_test(NAME test_scenario_ctl_proto COMMAND test_scenario_ctl_proto)
+
+add_executable(test_scenario_state tests/test_scenario_state.cpp)
+target_link_libraries(test_scenario_state PRIVATE kairos_scenario_state)
+add_test(NAME test_scenario_state COMMAND test_scenario_state)
+
+add_executable(test_scenario_process tests/test_scenario_process.cpp)
+target_link_libraries(test_scenario_process PRIVATE kairos_scenario_process)
+add_test(NAME test_scenario_process COMMAND test_scenario_process)
+
+add_executable(test_scenario_ctl_server tests/test_scenario_ctl_server.cpp)
+target_link_libraries(test_scenario_ctl_server PRIVATE kairos_scenario_ctl_server)
+add_test(NAME test_scenario_ctl_server COMMAND test_scenario_ctl_server)
+
+# Opt-in end-to-end proof: self-skips unless KAIROS_SUPERVISOR_E2E=1 and the sim + C++ bins are
+# present, so it stays green in CI (which has no sim binary).
+add_executable(test_scenario_supervisor_e2e tests/test_scenario_supervisor_e2e.cpp)
+add_test(NAME test_scenario_supervisor_e2e COMMAND test_scenario_supervisor_e2e)
+
 add_executable(test_market_fees tests/test_market_fees.cpp)
 target_include_directories(test_market_fees PRIVATE ${KAIROS_INC})
 add_test(NAME test_market_fees COMMAND test_market_fees)
