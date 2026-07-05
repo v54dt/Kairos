@@ -40,7 +40,8 @@ std::string SerializeHubStatus(const HubStatus& s) {
   }
   out += "],\"account_open_notional_cents\":" + std::to_string(s.account_open_notional_cents) +
          ",\"account_day_realized_cents\":" + std::to_string(s.account_day_realized_cents) +
-         ",\"max_account_notional_cents\":" + std::to_string(s.max_account_notional_cents) + "}\n";
+         ",\"max_account_notional_cents\":" + std::to_string(s.max_account_notional_cents) +
+         ",\"halted\":" + (s.halted ? "true" : "false") + "}\n";
   return out;
 }
 
@@ -61,6 +62,11 @@ bool AtomicWriteFile(const std::string& path, const std::string& content) {
 std::string HubStatusPath() {
   return ResolveSock(std::getenv("KAIROS_HUB_STATUS"), std::getenv("XDG_RUNTIME_DIR"), RunUserDir(),
                      "kairos-hub-status.json");
+}
+
+std::string HubHaltPath() {
+  return ResolveSock(std::getenv("KAIROS_HUB_HALT"), std::getenv("XDG_RUNTIME_DIR"), RunUserDir(),
+                     "kairos-hub-halt");
 }
 
 }  // namespace kairos::exec

@@ -1,6 +1,7 @@
 #ifndef KAIROS_EXEC_ORDER_HUB_H_
 #define KAIROS_EXEC_ORDER_HUB_H_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -54,6 +55,11 @@ class OrderHub {
   // Read-only snapshot of hub + per-client state; safe to call off the hot path.
   HubStatus CaptureStatus() const;
 
+  // Kill switch: while set, every new submit is rejected; cancels keep flowing.
+  // Idempotent; effective immediately. Also driven by the halt sentinel file.
+  void SetAdminHalt(bool halted);
+  bool IsHaltedNow() const;
+
   // Force the trading day the day-notional reset compares against (tests only).
   void SetTradingDayForTest(long day);
 
@@ -102,6 +108,7 @@ class OrderHub {
   long current_trading_day_ = 0;                  // YYYYMMDD the realized total belongs to
   long forced_trading_day_ = -1;                  // test override; <0 uses wall clock
   RiskConfig risk_;
+  std::atomic<bool> admin_halt_{false};
 };
 
 }  // namespace kairos::exec

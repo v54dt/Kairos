@@ -1,5 +1,7 @@
 #include "order_hub.h"
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -59,6 +61,13 @@ void OrderHub::RejectSubmit(int client, const std::string& id, const std::string
   send_(client, EncodeOrderAck({id, false, reason}));
 }
 
+void OrderHub::SetAdminHalt(bool halted) { admin_halt_.store(halted); }
+
+bool OrderHub::IsHaltedNow() const {
+  if (admin_halt_.load()) return true;
+  return !risk_.halt_file_path.empty() && ::access(risk_.halt_file_path.c_str(), F_OK) == 0;
+}
+
 bool OrderHub::Start() {
   backend_->SetCallbacks(
       [this](const std::string& id, bool ok, const std::string& e) { OnAck(id, ok, e); },
@@ -80,6 +89,10 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
   if (!DecodeOrder(data, len, &msg)) return;  // undecodable frame: dropped, never forwarded
   if (msg.kind == OrderMsgKind::kSubmit) {
     const OrderSubmitMsg& o = msg.submit;
+    if (IsHaltedNow()) {  // checked before mu_: immediate, no registry work
+      RejectSubmit(client, o.id, "hub halted by admin");
+      return;
+    }
     std::string reject;
     {
       std::lock_guard<std::mutex> lock(mu_);
@@ -229,6 +242,7 @@ HubStatus OrderHub::CaptureStatus() const {
   HubStatus s;
   s.start_epoch_s = start_epoch_s_;
   s.written_epoch_s = NowUs() / 1000000;
+  s.halted = IsHaltedNow();  // read-only access() off the hot path
   std::lock_guard<std::mutex> lock(mu_);
   s.account_open_notional_cents = account_open_notional_cents_;
   s.account_day_realized_cents = account_day_realized_cents_;

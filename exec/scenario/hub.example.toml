@@ -26,3 +26,9 @@ pfx_password = ""
 # max_open_notional_per_client_twd = 0    # per-scenario open-notional cap
 # self_match_protection = true            # reject a submit that would cross this account's
 #                                         # own open opposite-side order (證交法 155-1-5)
+#
+# Admin halt kill switch (no config key): create the sentinel file
+#   $KAIROS_HUB_HALT, else $XDG_RUNTIME_DIR/kairos-hub-halt
+# to reject all new submits immediately; unlink it to resume. Cancels keep
+# flowing while halted so an operator can flatten. The halt state is shown in
+# the hub status file (kairos-hub-status.json, "halted") for the TUI.

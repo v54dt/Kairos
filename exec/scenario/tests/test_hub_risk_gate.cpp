@@ -3,11 +3,15 @@
 // directly with a stub backend + fake send; no sockets. Rejections are ack
 // ok=false frames the fake send decodes; backend callbacks fire by hand.
 
+#include <unistd.h>
+
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "hub_status.h"
 #include "order_codec.h"
 #include "order_hub.h"
 
@@ -229,6 +233,70 @@ void TestPerClientCaps() {
   hub.Stop();
 }
 
+// ---- admin halt kill switch --------------------------------------------
+
+void TestAdminHalt() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub hub(&backend, sink.Fn());
+  CHECK(hub.Start());
+
+  hub.SetAdminHalt(true);
+  CHECK(hub.IsHaltedNow());
+  CHECK(hub.CaptureStatus().halted);
+  Feed(hub, 7, Order("h1", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.empty());  // not forwarded
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+
+  // A cancel still reaches the backend while halted (operator can flatten).
+  Cancel(hub, 7, "some-open-id");
+  CHECK(backend.cancels.size() == 1);
+
+  hub.SetAdminHalt(true);  // idempotent
+  CHECK(hub.IsHaltedNow());
+  hub.SetAdminHalt(false);
+  CHECK(!hub.IsHaltedNow());
+  CHECK(!hub.CaptureStatus().halted);
+  Feed(hub, 7, Order("h2", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 1);  // routes again
+
+  hub.Stop();
+}
+
+void TestHaltFile() {
+  const std::string path =
+      "/tmp/kairos-hub-halt-test-" + std::to_string(::getpid());  // scratch sentinel
+  ::setenv("KAIROS_HUB_HALT", path.c_str(), 1);
+  ::unlink(path.c_str());
+  CHECK(HubHaltPath() == path);
+
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.halt_file_path = HubHaltPath();
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  Feed(hub, 7, Order("f0", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 1);  // no file: routes
+
+  std::FILE* f = std::fopen(path.c_str(), "we");  // create sentinel -> halt observed
+  if (f) std::fclose(f);
+  CHECK(hub.IsHaltedNow());
+  Feed(hub, 7, Order("f1", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 1);  // rejected, not forwarded
+  Cancel(hub, 7, "f0");
+  CHECK(backend.cancels.size() == 1);  // cancel still forwarded while halted
+
+  ::unlink(path.c_str());  // clear sentinel -> halt lifted
+  CHECK(!hub.IsHaltedNow());
+  Feed(hub, 7, Order("f2", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 2);  // routes again
+
+  hub.Stop();
+  ::unsetenv("KAIROS_HUB_HALT");
+}
+
 }  // namespace
 
 int main() {
@@ -236,6 +304,8 @@ int main() {
   TestFailClosed();
   TestAccountNotionalCap();
   TestPerClientCaps();
+  TestAdminHalt();
+  TestHaltFile();
 
   if (g_failures == 0) {
     std::printf("test_hub_risk_gate: OK\n");

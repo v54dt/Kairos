@@ -29,6 +29,7 @@ struct HubStatus {
   long account_open_notional_cents = 0;  // reserved notional of all live orders
   long account_day_realized_cents = 0;   // filled value since the trading-day boundary
   long max_account_notional_cents = 0;   // configured whole-account cap (0 = disabled)
+  bool halted = false;                   // admin kill switch: new submits rejected
 };
 
 // Single-line JSON (no external JSON lib; matches the hand-rolled JSONL style).
@@ -40,6 +41,11 @@ bool AtomicWriteFile(const std::string& path, const std::string& content);
 // $KAIROS_HUB_STATUS, else $XDG_RUNTIME_DIR, else /run/user/<uid>; "" if none.
 // Best-effort (never /tmp, never exits): a missing runtime dir just skips writes.
 std::string HubStatusPath();
+
+// Admin-halt sentinel file the hub watches: $KAIROS_HUB_HALT, else
+// $XDG_RUNTIME_DIR, else /run/user/<uid>/kairos-hub-halt; "" if no runtime dir.
+// A read-mostly TUI sets/clears the halt by creating/unlinking this file.
+std::string HubHaltPath();
 
 }  // namespace kairos::exec
 
