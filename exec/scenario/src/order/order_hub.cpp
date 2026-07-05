@@ -73,6 +73,13 @@ bool OrderHub::DuplicateSubmit(const OrderSubmitMsg& o, long now_ms) {
   return false;
 }
 
+bool OrderHub::CollarReference(const std::string& symbol, Cents* ref) const {
+  auto it = last_fill_price_cents_.find(symbol);
+  if (it == last_fill_price_cents_.end()) return false;
+  *ref = it->second;
+  return true;
+}
+
 bool OrderHub::SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const {
   for (const auto& rid : open_ids_) {
     auto it = routes_.find(rid);
@@ -153,6 +160,11 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       } else if (risk_.max_order_shares > 0 && o.shares > risk_.max_order_shares) {
         reject = "order size " + std::to_string(o.shares) + " exceeds max " +
                  std::to_string(risk_.max_order_shares);
+      } else if (Cents ref = 0; risk_.price_collar_pct > 0 && CollarReference(o.symbol, &ref) &&
+                                std::llabs(o.price - ref) * 100 > risk_.price_collar_pct * ref) {
+        reject = "price " + CentsToString(o.price) + " deviates >" +
+                 std::to_string(risk_.price_collar_pct) + "% from last fill " + CentsToString(ref) +
+                 " (fat-finger?)";
       } else if (risk_.dup_order_window_ms > 0 && DuplicateSubmit(o, now_ms)) {
         reject = "duplicate order within " + std::to_string(risk_.dup_order_window_ms) +
                  "ms (suspected runaway loop)";
@@ -255,6 +267,7 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
     if (it != routes_.end()) {
       client = it->second.client;
       auto cs = clients_.find(client);
+      if (risk_.price_collar_pct > 0) last_fill_price_cents_[it->second.symbol] = f.price;
       if (!it->second.closed) {
         long before = it->second.shares_remaining;
         long acct_sh = std::min<long>(f.shares, before > 0 ? before : 0);

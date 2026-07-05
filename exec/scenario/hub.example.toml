@@ -33,6 +33,13 @@ pfx_password = ""
 # dup_order_window_ms = 0                   # (b) reject an identical (symbol,side,shares,price)
 #                                          # resubmit within this window (suspected runaway loop);
 #                                          # measured on a monotonic clock, account-wide
+# price_collar_pct = 0                      # (a) reject a submit whose price deviates more than
+#                                          # this percent from the reference. The hub has NO quote
+#                                          # feed: the reference is this account's own last fill
+#                                          # for the symbol. Cold start (no fill yet on a symbol)
+#                                          # leaves the collar INACTIVE for it — only the absolute
+#                                          # kMaxTwStockPriceCents field bound applies until the
+#                                          # first fill, a residual fat-finger exposure at cold start.
 #
 # Admin halt kill switch (no config key): create the sentinel file
 #   $KAIROS_HUB_HALT, else $XDG_RUNTIME_DIR/kairos-hub-halt

@@ -38,6 +38,7 @@ class OrderHub {
     bool self_match_protection = true;
     long max_order_shares = 0;     // per-submit share hard cap; 0 = disabled
     long dup_order_window_ms = 0;  // reject an identical resubmit within this window; 0 = disabled
+    long price_collar_pct = 0;     // reject a price this far from the last fill; 0 = disabled
     std::string halt_file_path;
   };
 
@@ -116,6 +117,9 @@ class OrderHub {
   // Prune the dup ring to the window and report whether an identical admitted
   // submit is still within it. Caller holds mu_ and has checked the window > 0.
   bool DuplicateSubmit(const OrderSubmitMsg& o, long now_ms);
+  // The account's last fill price for `symbol` if one exists (the collar
+  // reference); false at cold start (no fill yet). Caller holds mu_.
+  bool CollarReference(const std::string& symbol, Cents* ref) const;
   // True if the submit would cross this account's own open opposite-side order on
   // the same symbol (證交法 155-1-5); *other_id is the crossed order. Caller holds mu_.
   bool SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const;
@@ -135,6 +139,9 @@ class OrderHub {
   long forced_trading_day_ = -1;                  // test override; <0 uses wall clock
   std::deque<DupEntry> dup_ring_;                 // admitted submits within the dup window
   long forced_mono_ms_ = -1;                      // test override; <0 uses steady clock
+  // Per-symbol reference price for the collar: this account's own last fill.
+  // The hub has no quote feed, so fills are the only price it observes.
+  std::unordered_map<std::string, Cents> last_fill_price_cents_;
   RiskConfig risk_;
   std::atomic<bool> admin_halt_{false};
 };
