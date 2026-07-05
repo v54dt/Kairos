@@ -392,6 +392,230 @@ void TestCancelsNeverBlocked() {
   hub.Stop();
 }
 
+// ---- max order size (c) ------------------------------------------------
+
+void TestMaxOrderSize() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_order_shares = 1000;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  Feed(hub, 7, Order("s1", "2330", Side::kBuy, 10000, 1000));  // at cap -> routes
+  CHECK(backend.submits.size() == 1);
+  Feed(hub, 7, Order("s2", "2330", Side::kBuy, 10000, 1001));  // over cap -> reject
+  CHECK(backend.submits.size() == 1);                          // not forwarded
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+  CHECK(sink.Last().ack.error_message.find("exceeds max") != std::string::npos);
+  hub.Stop();
+
+  // Disabled (0): a huge share count within kMaxTwStockShares routes.
+  StubBackend backend2;
+  Sink sink2;
+  OrderHub hub2(&backend2, sink2.Fn());  // max_order_shares defaults to 0
+  CHECK(hub2.Start());
+  Feed(hub2, 7, Order("big", "2330", Side::kBuy, 10000, 2000000));
+  CHECK(backend2.submits.size() == 1);
+  hub2.Stop();
+}
+
+// ---- duplicate-order detection (b) -------------------------------------
+
+void TestDuplicateOrder() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.dup_order_window_ms = 60000;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+  hub.SetMonoMsForTest(1000);
+
+  Feed(hub, 7, Order("A", "2330", Side::kBuy, 10000, 10000));  // first -> routes
+  CHECK(backend.submits.size() == 1);
+  Feed(hub, 7, Order("B", "2330", Side::kBuy, 10000, 10000));  // identical fields -> reject
+  CHECK(backend.submits.size() == 1);                          // not forwarded
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+  CHECK(sink.Last().ack.error_message.find("duplicate order") != std::string::npos);
+
+  // A different price is not a duplicate -> routes.
+  Feed(hub, 7, Order("C", "2330", Side::kBuy, 10100, 10000));
+  CHECK(backend.submits.size() == 2);
+
+  // A fill and a cancel between different orders must not create a false dup.
+  backend.FireAck("A", true, "");
+  backend.FireFill("A", Fill{10000, 10000});  // A fully fills -> terminal, dup entry cleared
+  backend.FireCancel("C", true);              // C cancelled -> terminal, dup entry cleared
+  Feed(hub, 7, Order("D", "2330", Side::kBuy, 500, 10000));  // different shares -> routes
+  CHECK(backend.submits.size() == 3);
+
+  // A reached a terminal state (full fill), so an identical re-order within the
+  // window is a legitimate sequential order, not a runaway loop -> routes.
+  Feed(hub, 7, Order("A2", "2330", Side::kBuy, 10000, 10000));
+  CHECK(backend.submits.size() == 4);
+
+  // Outside the window the same fields route again (ring pruned).
+  hub.SetMonoMsForTest(1000 + 60001);
+  Feed(hub, 7, Order("E", "2330", Side::kBuy, 10000, 10000));  // == A fields, but window elapsed
+  CHECK(backend.submits.size() == 5);
+  hub.Stop();
+
+  // Disabled (0): two identical submits both route.
+  StubBackend backend2;
+  Sink sink2;
+  OrderHub hub2(&backend2, sink2.Fn());  // dup_order_window_ms defaults to 0
+  CHECK(hub2.Start());
+  Feed(hub2, 7, Order("x1", "2330", Side::kBuy, 10000, 10000));
+  Feed(hub2, 7, Order("x2", "2330", Side::kBuy, 10000, 10000));
+  CHECK(backend2.submits.size() == 2);
+  hub2.Stop();
+}
+
+// ---- price collar (a) --------------------------------------------------
+
+void TestPriceCollar() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.price_collar_pct = 10;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  // Cold start: no fill yet on 2330 -> collar inactive -> routes.
+  Feed(hub, 7, Order("cs", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 1);
+
+  // Establish the reference from the account's own fill at 100.00.
+  backend.FireAck("cs", true, "");
+  backend.FireFill("cs", Fill{1000, 10000});
+
+  Feed(hub, 7, Order("in", "2330", Side::kBuy, 10500, 1000));  // +5% -> routes
+  CHECK(backend.submits.size() == 2);
+
+  Feed(hub, 7, Order("hi", "2330", Side::kBuy, 12000, 1000));  // +20% -> reject
+  CHECK(backend.submits.size() == 2);
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+  CHECK(sink.Last().ack.error_message.find("deviates") != std::string::npos);
+
+  Feed(hub, 7, Order("lo", "2330", Side::kBuy, 8000, 1000));  // -20% -> reject
+  CHECK(backend.submits.size() == 2);
+
+  // Wrong-scale mantissa (price*100), still below the absolute ceiling -> reject.
+  Feed(hub, 7, Order("scale", "2330", Side::kBuy, 1000000, 1000));
+  CHECK(backend.submits.size() == 2);
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+  hub.Stop();
+
+  // Disabled (0): an off-band price routes (no collar, no reference recorded).
+  StubBackend backend2;
+  Sink sink2;
+  OrderHub hub2(&backend2, sink2.Fn());  // price_collar_pct defaults to 0
+  CHECK(hub2.Start());
+  Feed(hub2, 7, Order("d1", "2330", Side::kBuy, 10000, 1000));
+  backend2.FireAck("d1", true, "");
+  backend2.FireFill("d1", Fill{1000, 10000});
+  Feed(hub2, 7, Order("d2", "2330", Side::kBuy, 5000000, 1000));  // wild but < ceiling
+  CHECK(backend2.submits.size() == 2);
+  hub2.Stop();
+}
+
+// ---- collar reference resets at the trading-day boundary ----------------
+
+void TestCollarDayBoundaryReset() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.price_collar_pct = 10;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+  hub.SetTradingDayForTest(20260704);
+
+  // Day N: establish the reference from the account's own fill at 100.00.
+  Feed(hub, 7, Order("d1", "2330", Side::kBuy, 10000, 1000));
+  backend.FireAck("d1", true, "");
+  backend.FireFill("d1", Fill{1000, 10000});
+
+  // Same day: a +20% price is off-band against that reference -> rejected.
+  Feed(hub, 7, Order("gap", "2330", Side::kBuy, 12000, 1000));
+  CHECK(backend.submits.size() == 1);
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+
+  // Day N+1: the reference is cleared at the rollover, so the first order is a
+  // cold start (collar inactive) instead of being wedged by yesterday's fill.
+  hub.SetTradingDayForTest(20260705);
+  Feed(hub, 7, Order("open", "2330", Side::kBuy, 12000, 1000));
+  CHECK(backend.submits.size() == 2);
+  hub.Stop();
+}
+
+// ---- all guards disabled: PR #96 behavior unchanged --------------------
+
+void TestGuardsAllDisabled() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub hub(&backend, sink.Fn());  // max_order_shares / dup_window / collar all 0
+  CHECK(hub.Start());
+
+  Feed(hub, 7, Order("big", "2330", Side::kBuy, 10000, 2000000));  // large -> routes
+  Feed(hub, 7, Order("id1", "2330", Side::kBuy, 10000, 1000));     // identical fields, diff ids
+  Feed(hub, 7, Order("id2", "2330", Side::kBuy, 10000, 1000));     // -> both route
+  Feed(hub, 7, Order("off", "1101", Side::kBuy, 9000000, 1000));   // wild price -> routes
+  CHECK(backend.submits.size() == 4);
+  hub.Stop();
+}
+
+// ---- cancels never blocked with every guard enabled --------------------
+
+void TestCancelsNeverBlockedUnderGuards() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_order_shares = 1;
+  cfg.dup_order_window_ms = 1000000;
+  cfg.price_collar_pct = 1;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  Feed(hub, 7, Order("z", "2330", Side::kBuy, 10000, 1000));  // tripped by max_order_shares
+  CHECK(backend.submits.empty());
+  Cancel(hub, 7, "z");
+  CHECK(backend.cancels.size() == 1);
+  Cancel(hub, 7, "other");
+  CHECK(backend.cancels.size() == 2);
+  hub.Stop();
+}
+
+// ---- all guards enabled: each trips its own submit, none forwarded ------
+
+void TestGuardsCombinedFailClosed() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_order_shares = 1000;
+  cfg.dup_order_window_ms = 60000;
+  cfg.price_collar_pct = 10;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+  hub.SetMonoMsForTest(1000);
+
+  Feed(hub, 7, Order("seed", "2330", Side::kBuy, 10000, 1000));  // establishes the collar ref
+  CHECK(backend.submits.size() == 1);
+  backend.FireAck("seed", true, "");
+  backend.FireFill("seed", Fill{1000, 10000});  // terminal: seed leaves the dup ring
+
+  // A still-live order for the (b) duplicate check to trip against.
+  Feed(hub, 7, Order("live", "2330", Side::kBuy, 10000, 1000));
+  CHECK(backend.submits.size() == 2);
+  backend.FireAck("live", true, "");  // acked, unfilled: stays in the dup ring
+
+  std::size_t base = backend.submits.size();
+  Feed(hub, 7, Order("g1", "2330", Side::kBuy, 10000, 1001));  // (c) oversize
+  Feed(hub, 7, Order("g2", "2330", Side::kBuy, 20000, 100));   // (a) off-price
+  Feed(hub, 7, Order("g3", "2330", Side::kBuy, 10000, 1000));  // (b) duplicate of the live order
+  CHECK(backend.submits.size() == base);  // none forwarded: all three fail-closed
+  hub.Stop();
+}
+
 }  // namespace
 
 int main() {
@@ -404,6 +628,13 @@ int main() {
   TestHaltFile();
   TestSelfMatch();
   TestCancelsNeverBlocked();
+  TestMaxOrderSize();
+  TestDuplicateOrder();
+  TestPriceCollar();
+  TestCollarDayBoundaryReset();
+  TestGuardsAllDisabled();
+  TestCancelsNeverBlockedUnderGuards();
+  TestGuardsCombinedFailClosed();
 
   if (g_failures == 0) {
     std::printf("test_hub_risk_gate: OK\n");
