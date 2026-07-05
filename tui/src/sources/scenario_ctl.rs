@@ -14,6 +14,16 @@ pub struct ScenarioToml {
     pub live: bool,
 }
 
+impl ScenarioToml {
+    /// A toml is a launchable scenario only when it carried a `[scenario]`
+    /// section with a non-empty `symbol` (the only source of `symbol`). A
+    /// credentials/config toml such as `hub.toml` has none, so it is never
+    /// offered for launch as a real-money trader.
+    pub fn is_launchable(&self) -> bool {
+        !self.symbol.is_empty()
+    }
+}
+
 /// The launch mode resolved for a start. LIVE submits real-money orders and
 /// demands the typed confirm; PAPER is a simulated fill run and is y/N.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,8 +104,10 @@ pub fn parse_scenario_toml(path: PathBuf, text: &str) -> ScenarioToml {
 }
 
 /// Enumerate the available scenario tomls in `dir`. Skips `*.example.*`
-/// templates and non-`.toml` files; an unreadable toml is counted in the
-/// returned `skipped` total and left out rather than crashing the scan.
+/// templates, non-`.toml` files, and any toml that is not a launchable scenario
+/// (no non-empty `[scenario] symbol`, e.g. a credentials `hub.toml`); an
+/// unreadable or non-launchable toml is counted in the returned `skipped` total
+/// and left out rather than crashing the scan or being offered for launch.
 pub fn enumerate_available(dir: &Path) -> (Vec<ScenarioToml>, usize) {
     let mut out = Vec::new();
     let mut skipped = 0usize;
@@ -110,7 +122,14 @@ pub fn enumerate_available(dir: &Path) -> (Vec<ScenarioToml>, usize) {
             continue;
         }
         match std::fs::read_to_string(entry.path()) {
-            Ok(text) => out.push(parse_scenario_toml(entry.path(), &text)),
+            Ok(text) => {
+                let scen = parse_scenario_toml(entry.path(), &text);
+                if scen.is_launchable() {
+                    out.push(scen);
+                } else {
+                    skipped += 1;
+                }
+            }
             Err(_) => skipped += 1,
         }
     }
@@ -481,6 +500,23 @@ symbol = \"0050\"  # ETF
 live = false
 ";
 
+    // A credentials/config toml: has `[user]`, no `[scenario]`, no `[mode]`.
+    const HUB_TOML: &str = "\
+[user]
+account = \"12345\"
+password = \"secret\"
+";
+
+    // A real scenario (has a `[scenario]` symbol) whose `[mode] live` is garbled.
+    const GARBLED_LIVE_SCENARIO: &str = "\
+[scenario]
+name = \"2454-accumulate\"
+symbol = \"2454\"
+
+[mode]
+live = maybe
+";
+
     #[test]
     fn parses_live_scenario() {
         let s = parse_scenario_toml(PathBuf::from("/x/2330.toml"), LIVE_TOML);
@@ -537,6 +573,7 @@ live = false
         std::fs::write(dir.join("0050.toml"), PAPER_TOML).unwrap();
         std::fs::write(dir.join("scenario.example.toml"), LIVE_TOML).unwrap();
         std::fs::write(dir.join("notes.txt"), "ignore me").unwrap();
+        std::fs::write(dir.join("hub.toml"), HUB_TOML).unwrap();
         // An unreadable toml: a directory named like one.
         std::fs::create_dir_all(dir.join("broken.toml")).unwrap();
 
@@ -544,8 +581,57 @@ live = false
         let names: Vec<_> = found.iter().map(|s| s.symbol.clone()).collect();
         assert!(names.contains(&"2330".to_string()));
         assert!(names.contains(&"0050".to_string()));
-        assert_eq!(found.len(), 2, "example + txt excluded, broken skipped");
-        assert_eq!(skipped, 1);
+        assert_eq!(
+            found.len(),
+            2,
+            "example + txt + hub excluded, broken skipped"
+        );
+        assert_eq!(skipped, 2, "broken dir + hub.toml (no [scenario] symbol)");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn hub_style_toml_is_not_launchable() {
+        let s = parse_scenario_toml(PathBuf::from("/e/hub.toml"), HUB_TOML);
+        assert!(s.symbol.is_empty());
+        assert!(!s.is_launchable(), "a credentials toml is not launchable");
+    }
+
+    #[test]
+    fn real_scenarios_are_launchable() {
+        assert!(parse_scenario_toml(PathBuf::from("/e/2330.toml"), LIVE_TOML).is_launchable());
+        assert!(parse_scenario_toml(PathBuf::from("/e/0050.toml"), PAPER_TOML).is_launchable());
+    }
+
+    #[test]
+    fn garbled_mode_real_scenario_stays_live_and_launchable() {
+        let s = parse_scenario_toml(PathBuf::from("/e/2454.toml"), GARBLED_LIVE_SCENARIO);
+        assert!(s.is_launchable());
+        assert!(
+            s.live,
+            "garbled [mode] on a real scenario stays LIVE fail-safe"
+        );
+        assert_eq!(classify_launch(s.live), Launch::Live);
+    }
+
+    #[test]
+    fn enumerate_excludes_hub_style_credentials_toml() {
+        let dir = std::env::temp_dir().join(format!("kairos-scen-hub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("2330.toml"), LIVE_TOML).unwrap();
+        std::fs::write(dir.join("hub.toml"), HUB_TOML).unwrap();
+
+        let (found, skipped) = enumerate_available(&dir);
+        let names: Vec<_> = found.iter().map(|s| s.symbol.clone()).collect();
+        assert_eq!(found.len(), 1, "only the real scenario is listed");
+        assert_eq!(names, vec!["2330".to_string()]);
+        assert!(
+            found.iter().all(|s| s.path.file_stem().unwrap() != "hub"),
+            "hub.toml (no [scenario]) must never appear in the launchable list"
+        );
+        assert_eq!(skipped, 1, "hub.toml counted as skipped, not listed");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
