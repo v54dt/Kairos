@@ -357,16 +357,17 @@ mod tests {
         }
         // A directory expands to its sorted *.kqr files, skipping non-KQR entries.
         let got = resolve_kqr_sources(std::slice::from_ref(&dir)).unwrap();
-        assert_eq!(
-            got,
-            vec![dir.join("s1001-x.kqr"), dir.join("s1002-x.kqr")]
-        );
+        assert_eq!(got, vec![dir.join("s1001-x.kqr"), dir.join("s1002-x.kqr")]);
         // An explicit file passes through; multiple sources concatenate in order.
         let file = dir.join("s1001-x.kqr");
         let got = resolve_kqr_sources(&[file.clone(), dir.clone()]).unwrap();
         assert_eq!(
             got,
-            vec![file.clone(), dir.join("s1001-x.kqr"), dir.join("s1002-x.kqr")]
+            vec![
+                file.clone(),
+                dir.join("s1001-x.kqr"),
+                dir.join("s1002-x.kqr")
+            ]
         );
     }
 

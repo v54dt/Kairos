@@ -16,7 +16,10 @@ fn count_sentinel(sentinel: &str) -> usize {
         .arg(format!("sleep {sentinel}"))
         .output()
         .unwrap();
-    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0)
 }
 
 fn write_fake(path: &std::path::Path, sentinel: &str) {
@@ -34,7 +37,12 @@ fn sigterm_during_startup_orphans_children() {
     let _ = std::fs::remove_dir_all(&base);
     let bins = base.join("bins");
     std::fs::create_dir_all(&bins).unwrap();
-    for b in ["kairos-driver", "kairos-core", "kairos-replayd", "kairos_sim_hubd"] {
+    for b in [
+        "kairos-driver",
+        "kairos-core",
+        "kairos-replayd",
+        "kairos_sim_hubd",
+    ] {
         write_fake(&bins.join(b), &sentinel);
     }
 
