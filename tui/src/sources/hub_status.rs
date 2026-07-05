@@ -123,10 +123,10 @@ fn client_objects(s: &str) -> Vec<&str> {
             }
             b'}' => {
                 depth -= 1;
-                if depth == 0 {
-                    if let Some(st) = obj_start.take() {
-                        out.push(&s[st..=i]);
-                    }
+                if depth == 0
+                    && let Some(st) = obj_start.take()
+                {
+                    out.push(&s[st..=i]);
                 }
             }
             b']' if depth == 0 => break,

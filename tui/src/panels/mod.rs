@@ -2,6 +2,7 @@ mod book;
 mod feed;
 mod journal;
 mod recorder;
+mod scenarios;
 mod systemd;
 
 use ratatui::Frame;
@@ -25,6 +26,7 @@ pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config, tab: Tab) {
     match tab {
         Tab::Overview => render_overview(frame, outer[1], snap, cfg),
         Tab::FeedsBooks => book::render(frame, outer[1], &snap.feed, cfg),
+        Tab::Scenarios => scenarios::render(frame, outer[1], &snap.scenarios),
     }
 }
 
@@ -50,6 +52,11 @@ fn tab_bar(tab: Tab) -> Paragraph<'static> {
         Span::styled(
             " 2 Feeds & Books ",
             if tab == Tab::FeedsBooks { active } else { idle },
+        ),
+        Span::raw(" "),
+        Span::styled(
+            " 3 Scenarios ",
+            if tab == Tab::Scenarios { active } else { idle },
         ),
         Span::raw("   "),
         Span::styled(

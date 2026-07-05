@@ -5,7 +5,9 @@ use std::time::Duration;
 use tokio::time::interval;
 
 use crate::sources::feed::FeedState;
+use crate::sources::hub_status::{self, HubReport};
 use crate::sources::journald::{self, LogLine};
+use crate::sources::order_journal::{self, ScenarioJournal, ScenariosView};
 use crate::sources::recorder::{self, RecorderStats};
 use crate::sources::systemd::{self, UnitStatus};
 
@@ -27,12 +29,14 @@ pub enum Fetch<T> {
 pub struct Config {
     pub symbols: Vec<String>,
     pub data_dir: PathBuf,
+    pub journal_dir: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tab {
     Overview,
     FeedsBooks,
+    Scenarios,
 }
 
 impl Tab {
@@ -40,6 +44,7 @@ impl Tab {
         match key {
             '1' => Tab::Overview,
             '2' => Tab::FeedsBooks,
+            '3' => Tab::Scenarios,
             _ => self,
         }
     }
@@ -47,7 +52,8 @@ impl Tab {
     pub fn next(self) -> Tab {
         match self {
             Tab::Overview => Tab::FeedsBooks,
-            Tab::FeedsBooks => Tab::Overview,
+            Tab::FeedsBooks => Tab::Scenarios,
+            Tab::Scenarios => Tab::Overview,
         }
     }
 }
@@ -66,10 +72,11 @@ Usage: kairos-top [OPTIONS]
 Options:
   --symbols <A,B,...>   Watchlist symbols (default: 2330,0050)
   --data-dir <PATH>     Recorder data directory
+  --journal-dir <PATH>  Order-journal directory (default: <data-dir>/journal)
   -h, --help            Print this help and exit
   -V, --version         Print version and exit
 
-Keys: [1] Overview  [2] Feeds & Books  [Tab] switch  [q] quit";
+Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [Tab] switch  [q] quit";
 
 pub fn version_line() -> String {
     format!("kairos-top {}", env!("CARGO_PKG_VERSION"))
@@ -82,6 +89,7 @@ pub fn parse_args() -> Cli {
 pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
     let mut symbols = vec!["2330".to_string(), "0050".to_string()];
     let mut data_dir = default_data_dir();
+    let mut journal_dir: Option<PathBuf> = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -97,10 +105,20 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
                     data_dir = PathBuf::from(v);
                 }
             }
+            "--journal-dir" => {
+                if let Some(v) = args.next() {
+                    journal_dir = Some(PathBuf::from(v));
+                }
+            }
             _ => {}
         }
     }
-    Cli::Run(Config { symbols, data_dir })
+    let journal_dir = journal_dir.unwrap_or_else(|| data_dir.join("journal"));
+    Cli::Run(Config {
+        symbols,
+        data_dir,
+        journal_dir,
+    })
 }
 
 fn default_data_dir() -> PathBuf {
@@ -114,6 +132,8 @@ pub struct Shared {
     pub journal: Mutex<Fetch<Vec<LogLine>>>,
     pub recorder: Mutex<Fetch<Vec<RecorderStats>>>,
     pub disk_free: Mutex<Option<u64>>,
+    pub hub: Mutex<Option<HubReport>>,
+    pub scenarios: Mutex<Vec<ScenarioJournal>>,
 }
 
 pub struct Snapshot {
@@ -122,16 +142,22 @@ pub struct Snapshot {
     pub recorder: Fetch<Vec<RecorderStats>>,
     pub disk_free: Option<u64>,
     pub feed: FeedState,
+    pub scenarios: ScenariosView,
 }
 
 impl Snapshot {
     pub fn capture(shared: &Shared, feed: &Mutex<FeedState>) -> Self {
+        let scenarios = order_journal::merge(
+            shared.scenarios.lock().unwrap().clone(),
+            shared.hub.lock().unwrap().clone(),
+        );
         Snapshot {
             systemd: shared.systemd.lock().unwrap().clone(),
             journal: shared.journal.lock().unwrap().clone(),
             recorder: shared.recorder.lock().unwrap().clone(),
             disk_free: *shared.disk_free.lock().unwrap(),
             feed: feed.lock().unwrap().clone(),
+            scenarios,
         }
     }
 }
@@ -185,6 +211,24 @@ pub async fn refresh_recorder(shared: Arc<Shared>, data_dir: PathBuf) {
     }
 }
 
+pub async fn refresh_hub_status(shared: Arc<Shared>) {
+    let mut tick = interval(REFRESH);
+    loop {
+        tick.tick().await;
+        let report = hub_status::hub_status_path().and_then(|p| hub_status::read_hub_status(&p));
+        *shared.hub.lock().unwrap() = report;
+    }
+}
+
+pub async fn refresh_scenarios(shared: Arc<Shared>, journal_dir: PathBuf) {
+    let mut tick = interval(REFRESH);
+    loop {
+        tick.tick().await;
+        let date = order_journal::today_tw();
+        *shared.scenarios.lock().unwrap() = order_journal::scan_journal(&journal_dir, &date);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,17 +277,37 @@ mod tests {
     fn tab_select_by_key() {
         assert_eq!(Tab::Overview.select('2'), Tab::FeedsBooks);
         assert_eq!(Tab::FeedsBooks.select('1'), Tab::Overview);
+        assert_eq!(Tab::Overview.select('3'), Tab::Scenarios);
+        assert_eq!(Tab::Scenarios.select('2'), Tab::FeedsBooks);
     }
 
     #[test]
     fn tab_select_unknown_key_keeps_state() {
         assert_eq!(Tab::FeedsBooks.select('x'), Tab::FeedsBooks);
         assert_eq!(Tab::Overview.select('9'), Tab::Overview);
+        assert_eq!(Tab::Scenarios.select('z'), Tab::Scenarios);
     }
 
     #[test]
-    fn tab_next_toggles() {
+    fn tab_next_cycles() {
         assert_eq!(Tab::Overview.next(), Tab::FeedsBooks);
-        assert_eq!(Tab::FeedsBooks.next(), Tab::Overview);
+        assert_eq!(Tab::FeedsBooks.next(), Tab::Scenarios);
+        assert_eq!(Tab::Scenarios.next(), Tab::Overview);
+    }
+
+    #[test]
+    fn journal_dir_defaults_under_data_dir() {
+        match parse_cli(args(&["--data-dir", "/tmp/x"])) {
+            Cli::Run(cfg) => assert_eq!(cfg.journal_dir, PathBuf::from("/tmp/x/journal")),
+            _ => panic!("expected Run"),
+        }
+    }
+
+    #[test]
+    fn journal_dir_flag_honored() {
+        match parse_cli(args(&["--journal-dir", "/tmp/j"])) {
+            Cli::Run(cfg) => assert_eq!(cfg.journal_dir, PathBuf::from("/tmp/j")),
+            _ => panic!("expected Run"),
+        }
     }
 }
