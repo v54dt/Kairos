@@ -95,6 +95,7 @@ async fn run(
     let mut prompt = HaltPrompt::Idle;
     let mut halt_result: Option<String> = None;
     let mut sel: usize = 0;
+    let mut fills_sel: usize = 0;
     let mut confirm = ConfirmPrompt::Idle;
     let action_result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut scen = ScenState::default();
@@ -114,7 +115,7 @@ async fn run(
                 let drill_view = drill.as_ref().map(|d| d.view());
                 let mut clamped_rev: Option<usize> = None;
                 term.draw(|frame| {
-                    panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario);
+                    panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario, fills_sel);
                     if tab == Tab::Overview && let Some(v) = &drill_view {
                         clamped_rev = Some(panels::render_drill_overlay(frame, v));
                     }
@@ -190,6 +191,9 @@ async fn run(
                 } else if let Some(sk) = scenarios_key(tab, &key) {
                     apply_scenarios_key(sk, &snap, &mut scen);
                     redraw = true;
+                } else if let Some(fk) = fills_key(tab, &key) {
+                    apply_fills_key(fk, &snap, &mut fills_sel);
+                    redraw = true;
                 } else if let Some(rk) = risk_tab_key(tab, &key) {
                     if halt_path.is_some() {
                         prompt = match rk {
@@ -213,7 +217,7 @@ async fn run(
                     let drill_view = drill.as_ref().map(|d| d.view());
                     let mut clamped_rev: Option<usize> = None;
                     term.draw(|frame| {
-                        panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario);
+                        panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario, fills_sel);
                         if tab == Tab::Overview && let Some(v) = &drill_view {
                             clamped_rev = Some(panels::render_drill_overlay(frame, v));
                         }
@@ -438,6 +442,41 @@ fn apply_scenarios_key(sk: ScenariosKey, snap: &Snapshot, scen: &mut ScenState) 
 }
 
 #[derive(Debug, PartialEq, Eq)]
+enum FillsKey {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+}
+
+const FILLS_PAGE: usize = 10;
+
+// Ctrl+C carries CONTROL and must reach should_quit; 'q'/digits stay unbound so
+// they still quit / switch tabs.
+fn fills_key(tab: Tab, key: &KeyEvent) -> Option<FillsKey> {
+    if tab != Tab::Fills || key.modifiers.contains(KeyModifiers::CONTROL) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => Some(FillsKey::Up),
+        KeyCode::Down | KeyCode::Char('j') => Some(FillsKey::Down),
+        KeyCode::PageUp => Some(FillsKey::PageUp),
+        KeyCode::PageDown => Some(FillsKey::PageDown),
+        _ => None,
+    }
+}
+
+fn apply_fills_key(fk: FillsKey, snap: &Snapshot, sel: &mut usize) {
+    let len = snap.fills.len();
+    match fk {
+        FillsKey::Up => *sel = sel.saturating_sub(1),
+        FillsKey::Down => *sel = bump(*sel, len),
+        FillsKey::PageUp => *sel = sel.saturating_sub(FILLS_PAGE),
+        FillsKey::PageDown => *sel = (*sel + FILLS_PAGE).min(len.saturating_sub(1)),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 enum OverviewKey {
     Up,
     Down,
@@ -617,7 +656,7 @@ fn tab_for(event: &Event, current: Tab) -> Option<Tab> {
             return None;
         }
         return match key.code {
-            KeyCode::Char(c @ ('1' | '2' | '3' | '4' | '5')) => Some(current.select(c)),
+            KeyCode::Char(c @ ('1' | '2' | '3' | '4' | '5' | '6')) => Some(current.select(c)),
             KeyCode::Tab => Some(current.next()),
             _ => None,
         };
@@ -705,6 +744,8 @@ mod tests {
             disk_free: None,
             feed: FeedState::default(),
             scenarios: Default::default(),
+            fills: Vec::new(),
+            fills_date: String::new(),
             available: (avail, 0),
             running,
             timers: app::Fetch::Loading,
@@ -992,6 +1033,58 @@ mod tests {
             let k = press(KeyCode::Char(c), KeyModifiers::NONE);
             assert_eq!(journal_drill_key(&k), None);
         }
+    }
+
+    #[test]
+    fn bare_keys_on_fills_tab_map_to_nav() {
+        let cases = [
+            (KeyCode::Up, FillsKey::Up),
+            (KeyCode::Char('k'), FillsKey::Up),
+            (KeyCode::Down, FillsKey::Down),
+            (KeyCode::Char('j'), FillsKey::Down),
+            (KeyCode::PageUp, FillsKey::PageUp),
+            (KeyCode::PageDown, FillsKey::PageDown),
+        ];
+        for (code, want) in cases {
+            let k = press(code, KeyModifiers::NONE);
+            assert_eq!(fills_key(Tab::Fills, &k), Some(want));
+        }
+    }
+
+    #[test]
+    fn ctrl_c_and_q_are_not_fills_keys() {
+        let ctrl_c = press(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(fills_key(Tab::Fills, &ctrl_c), None);
+        let q = press(KeyCode::Char('q'), KeyModifiers::NONE);
+        assert_eq!(fills_key(Tab::Fills, &q), None);
+        // Off the Fills tab nav keys are ignored.
+        let up = press(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(fills_key(Tab::Overview, &up), None);
+    }
+
+    #[test]
+    fn fills_nav_clamps_within_bounds() {
+        use sources::order_journal::Fill;
+        let mut snap = scen_snapshot(vec![], vec![]);
+        snap.fills = (0..25)
+            .map(|i| Fill {
+                t: i,
+                stem: "2330-Buy-20260705".to_string(),
+                buy: true,
+                shares: 1000,
+                price: 58500,
+            })
+            .collect();
+        let mut sel = 0usize;
+        apply_fills_key(FillsKey::Up, &snap, &mut sel);
+        assert_eq!(sel, 0, "up at top stays pinned");
+        apply_fills_key(FillsKey::PageDown, &snap, &mut sel);
+        assert_eq!(sel, 10);
+        apply_fills_key(FillsKey::PageDown, &snap, &mut sel);
+        apply_fills_key(FillsKey::PageDown, &snap, &mut sel);
+        assert_eq!(sel, 24, "page down clamps to the last fill");
+        apply_fills_key(FillsKey::Down, &snap, &mut sel);
+        assert_eq!(sel, 24, "down at bottom stays pinned");
     }
 
     #[test]
