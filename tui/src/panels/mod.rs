@@ -15,10 +15,18 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::{Config, Snapshot, Tab};
 use crate::sources::halt::HaltUi;
+use crate::sources::service::ServiceUi;
 
 const JOURNAL_HEIGHT: u16 = 14;
 
-pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config, tab: Tab, halt: &HaltUi) {
+pub fn render(
+    frame: &mut Frame,
+    snap: &Snapshot,
+    cfg: &Config,
+    tab: Tab,
+    halt: &HaltUi,
+    service: &ServiceUi,
+) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(0)])
@@ -27,7 +35,7 @@ pub fn render(frame: &mut Frame, snap: &Snapshot, cfg: &Config, tab: Tab, halt: 
     frame.render_widget(tab_bar(tab), outer[0]);
 
     match tab {
-        Tab::Overview => render_overview(frame, outer[1], snap, cfg),
+        Tab::Overview => render_overview(frame, outer[1], snap, cfg, service),
         Tab::FeedsBooks => book::render(frame, outer[1], &snap.feed, cfg),
         Tab::Scenarios => scenarios::render(frame, outer[1], &snap.scenarios),
         Tab::Risk => risk::render(frame, outer[1], &snap.scenarios.hub, &snap.blacklist, halt),
@@ -78,7 +86,13 @@ fn tab_bar(tab: Tab) -> Paragraph<'static> {
     ]))
 }
 
-fn render_overview(frame: &mut Frame, area: Rect, snap: &Snapshot, cfg: &Config) {
+fn render_overview(
+    frame: &mut Frame,
+    area: Rect,
+    snap: &Snapshot,
+    cfg: &Config,
+    service: &ServiceUi,
+) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(JOURNAL_HEIGHT)])
@@ -89,7 +103,7 @@ fn render_overview(frame: &mut Frame, area: Rect, snap: &Snapshot, cfg: &Config)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(rows[0]);
 
-    systemd::render(frame, mid[0], &snap.systemd);
+    systemd::render(frame, mid[0], &snap.systemd, service);
 
     let right = Layout::default()
         .direction(Direction::Vertical)
