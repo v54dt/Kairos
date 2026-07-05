@@ -26,27 +26,36 @@ bool ProcessManager::Spawn(const std::string& name, const std::vector<std::strin
                            bool live) {
   if (argv.empty()) return false;
 
-  // Reap-and-replace a prior terminal child for the same name (outside the lock).
+  // Claim the name under the lock before forking so two concurrent Spawns for the
+  // same name cannot both fork and then clobber each other's Child in the map.
   std::unique_ptr<Child> old;
   {
     std::lock_guard<std::mutex> lock(mu_);
+    if (starting_.count(name) != 0) return false;  // a fork for this name is already in flight
     auto it = children_.find(name);
     if (it != children_.end()) {
       if (IsAlive(*it->second)) return false;  // already running
-      old = std::move(it->second);
+      old = std::move(it->second);             // reap-and-replace a prior terminal child
       children_.erase(it);
     }
+    starting_.insert(name);
   }
   if (old && old->monitor.joinable()) old->monitor.join();
   old.reset();
 
   int fds[2];
-  if (::pipe2(fds, O_CLOEXEC) != 0) return false;
+  if (::pipe2(fds, O_CLOEXEC) != 0) {
+    std::lock_guard<std::mutex> lock(mu_);
+    starting_.erase(name);
+    return false;
+  }
 
   pid_t pid = ::fork();
   if (pid < 0) {
     ::close(fds[0]);
     ::close(fds[1]);
+    std::lock_guard<std::mutex> lock(mu_);
+    starting_.erase(name);
     return false;
   }
   if (pid == 0) {
@@ -80,6 +89,7 @@ bool ProcessManager::Spawn(const std::string& name, const std::vector<std::strin
     std::lock_guard<std::mutex> lock(mu_);
     children_[name] = std::move(child);  // table entry exists before the monitor runs
     raw->monitor = std::thread([this, raw] { MonitorLoop(raw); });
+    starting_.erase(name);
   }
   return true;
 }

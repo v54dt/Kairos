@@ -9,6 +9,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <string>
@@ -131,6 +132,27 @@ int main() {
     CHECK(::kill(pb, 0) == -1 && errno == ESRCH);
     // No child of ours remains to reap.
     CHECK(::waitpid(-1, nullptr, WNOHANG) == -1 && errno == ECHILD);
+  }
+
+  // 6) Concurrent Spawn() of the SAME name: exactly one wins, the manager does not
+  //    abort, and StopAll leaves no orphan. Regression for the check/insert race
+  //    where two forks both landed in the map and destroyed a joinable monitor.
+  {
+    ProcessManager pm;
+    constexpr int kThreads = 8;
+    std::atomic<int> won{0};
+    std::vector<std::thread> ts;
+    for (int i = 0; i < kThreads; ++i)
+      ts.emplace_back([&] {
+        if (pm.Spawn("dup", Sh("sleep 30"), false)) ++won;
+      });
+    for (std::thread& t : ts) t.join();
+    CHECK(won.load() == 1);  // only one Spawn claims the name
+    pid_t pid = static_cast<pid_t>(pm.StatusOf("dup").pid);
+    CHECK(pid > 0);
+    pm.StopAll();
+    CHECK(::kill(pid, 0) == -1 && errno == ESRCH);
+    CHECK(::waitpid(-1, nullptr, WNOHANG) == -1 && errno == ECHILD);  // no leaked child
   }
 
   if (g_failures == 0) {

@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -77,6 +78,7 @@ class ProcessManager {
   mutable std::mutex mu_;
   std::condition_variable exit_cv_;  // fired whenever a child is reaped
   std::map<std::string, std::unique_ptr<Child>> children_;
+  std::set<std::string> starting_;  // names with a fork in flight, before the Child is in the map
 };
 
 }  // namespace kairos::exec
