@@ -94,6 +94,8 @@ Options:
   -V, --version          Print version and exit
 
 Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Events  [Tab] switch  [q] quit
+Overview tab: [up/down] select unit  [r]estart [s]tart [x]stop [f] reset-failed  [S]/[X] kairos.target up/down
+              trading units require a typed confirm (the unit name); research crons and reset-failed are y/N
 Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)";
 
 pub fn version_line() -> String {
