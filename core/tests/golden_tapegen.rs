@@ -141,7 +141,9 @@ fn limit_lock_golden() {
     };
     assert_eq!(q0.bids[0].price_mantissa, limit);
     assert_eq!(q0.bids[0].volume, 100);
-    // Every trade prints AT the limit; none crosses, so a resting BUY at the limit
-    // stays unbuyable (the through test requires a strict inequality).
+    // Locked limit-up: no offer at/below the ceiling, so a BUY at the limit has
+    // nothing to cross on arrival and stays unbuyable.
+    assert!(q0.asks.is_empty());
+    // Every trade still prints AT the limit; none crosses.
     assert!(trades(&ev).iter().all(|t| t.price_mantissa == limit));
 }

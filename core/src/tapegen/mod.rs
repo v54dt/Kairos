@@ -32,8 +32,8 @@ const PRICE_TICK: i64 = 50;
 
 /// Named scenario, each with a documented expected behavior (see the fixtures
 /// README). `QuotesOnly` emits no trades (zero fills possible); `TrendDay` walks a
-/// descending trade ladder that crosses a resting join BUY; `LimitLock` pins every
-/// trade at the daily limit so a resting BUY at the limit never crosses.
+/// descending trade ladder that crosses a resting join BUY; `LimitLock` is a locked
+/// limit-up board (bid-only at the ceiling, no ask) so a BUY at the limit stays unbuyable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scenario {
     QuotesOnly,
@@ -347,11 +347,9 @@ fn build_events(params: &GenParams) -> Vec<TapeEvent> {
                     price_scale: params.scale,
                     volume: queue,
                 }];
-                q.asks = vec![PriceLevel {
-                    price_mantissa: limit,
-                    price_scale: params.scale,
-                    volume: rng.in_range(1, 5),
-                }];
+                // Locked limit-up: no offer at/below the ceiling, so a BUY at the
+                // limit has nothing to cross and stays unbuyable.
+                q.asks = Vec::new();
                 q.last_price = limit;
                 q.last_volume = 1;
                 events.push(TapeEvent::Quote(q));
