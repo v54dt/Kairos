@@ -13,6 +13,10 @@ using Cents = std::int64_t;  // NT$1.00 == 100
 
 constexpr Cents kMaxTwStockPriceCents = 99'999'00;
 
+// Upper bound on a single order's share count; caps price*shares far below the
+// int64 range so the notional gate cannot overflow into a fail-open.
+constexpr long kMaxTwStockShares = 100'000'000;
+
 // kStock covers foreign stocks / TDR / closed-end funds / preferred shares.
 // NOTE: not auto-detected — concords exposes no security type, so the caller
 // (scenario config) must supply it.
