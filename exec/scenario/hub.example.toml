@@ -30,6 +30,9 @@ pfx_password = ""
 # Fat-finger pre-trade guards (SEC 15c3-5 style). Counts/ms/percent, not TWD.
 # Each 0/absent = that guard disabled; with all three 0 the gate is unchanged.
 # max_order_shares = 0                     # (c) per-submit share/lot hard cap
+# dup_order_window_ms = 0                   # (b) reject an identical (symbol,side,shares,price)
+#                                          # resubmit within this window (suspected runaway loop);
+#                                          # measured on a monotonic clock, account-wide
 #
 # Admin halt kill switch (no config key): create the sentinel file
 #   $KAIROS_HUB_HALT, else $XDG_RUNTIME_DIR/kairos-hub-halt

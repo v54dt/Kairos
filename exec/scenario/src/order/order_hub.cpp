@@ -14,6 +14,8 @@ namespace kairos::exec {
 
 namespace {
 
+constexpr std::size_t kDupRingCap = 1024;  // hard bound on the dup ring under a burst
+
 long NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::system_clock::now().time_since_epoch())
@@ -52,6 +54,25 @@ long OrderHub::CurrentTradingDay() const {
   return forced_trading_day_ >= 0 ? forced_trading_day_ : LocalTradingDay();
 }
 
+long OrderHub::NowMonoMs() const {
+  if (forced_mono_ms_ >= 0) return forced_mono_ms_;
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+bool OrderHub::DuplicateSubmit(const OrderSubmitMsg& o, long now_ms) {
+  while (!dup_ring_.empty() && now_ms - dup_ring_.front().mono_ms > risk_.dup_order_window_ms) {
+    dup_ring_.pop_front();
+  }
+  for (const DupEntry& e : dup_ring_) {
+    if (e.symbol == o.symbol && e.side == o.side && e.shares == o.shares && e.price == o.price) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool OrderHub::SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const {
   for (const auto& rid : open_ids_) {
     auto it = routes_.find(rid);
@@ -70,6 +91,11 @@ bool OrderHub::SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) co
 void OrderHub::SetTradingDayForTest(long day) {
   std::lock_guard<std::mutex> lock(mu_);
   forced_trading_day_ = day;
+}
+
+void OrderHub::SetMonoMsForTest(long ms) {
+  std::lock_guard<std::mutex> lock(mu_);
+  forced_mono_ms_ = ms;
 }
 
 void OrderHub::RejectSubmit(int client, const std::string& id, const std::string& reason) {
@@ -116,6 +142,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         current_trading_day_ = today;
         account_day_realized_cents_ = 0;
       }
+      long now_ms = risk_.dup_order_window_ms > 0 ? NowMonoMs() : 0;
       // Fail-closed field validation: a doubtful submit is rejected, never forwarded.
       auto live = routes_.find(o.id);
       if (o.id.empty() || o.symbol.empty() || o.shares <= 0 || o.shares > kMaxTwStockShares ||
@@ -126,6 +153,9 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       } else if (risk_.max_order_shares > 0 && o.shares > risk_.max_order_shares) {
         reject = "order size " + std::to_string(o.shares) + " exceeds max " +
                  std::to_string(risk_.max_order_shares);
+      } else if (risk_.dup_order_window_ms > 0 && DuplicateSubmit(o, now_ms)) {
+        reject = "duplicate order within " + std::to_string(risk_.dup_order_window_ms) +
+                 "ms (suspected runaway loop)";
       } else if (std::int64_t n = static_cast<std::int64_t>(o.price) * o.shares;
                  risk_.max_account_notional_cents > 0 &&
                  account_day_realized_cents_ + account_open_notional_cents_ + n >
@@ -149,6 +179,10 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         if (cs.prefix.empty()) ParseId(o.id, &cs.prefix, &cs.pid);
         ++cs.submitted;
         cs.last_activity_us = NowUs();
+        if (risk_.dup_order_window_ms > 0) {
+          dup_ring_.push_back({o.symbol, o.side, o.shares, o.price, now_ms});
+          if (dup_ring_.size() > kDupRingCap) dup_ring_.pop_front();
+        }
       }
     }
     if (!reject.empty()) {

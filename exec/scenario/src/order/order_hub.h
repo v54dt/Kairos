@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -35,7 +36,8 @@ class OrderHub {
     int max_open_orders_per_client = 0;
     long max_open_notional_per_client_cents = 0;
     bool self_match_protection = true;
-    long max_order_shares = 0;  // per-submit share hard cap; 0 = disabled
+    long max_order_shares = 0;     // per-submit share hard cap; 0 = disabled
+    long dup_order_window_ms = 0;  // reject an identical resubmit within this window; 0 = disabled
     std::string halt_file_path;
   };
 
@@ -64,6 +66,8 @@ class OrderHub {
 
   // Force the trading day the day-notional reset compares against (tests only).
   void SetTradingDayForTest(long day);
+  // Force the monotonic clock the duplicate-order window compares against (tests only).
+  void SetMonoMsForTest(long ms);
 
  private:
   // Lifecycle of one live order, derived from the routing the hub already does.
@@ -75,6 +79,16 @@ class OrderHub {
     std::string symbol;
     Side side = Side::kBuy;
     Cents price = 0;  // reserved open notional == price * shares_remaining
+  };
+
+  // One admitted submit, kept in a bounded ring so a runaway strategy that
+  // resubmits the same (symbol, side, shares, price) within the window is caught.
+  struct DupEntry {
+    std::string symbol;
+    Side side = Side::kBuy;
+    long shares = 0;
+    Cents price = 0;
+    long mono_ms = 0;
   };
 
   // Lifetime aggregate for one connected client (fd), for the status snapshot.
@@ -98,6 +112,10 @@ class OrderHub {
   void RejectSubmit(int client, const std::string& id, const std::string& reason);
   void ReleaseOpen(Route& r);      // free a route's reserved open notional once; caller holds mu_
   long CurrentTradingDay() const;  // caller holds mu_
+  long NowMonoMs() const;          // steady-clock ms, or the test override
+  // Prune the dup ring to the window and report whether an identical admitted
+  // submit is still within it. Caller holds mu_ and has checked the window > 0.
+  bool DuplicateSubmit(const OrderSubmitMsg& o, long now_ms);
   // True if the submit would cross this account's own open opposite-side order on
   // the same symbol (證交法 155-1-5); *other_id is the crossed order. Caller holds mu_.
   bool SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const;
@@ -115,6 +133,8 @@ class OrderHub {
   std::int64_t account_day_realized_cents_ = 0;   // filled value since the trading-day boundary
   long current_trading_day_ = 0;                  // YYYYMMDD the realized total belongs to
   long forced_trading_day_ = -1;                  // test override; <0 uses wall clock
+  std::deque<DupEntry> dup_ring_;                 // admitted submits within the dup window
+  long forced_mono_ms_ = -1;                      // test override; <0 uses steady clock
   RiskConfig risk_;
   std::atomic<bool> admin_halt_{false};
 };

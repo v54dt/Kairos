@@ -420,6 +420,52 @@ void TestMaxOrderSize() {
   hub2.Stop();
 }
 
+// ---- duplicate-order detection (b) -------------------------------------
+
+void TestDuplicateOrder() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.dup_order_window_ms = 60000;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+  hub.SetMonoMsForTest(1000);
+
+  Feed(hub, 7, Order("A", "2330", Side::kBuy, 10000, 10000));  // first -> routes
+  CHECK(backend.submits.size() == 1);
+  Feed(hub, 7, Order("B", "2330", Side::kBuy, 10000, 10000));  // identical fields -> reject
+  CHECK(backend.submits.size() == 1);                          // not forwarded
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+  CHECK(sink.Last().ack.error_message.find("duplicate order") != std::string::npos);
+
+  // A different price is not a duplicate -> routes.
+  Feed(hub, 7, Order("C", "2330", Side::kBuy, 10100, 10000));
+  CHECK(backend.submits.size() == 2);
+
+  // A fill and a cancel between different orders must not create a false dup.
+  backend.FireAck("A", true, "");
+  backend.FireFill("A", Fill{10000, 10000});
+  backend.FireCancel("C", true);
+  Feed(hub, 7, Order("D", "2330", Side::kBuy, 500, 10000));  // different shares -> routes
+  CHECK(backend.submits.size() == 3);
+
+  // Outside the window the same fields route again (ring pruned).
+  hub.SetMonoMsForTest(1000 + 60001);
+  Feed(hub, 7, Order("E", "2330", Side::kBuy, 10000, 10000));  // == A fields, but window elapsed
+  CHECK(backend.submits.size() == 4);
+  hub.Stop();
+
+  // Disabled (0): two identical submits both route.
+  StubBackend backend2;
+  Sink sink2;
+  OrderHub hub2(&backend2, sink2.Fn());  // dup_order_window_ms defaults to 0
+  CHECK(hub2.Start());
+  Feed(hub2, 7, Order("x1", "2330", Side::kBuy, 10000, 10000));
+  Feed(hub2, 7, Order("x2", "2330", Side::kBuy, 10000, 10000));
+  CHECK(backend2.submits.size() == 2);
+  hub2.Stop();
+}
+
 }  // namespace
 
 int main() {
@@ -433,6 +479,7 @@ int main() {
   TestSelfMatch();
   TestCancelsNeverBlocked();
   TestMaxOrderSize();
+  TestDuplicateOrder();
 
   if (g_failures == 0) {
     std::printf("test_hub_risk_gate: OK\n");
