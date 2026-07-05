@@ -10,11 +10,13 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <thread>
 
+#include "blacklist.h"
 #include "dashboard_metrics.h"
 #include "engine.h"
 #include "event_sink.h"
@@ -78,6 +80,7 @@ int main(int argc, char** argv) {
   std::string path;
   bool flag_check = false, flag_quotes = false, flag_live = false, assume_yes = false;
   bool ignore_window = false;
+  bool ignore_blacklist = false;
   int quotes_secs = 30;
   long override_budget = 0;
   for (int i = 1; i < argc; ++i) {
@@ -94,6 +97,8 @@ int main(int argc, char** argv) {
       assume_yes = true;
     } else if (a == "--ignore-window") {
       ignore_window = true;
+    } else if (a == "--ignore-blacklist") {
+      ignore_blacklist = true;
     } else if (a == "--budget" && i + 1 < argc) {
       override_budget = std::atol(argv[++i]);
     } else if (!a.empty() && a[0] != '-') {
@@ -103,7 +108,7 @@ int main(int argc, char** argv) {
   if (path.empty()) {
     std::fprintf(stderr,
                  "usage: kairos_scenario_trader <scenario.toml> [--check|--quotes [s]|--live] "
-                 "[--budget n] [--ignore-window] [--yes]\n");
+                 "[--budget n] [--ignore-window] [--ignore-blacklist] [--yes]\n");
     return 1;
   }
 
@@ -122,6 +127,35 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "scenario invalid:\n");
     for (const auto& e : errs) std::fprintf(stderr, "  - %s\n", e.c_str());
     return 1;
+  }
+
+  {
+    BlacklistConfig bl_cfg;
+    bl_cfg.path = scenario.blacklist_path;
+    bl_cfg.max_stale_days = scenario.blacklist_max_stale_days;
+    bl_cfg.block_disposal = scenario.blacklist_block_disposal;
+    bl_cfg.block_attention = scenario.blacklist_block_attention;
+    bl_cfg.block_margin_suspension = scenario.blacklist_block_margin_suspension;
+    bl_cfg.block_sell_first = scenario.blacklist_block_sell_first;
+    std::string bl_path = ResolveBlacklistPath(bl_cfg.path);
+    BlacklistGateOutcome outcome =
+        EvaluateBlacklistGate(bl_path, bl_cfg, scenario.symbol, std::time(nullptr));
+    if (outcome.has_warning) {
+      std::fprintf(stderr, "WARNING: %s\n", outcome.message.c_str());
+    }
+    if (outcome.result == BlacklistGateResult::kRefuse) {
+      if (BlacklistOverride(ignore_blacklist, assume_yes)) {
+        std::fprintf(stderr, "*** BLACKLIST GATE OVERRIDDEN (--ignore-blacklist --yes) ***\n%s\n",
+                     outcome.message.c_str());
+      } else {
+        std::fprintf(stderr, "REFUSING TO TRADE: %s\n", outcome.message.c_str());
+        if (ignore_blacklist && !assume_yes)
+          std::fprintf(stderr, "(--ignore-blacklist also requires --yes to override)\n");
+        return 1;
+      }
+    } else {
+      std::printf("%s\n", outcome.message.c_str());
+    }
   }
 
   std::signal(SIGINT, OnSig);

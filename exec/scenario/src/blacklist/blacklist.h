@@ -53,6 +53,37 @@ class Blacklist {
   size_t count_ = 0;
 };
 
+// suspension has no field: it ALWAYS blocks and cannot be disabled.
+struct BlacklistConfig {
+  std::string path;
+  int max_stale_days = 4;
+  bool block_disposal = true;
+  bool block_attention = false;
+  bool block_margin_suspension = true;
+  bool block_sell_first = true;
+};
+
+// Precedence: config_path (if non-empty) > env KAIROS_BLACKLIST_CSV > lab default.
+std::string ResolveBlacklistPath(const std::string& config_path);
+
+bool BlacklistCategoryBlocks(const BlacklistConfig& cfg, BlacklistCategory c);
+
+// The only bypass: deliberate double opt-in (--ignore-blacklist AND --yes).
+bool BlacklistOverride(bool ignore_blacklist, bool assume_yes);
+
+enum class BlacklistGateResult { kAllow, kRefuse };
+
+struct BlacklistGateOutcome {
+  BlacklistGateResult result = BlacklistGateResult::kRefuse;
+  std::string message;
+  bool has_warning = false;
+};
+
+// Fail-closed evaluation: any doubt (missing/unreadable/stale/malformed file, or
+// the symbol under a blocking category) yields kRefuse with a clear reason.
+BlacklistGateOutcome EvaluateBlacklistGate(const std::string& path, const BlacklistConfig& cfg,
+                                           const std::string& symbol, std::time_t now);
+
 }  // namespace kairos::exec
 
 #endif  // KAIROS_EXEC_BLACKLIST_H_

@@ -1,11 +1,21 @@
 #include "blacklist.h"
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <format>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 
 namespace kairos::exec {
+
+namespace {
+constexpr char kDefaultBlacklistPath[] = "/home/coder/kairos-lab/data/blacklist/current.csv";
+constexpr long kSecondsPerDay = 86400;
+}  // namespace
 
 const char* BlacklistCategoryName(BlacklistCategory c) {
   switch (c) {
@@ -163,6 +173,112 @@ std::vector<BlacklistEntry> Blacklist::Lookup(const std::string& symbol) const {
   auto it = by_symbol_.find(NormalizeSymbol(symbol));
   if (it == by_symbol_.end()) return {};
   return it->second;
+}
+
+std::string ResolveBlacklistPath(const std::string& config_path) {
+  if (!config_path.empty()) return config_path;
+  const char* env = std::getenv("KAIROS_BLACKLIST_CSV");
+  if (env != nullptr && env[0] != '\0') return env;
+  return kDefaultBlacklistPath;
+}
+
+bool BlacklistCategoryBlocks(const BlacklistConfig& cfg, BlacklistCategory c) {
+  switch (c) {
+    case BlacklistCategory::kSuspension:
+      return true;
+    case BlacklistCategory::kDisposal:
+      return cfg.block_disposal;
+    case BlacklistCategory::kAttention:
+      return cfg.block_attention;
+    case BlacklistCategory::kMarginSuspension:
+      return cfg.block_margin_suspension;
+    case BlacklistCategory::kSellFirst:
+      return cfg.block_sell_first;
+  }
+  return true;
+}
+
+bool BlacklistOverride(bool ignore_blacklist, bool assume_yes) {
+  return ignore_blacklist && assume_yes;
+}
+
+namespace {
+std::string DescribeEntry(const BlacklistEntry& e) {
+  std::string dates;
+  if (!e.start_date.empty() || !e.end_date.empty()) {
+    dates = std::format(" [{} .. {}]", e.start_date.empty() ? "?" : e.start_date,
+                        e.end_date.empty() ? "?" : e.end_date);
+  }
+  return std::format("{} ({}){}: {}", e.symbol, BlacklistCategoryName(e.category), dates, e.note);
+}
+}  // namespace
+
+BlacklistGateOutcome EvaluateBlacklistGate(const std::string& path, const BlacklistConfig& cfg,
+                                           const std::string& symbol, std::time_t now) {
+  struct stat st;
+  if (::stat(path.c_str(), &st) != 0) {
+    return {BlacklistGateResult::kRefuse,
+            std::format("blacklist file not found or inaccessible: {}", path), false};
+  }
+  if (!S_ISREG(st.st_mode)) {
+    return {BlacklistGateResult::kRefuse,
+            std::format("blacklist path is not a regular file: {}", path), false};
+  }
+
+  long age_days = (static_cast<long>(now) - static_cast<long>(st.st_mtime)) / kSecondsPerDay;
+  if (age_days > cfg.max_stale_days) {
+    return {BlacklistGateResult::kRefuse,
+            std::format("blacklist is stale: {} days old > {} day threshold ({})", age_days,
+                        cfg.max_stale_days, path),
+            false};
+  }
+
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return {BlacklistGateResult::kRefuse, std::format("cannot read blacklist file: {}", path),
+            false};
+  }
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  if (in.bad()) {
+    return {BlacklistGateResult::kRefuse, std::format("error reading blacklist file: {}", path),
+            false};
+  }
+
+  Blacklist bl;
+  try {
+    bl = Blacklist::Parse(ss.str());
+  } catch (const std::exception& e) {
+    return {BlacklistGateResult::kRefuse,
+            std::format("blacklist parse failed ({}): {}", path, e.what()), false};
+  }
+
+  std::vector<BlacklistEntry> entries = bl.Lookup(symbol);
+  std::vector<BlacklistEntry> blocking;
+  std::vector<BlacklistEntry> warn;
+  for (const auto& e : entries) {
+    if (BlacklistCategoryBlocks(cfg, e.category)) {
+      blocking.push_back(e);
+    } else {
+      warn.push_back(e);
+    }
+  }
+
+  if (!blocking.empty()) {
+    std::string msg = std::format("symbol {} is blacklisted:", NormalizeSymbol(symbol));
+    for (const auto& e : blocking) msg += "\n  - " + DescribeEntry(e);
+    return {BlacklistGateResult::kRefuse, msg, false};
+  }
+  if (!warn.empty()) {
+    std::string msg = std::format("symbol {} has non-blocking restrictions (proceeding):",
+                                  NormalizeSymbol(symbol));
+    for (const auto& e : warn) msg += "\n  - " + DescribeEntry(e);
+    return {BlacklistGateResult::kAllow, msg, true};
+  }
+  return {BlacklistGateResult::kAllow,
+          std::format("blacklist OK ({} restrictions loaded; {} clear) from {}", bl.size(),
+                      NormalizeSymbol(symbol), path),
+          false};
 }
 
 }  // namespace kairos::exec

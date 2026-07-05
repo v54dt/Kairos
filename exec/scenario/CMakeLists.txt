@@ -133,7 +133,7 @@ target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
 target_link_libraries(kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_notify
-                                                     kairos_uds)
+                                                     kairos_uds kairos_blacklist)
 
 add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live

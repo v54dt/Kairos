@@ -200,6 +200,15 @@ Scenario LoadScenario(const std::string& path) {
   // [journal]
   s.journal_dir = t["journal"]["dir"].value_or<std::string>("");
 
+  // [blacklist]
+  s.blacklist_path = t["blacklist"]["path"].value_or<std::string>("");
+  s.blacklist_max_stale_days = t["blacklist"]["max_stale_days"].value_or<int>(4);
+  s.blacklist_block_disposal = t["blacklist"]["block_disposal"].value_or<bool>(true);
+  s.blacklist_block_attention = t["blacklist"]["block_attention"].value_or<bool>(false);
+  s.blacklist_block_margin_suspension =
+      t["blacklist"]["block_margin_suspension"].value_or<bool>(true);
+  s.blacklist_block_sell_first = t["blacklist"]["block_sell_first"].value_or<bool>(true);
+
   // [mode]
   s.live = t["mode"]["live"].value_or<bool>(false);
 
@@ -237,6 +246,7 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
   if (s.peg_level < 1 || s.peg_level > 5) errs.push_back("pricing.peg_level must be 1..5");
   if (s.window_start_hhmm >= s.window_end_hhmm)
     errs.push_back("window.start_time must be before window.end_time");
+  if (s.blacklist_max_stale_days < 1) errs.push_back("blacklist.max_stale_days must be >= 1");
   if (s.notify.enabled && (s.notify.base_url.empty() || s.notify.topic.empty()))
     errs.push_back("notify.enabled but notify.base_url/topic is empty");
   if (s.dashboard.enabled && s.dashboard.api_url.empty())
