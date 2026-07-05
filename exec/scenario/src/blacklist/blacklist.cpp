@@ -225,8 +225,15 @@ BlacklistGateOutcome EvaluateBlacklistGate(const std::string& path, const Blackl
             std::format("blacklist path is not a regular file: {}", path), false};
   }
 
-  long age_days = (static_cast<long>(now) - static_cast<long>(st.st_mtime)) / kSecondsPerDay;
-  if (age_days > cfg.max_stale_days) {
+  long age_seconds = static_cast<long>(now) - static_cast<long>(st.st_mtime);
+  if (age_seconds < 0) {
+    return {BlacklistGateResult::kRefuse,
+            std::format("blacklist mtime is {} s in the future (clock anomaly): {}", -age_seconds,
+                        path),
+            false};
+  }
+  if (age_seconds > static_cast<long>(cfg.max_stale_days) * kSecondsPerDay) {
+    long age_days = (age_seconds + kSecondsPerDay - 1) / kSecondsPerDay;
     return {BlacklistGateResult::kRefuse,
             std::format("blacklist is stale: {} days old > {} day threshold ({})", age_days,
                         cfg.max_stale_days, path),

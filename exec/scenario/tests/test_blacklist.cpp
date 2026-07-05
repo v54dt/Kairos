@@ -184,6 +184,11 @@ static void TestGate() {
   GateRefuses(stale, cfg, "2330", stale_now);
   // ...and the same file within the window allows.
   GateAllows(stale, cfg, "2330", Mtime(stale) + cfg.max_stale_days * 86400);
+  // FAIL-CLOSED: no sub-day slack past the threshold (age just over the limit refuses).
+  GateRefuses(stale, cfg, "2330", Mtime(stale) + cfg.max_stale_days * 86400 + 1);
+  GateRefuses(stale, cfg, "2330", Mtime(stale) + (cfg.max_stale_days * 86400 + 86400 / 2));
+  // FAIL-CLOSED: mtime in the future (clock set back / future-dated file) refuses.
+  GateRefuses(stale, cfg, "2330", Mtime(stale) - 86400);
 
   // empty-but-valid (header only) allows (distinct from missing).
   std::string empty = WriteTemp("empty", kHeader);
