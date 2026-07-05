@@ -49,10 +49,21 @@ class SimOrderBackend : public OrderBackend {
   void Finalize();
 
  private:
+  void ApplyBookLocked(const std::string& symbol, const TopOfBook& book);
+  void ApplyTradeLocked(const std::string& symbol, const Trade& trade);
+  void FlushPendingBookLocked();
+
   std::mutex mu_;
   FillEngine engine_;
   std::int64_t last_ts_us_ = 0;
   bool connected_ = false;
+  // In-process paper defers each post-trade depth Quote (the concords feed emits it
+  // BEFORE the paired Trade) until after that Trade, so the queue model sees the
+  // trade-then-book order its no-double-count reconciliation requires. Only the
+  // OnMarket* hooks buffer; offline replay via OnBook/OnTrade applies immediately.
+  TopOfBook pending_book_;
+  std::string pending_book_symbol_;
+  bool has_pending_book_ = false;
 };
 
 }  // namespace kairos::exec

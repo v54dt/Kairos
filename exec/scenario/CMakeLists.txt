@@ -194,6 +194,10 @@ add_executable(test_queue_sim_paper tests/test_queue_sim_paper.cpp)
 target_link_libraries(test_queue_sim_paper PRIVATE kairos_sim_backend)
 add_test(NAME test_queue_sim_paper COMMAND test_queue_sim_paper)
 
+add_executable(test_b8_ordering tests/test_b8_ordering.cpp)
+target_link_libraries(test_b8_ordering PRIVATE kairos_sim_backend)
+add_test(NAME test_b8_ordering COMMAND test_b8_ordering)
+
 add_executable(test_sim_hub_server tests/test_sim_hub_server.cpp)
 target_link_libraries(test_sim_hub_server PRIVATE kairos_sim_backend kairos_order_hub_server
                                                   kairos_order_codec)
