@@ -30,8 +30,8 @@ use kairos_core::replay::marker::effective_stack_dir;
 use kairos_core::sim::cli::{self, Opts};
 use kairos_core::sim::paths::SimPaths;
 use kairos_core::sim::proc::{
-    self, ChildGuard, Spawned, locate_bin, read_pidfile, resolve_hubd, sibling_bin_dir, wait_ready,
-    write_pidfile,
+    self, ChildGuard, Ready, Spawned, locate_bin, read_pidfile, resolve_hubd, sibling_bin_dir,
+    wait_ready, write_pidfile,
 };
 use kairos_core::sim::{Command as SimCommand, ensure_isolated};
 use kairos_core::uds::path::{order_socket_path, quote_socket_path};
@@ -114,6 +114,15 @@ fn run(opts: &Opts, replay: Option<(PathBuf, Option<f64>)>) -> anyhow::Result<()
         None => None,
     };
 
+    // Install the signal handler BEFORE spawning any child, so a Ctrl-C/SIGTERM
+    // during bring-up unwinds through ChildGuard::drop instead of killing kairos-sim
+    // by default disposition and orphaning the daemons.
+    let stop = Arc::new(AtomicBool::new(false));
+    ctrlc::set_handler({
+        let stop = stop.clone();
+        move || stop.store(true, Ordering::SeqCst)
+    })?;
+
     let mut guard = ChildGuard::new();
 
     let mut driver = Command::new(&driver_bin);
@@ -136,7 +145,10 @@ fn run(opts: &Opts, replay: Option<(PathBuf, Option<f64>)>) -> anyhow::Result<()
     }
     guard.push(Spawned::start("kairos_sim_hubd", hubd)?);
 
-    wait_ready(&paths, &mut guard, READY_TIMEOUT)?;
+    if wait_ready(&paths, &mut guard, &stop, READY_TIMEOUT)? == Ready::Interrupted {
+        eprintln!("kairos-sim: interrupted during startup; tearing down the sim pipeline");
+        return Ok(());
+    }
 
     if let (Some(bin), Some((source, speed))) = (&replayd_bin, &replay) {
         // No KAIROS_AERON_DIR override: replayd publishes via --aeron-dir=sim, and its
@@ -153,12 +165,6 @@ fn run(opts: &Opts, replay: Option<(PathBuf, Option<f64>)>) -> anyhow::Result<()
 
     write_pidfile(&paths, &guard.pgids())?;
     print_ready(&paths, replay.is_some());
-
-    let stop = Arc::new(AtomicBool::new(false));
-    ctrlc::set_handler({
-        let stop = stop.clone();
-        move || stop.store(true, Ordering::SeqCst)
-    })?;
 
     while !stop.load(Ordering::Relaxed) {
         let dead = guard.exited();

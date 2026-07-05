@@ -5,6 +5,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child as StdChild, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::sim::paths::SimPaths;
@@ -167,16 +168,30 @@ pub fn resolve_hubd(override_path: Option<&str>, current_exe: &Path) -> anyhow::
     )
 }
 
+/// Outcome of `wait_ready`: the pipeline came up, or a signal was observed during
+/// bring-up (the caller must tear down without proceeding).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ready {
+    Up,
+    Interrupted,
+}
+
 /// Block until the sim pipeline is attachable — the driver's `cnc.dat` and both
 /// sockets exist — or the timeout elapses. Errors if any child has already died.
+/// Returns `Ready::Interrupted` if `stop` is set (a signal arrived during bring-up)
+/// so the caller unwinds and the `ChildGuard` reaps every child.
 pub fn wait_ready(
     paths: &SimPaths,
     guard: &mut ChildGuard,
+    stop: &AtomicBool,
     timeout: Duration,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Ready> {
     let cnc = Path::new(&paths.aeron_dir).join(CNC_FILE);
     let deadline = Instant::now() + timeout;
     loop {
+        if stop.load(Ordering::Relaxed) {
+            return Ok(Ready::Interrupted);
+        }
         let dead = guard.exited();
         if !dead.is_empty() {
             anyhow::bail!("sim daemon(s) exited during startup: {}", dead.join(", "));
@@ -185,7 +200,7 @@ pub fn wait_ready(
             && Path::new(&paths.quote_sock).exists()
             && Path::new(&paths.order_sock).exists()
         {
-            return Ok(());
+            return Ok(Ready::Up);
         }
         if Instant::now() >= deadline {
             anyhow::bail!(
