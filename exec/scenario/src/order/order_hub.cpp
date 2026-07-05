@@ -123,6 +123,9 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         reject = "invalid order fields";
       } else if (live != routes_.end() && !live->second.closed) {
         reject = "duplicate live order id";
+      } else if (risk_.max_order_shares > 0 && o.shares > risk_.max_order_shares) {
+        reject = "order size " + std::to_string(o.shares) + " exceeds max " +
+                 std::to_string(risk_.max_order_shares);
       } else if (std::int64_t n = static_cast<std::int64_t>(o.price) * o.shares;
                  risk_.max_account_notional_cents > 0 &&
                  account_day_realized_cents_ + account_open_notional_cents_ + n >

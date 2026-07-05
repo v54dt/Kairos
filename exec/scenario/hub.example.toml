@@ -27,6 +27,10 @@ pfx_password = ""
 # self_match_protection = true            # reject a submit that would cross this account's
 #                                         # own open opposite-side order (證交法 155-1-5)
 #
+# Fat-finger pre-trade guards (SEC 15c3-5 style). Counts/ms/percent, not TWD.
+# Each 0/absent = that guard disabled; with all three 0 the gate is unchanged.
+# max_order_shares = 0                     # (c) per-submit share/lot hard cap
+#
 # Admin halt kill switch (no config key): create the sentinel file
 #   $KAIROS_HUB_HALT, else $XDG_RUNTIME_DIR/kairos-hub-halt
 # to reject all new submits immediately; unlink it to resume. Cancels keep

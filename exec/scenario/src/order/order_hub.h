@@ -35,6 +35,7 @@ class OrderHub {
     int max_open_orders_per_client = 0;
     long max_open_notional_per_client_cents = 0;
     bool self_match_protection = true;
+    long max_order_shares = 0;  // per-submit share hard cap; 0 = disabled
     std::string halt_file_path;
   };
 

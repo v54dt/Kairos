@@ -72,6 +72,8 @@ int main(int argc, char** argv) {
     risk.max_open_notional_per_client_cents =
         t["risk"]["max_open_notional_per_client_twd"].value<long>().value_or(0) * 100;
     risk.self_match_protection = t["risk"]["self_match_protection"].value<bool>().value_or(true);
+    // Fat-finger guards: counts/ms/percent, not TWD, so parsed without the *100.
+    risk.max_order_shares = t["risk"]["max_order_shares"].value<long>().value_or(0);
     risk.halt_file_path = HubHaltPath();  // sentinel a TUI creates/unlinks to halt/resume
   } catch (const toml::parse_error& e) {
     std::fprintf(stderr, "kairos-order-hub: bad config %s: %s\n", path.c_str(),

@@ -392,6 +392,34 @@ void TestCancelsNeverBlocked() {
   hub.Stop();
 }
 
+// ---- max order size (c) ------------------------------------------------
+
+void TestMaxOrderSize() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_order_shares = 1000;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  Feed(hub, 7, Order("s1", "2330", Side::kBuy, 10000, 1000));  // at cap -> routes
+  CHECK(backend.submits.size() == 1);
+  Feed(hub, 7, Order("s2", "2330", Side::kBuy, 10000, 1001));  // over cap -> reject
+  CHECK(backend.submits.size() == 1);                          // not forwarded
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+  CHECK(sink.Last().ack.error_message.find("exceeds max") != std::string::npos);
+  hub.Stop();
+
+  // Disabled (0): a huge share count within kMaxTwStockShares routes.
+  StubBackend backend2;
+  Sink sink2;
+  OrderHub hub2(&backend2, sink2.Fn());  // max_order_shares defaults to 0
+  CHECK(hub2.Start());
+  Feed(hub2, 7, Order("big", "2330", Side::kBuy, 10000, 2000000));
+  CHECK(backend2.submits.size() == 1);
+  hub2.Stop();
+}
+
 }  // namespace
 
 int main() {
@@ -404,6 +432,7 @@ int main() {
   TestHaltFile();
   TestSelfMatch();
   TestCancelsNeverBlocked();
+  TestMaxOrderSize();
 
   if (g_failures == 0) {
     std::printf("test_hub_risk_gate: OK\n");
