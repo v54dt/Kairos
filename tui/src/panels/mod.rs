@@ -1,6 +1,7 @@
 mod book;
 mod data;
 mod feed;
+mod fills;
 mod journal;
 mod recorder;
 mod risk;
@@ -22,6 +23,7 @@ pub(crate) use journal::DrillView;
 
 const JOURNAL_HEIGHT: u16 = 14;
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
     snap: &Snapshot,
@@ -30,6 +32,7 @@ pub fn render(
     halt: &HaltUi,
     service: &ServiceUi,
     scenario: &ScenarioUi,
+    fills_sel: usize,
 ) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -51,6 +54,7 @@ pub fn render(
         ),
         Tab::Risk => risk::render(frame, outer[1], &snap.scenarios.hub, &snap.blacklist, halt),
         Tab::Data => data::render(frame, outer[1], snap),
+        Tab::Fills => fills::render(frame, outer[1], &snap.fills, &snap.fills_date, fills_sel),
     }
 }
 
@@ -117,6 +121,8 @@ fn tab_bar(tab: Tab) -> Paragraph<'static> {
             " 5 Data & Events ",
             if tab == Tab::Data { active } else { idle },
         ),
+        Span::raw(" "),
+        Span::styled(" 6 Fills ", if tab == Tab::Fills { active } else { idle }),
         Span::raw("   "),
         Span::styled(
             "[Tab] switch  [q] quit",

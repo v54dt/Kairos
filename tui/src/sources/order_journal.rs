@@ -182,6 +182,150 @@ pub fn merge(scenarios: Vec<ScenarioJournal>, hub: Option<HubReport>) -> Scenari
     ScenariosView { scenarios, hub }
 }
 
+/// One individual fill (never aggregated) for the "today's fills" panel.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fill {
+    pub t: i64,       // event time, micros
+    pub stem: String, // journal file stem, e.g. "2330-Buy-20260705"
+    pub buy: bool,    // side derived from the signed shares (>0 = BUY)
+    pub shares: i64,  // absolute shares
+    pub price: i64,   // Cents
+}
+
+impl Fill {
+    /// The symbol segment of the journal file stem, for the detail's scenario
+    /// column.
+    pub fn symbol(&self) -> String {
+        split_stem(&self.stem).0
+    }
+}
+
+/// Every fill line in one journal file as its own row (torn/zero-share lines
+/// skipped). Order preserved as written.
+pub fn fills_in_file(stem: &str, text: &str) -> Vec<Fill> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if let Some(Event::Fill { shares, price, t }) = parse_journal_line(line)
+            && shares != 0
+        {
+            out.push(Fill {
+                t,
+                stem: stem.to_string(),
+                buy: shares > 0,
+                shares: shares.abs(),
+                price,
+            });
+        }
+    }
+    out
+}
+
+/// Scan `dir` for today's journal files and return every fill as a flat list,
+/// sorted by time ascending (newest at the bottom). Missing dir => empty.
+pub fn scan_fills(dir: &Path, date: &str) -> Vec<Fill> {
+    let suffix = format!("-{date}.jsonl");
+    let mut out = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.ends_with(&suffix) {
+            continue;
+        }
+        let stem = name.trim_end_matches(".jsonl").to_string();
+        if let Ok(text) = std::fs::read_to_string(entry.path()) {
+            out.extend(fills_in_file(&stem, &text));
+        }
+    }
+    out.sort_by(|a, b| a.t.cmp(&b.t).then_with(|| a.stem.cmp(&b.stem)));
+    out
+}
+
+/// TW fee/tax model, mirroring `exec/scenario/src/market/tw_fees.h`. Amounts in
+/// TWD are whole units (無條件捨去 / floor), converted to cents for accounting.
+#[derive(Clone, Debug)]
+pub struct FeeParams {
+    pub base_rate: f64,               // brokerage base rate (0.001425)
+    pub discount: f64,                // broker discount multiplier (<=1.0)
+    pub min_fee_roundlot_cents: i128, // round-lot minimum fee (20 TWD)
+    pub sell_tax_rate: f64,           // securities transaction tax (0.003)
+}
+
+impl Default for FeeParams {
+    fn default() -> Self {
+        FeeParams {
+            base_rate: 0.001425,
+            discount: 1.0,
+            min_fee_roundlot_cents: 2000,
+            sell_tax_rate: 0.003,
+        }
+    }
+}
+
+/// Brokerage fee (cents) for one fill: floor(notional_twd * base_rate *
+/// discount) in whole TWD, floored to the round-lot minimum.
+fn fee_cents(notional_cents: i128, p: &FeeParams) -> i128 {
+    let value = notional_cents as f64 / 100.0;
+    let raw_twd = (value * p.base_rate * p.discount).floor() as i128;
+    (raw_twd * 100).max(p.min_fee_roundlot_cents)
+}
+
+/// Securities transaction tax (cents) for one SELL fill: floor(notional_twd *
+/// sell_tax_rate) in whole TWD.
+fn sell_tax_cents(notional_cents: i128, p: &FeeParams) -> i128 {
+    let value = notional_cents as f64 / 100.0;
+    (value * p.sell_tax_rate).floor() as i128 * 100
+}
+
+/// Estimated TW settlement over today's fills. All fields are cents; the
+/// payable/receivable/net getters derive the T+2 交割 figures.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Settlement {
+    pub buy_notional_cents: i128,
+    pub buy_fee_cents: i128,
+    pub sell_notional_cents: i128,
+    pub sell_fee_cents: i128,
+    pub sell_tax_cents: i128,
+}
+
+impl Settlement {
+    /// 買進 交割應付 (cash out), a negative number.
+    pub fn payable_cents(&self) -> i128 {
+        -(self.buy_notional_cents + self.buy_fee_cents)
+    }
+
+    /// 賣出 交割應收 (cash in), a positive number.
+    pub fn receivable_cents(&self) -> i128 {
+        self.sell_notional_cents - self.sell_fee_cents - self.sell_tax_cents
+    }
+
+    /// 淨交割金額 (net, T+2) = 應收 - 應付.
+    pub fn net_cents(&self) -> i128 {
+        self.receivable_cents() + self.payable_cents()
+    }
+}
+
+/// Aggregate the settlement figures over a fill list. Fee/tax are charged per
+/// fill (min fee applies to each round-lot fill).
+pub fn settle(fills: &[Fill], p: &FeeParams) -> Settlement {
+    let mut s = Settlement::default();
+    for f in fills {
+        let notional = f.shares as i128 * f.price as i128;
+        if f.buy {
+            s.buy_notional_cents += notional;
+            s.buy_fee_cents += fee_cents(notional, p);
+        } else {
+            s.sell_notional_cents += notional;
+            s.sell_fee_cents += fee_cents(notional, p);
+            s.sell_tax_cents += sell_tax_cents(notional, p);
+        }
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +447,116 @@ mod tests {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         // 2026-07-05 is day 20639 since the Unix epoch.
         assert_eq!(civil_from_days(20639), (2026, 7, 5));
+    }
+
+    #[test]
+    fn fills_one_row_per_fill_with_side_from_sign() {
+        let text = "\
+{\"t\":10,\"type\":\"ack\",\"id\":\"k1-1\",\"ok\":1}
+{\"t\":20,\"type\":\"fill\",\"id\":\"k1-1\",\"shares\":3000,\"price\":58500}
+{\"t\":30,\"type\":\"fill\",\"id\":\"k1-2\",\"shares\":-1000,\"price\":41250}
+{\"t\":40,\"type\":\"fill\",\"id\":\"k1-3\",\"shares\":0,\"price\":100}
+{\"t\":50,\"type\":\"fill\",\"id\":\"k1-4\",\"shares\":200"; // torn: skipped
+        let fills = fills_in_file("2330-Buy-20260705", text);
+        assert_eq!(fills.len(), 2, "zero-share and torn lines are dropped");
+        assert!(fills[0].buy);
+        assert_eq!(fills[0].shares, 3000);
+        assert_eq!(fills[0].price, 58500);
+        assert_eq!(fills[0].symbol(), "2330");
+        assert!(!fills[1].buy, "negative shares => SELL");
+        assert_eq!(fills[1].shares, 1000);
+    }
+
+    fn buy(shares: i64, price: i64) -> Fill {
+        Fill {
+            t: 0,
+            stem: "2330-Buy-20260705".to_string(),
+            buy: true,
+            shares,
+            price,
+        }
+    }
+
+    fn sell(shares: i64, price: i64) -> Fill {
+        Fill {
+            t: 0,
+            stem: "2327-Sell-20260705".to_string(),
+            buy: false,
+            shares,
+            price,
+        }
+    }
+
+    #[test]
+    fn settlement_buy_and_sell_exact() {
+        // BUY 3,000 @585.00: notional 1,755,000 TWD; fee floor(1,755,000*0.001425)
+        //   = floor(2500.875) = 2,500 TWD.
+        // SELL 1,000 @412.50: notional 412,500 TWD; fee floor(587.8125)=587;
+        //   tax floor(412,500*0.003)=floor(1237.5)=1,237 TWD.
+        let s = settle(
+            &[buy(3000, 58500), sell(1000, 41250)],
+            &FeeParams::default(),
+        );
+        assert_eq!(s.buy_notional_cents, 175_500_000);
+        assert_eq!(s.buy_fee_cents, 250_000);
+        assert_eq!(s.sell_notional_cents, 41_250_000);
+        assert_eq!(s.sell_fee_cents, 58_700);
+        assert_eq!(s.sell_tax_cents, 123_700);
+        // 交割應付 = -(1,755,000 + 2,500) = -1,757,500 TWD.
+        assert_eq!(s.payable_cents(), -175_750_000);
+        // 交割應收 = 412,500 - 587 - 1,237 = 410,676 TWD.
+        assert_eq!(s.receivable_cents(), 41_067_600);
+        // 淨 = 410,676 - 1,757,500 = -1,346,824 TWD.
+        assert_eq!(s.net_cents(), -134_682_400);
+    }
+
+    #[test]
+    fn settlement_min_fee_floor_per_roundlot() {
+        // BUY 100 @10.00: notional 1,000 TWD; raw fee floor(1.425)=1 TWD, floored
+        // up to the 20 TWD round-lot minimum.
+        let s = settle(&[buy(100, 1000)], &FeeParams::default());
+        assert_eq!(s.buy_fee_cents, 2000);
+    }
+
+    #[test]
+    fn settlement_buy_only_has_no_receivable() {
+        let s = settle(&[buy(3000, 58500)], &FeeParams::default());
+        assert_eq!(s.sell_notional_cents, 0);
+        assert_eq!(s.receivable_cents(), 0);
+        assert_eq!(s.payable_cents(), -175_750_000);
+        assert_eq!(s.net_cents(), -175_750_000);
+    }
+
+    #[test]
+    fn settlement_sell_only_has_no_payable() {
+        let s = settle(&[sell(1000, 41250)], &FeeParams::default());
+        assert_eq!(s.buy_notional_cents, 0);
+        assert_eq!(s.payable_cents(), 0);
+        assert_eq!(s.receivable_cents(), 41_067_600);
+        assert_eq!(s.net_cents(), 41_067_600);
+    }
+
+    #[test]
+    fn scan_fills_sorted_ascending_by_time() {
+        let dir = std::env::temp_dir().join(format!("kairos-fills-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let date = today_tw();
+        std::fs::write(
+            dir.join(format!("2330-Buy-{date}.jsonl")),
+            "{\"t\":200,\"type\":\"fill\",\"id\":\"a\",\"shares\":3000,\"price\":58500}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("2327-Sell-{date}.jsonl")),
+            "{\"t\":100,\"type\":\"fill\",\"id\":\"b\",\"shares\":-1000,\"price\":41250}\n",
+        )
+        .unwrap();
+        let fills = scan_fills(&dir, &date);
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[0].t, 100, "earliest fill first");
+        assert!(!fills[0].buy);
+        assert_eq!(fills[1].t, 200);
+        assert!(fills[1].buy);
     }
 }

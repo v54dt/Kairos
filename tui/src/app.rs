@@ -11,7 +11,7 @@ use crate::sources::blacklist::{self, BlacklistFreshness};
 use crate::sources::feed::FeedState;
 use crate::sources::hub_status::{self, HubReport};
 use crate::sources::journald::{self, LogLine};
-use crate::sources::order_journal::{self, ScenarioJournal, ScenariosView};
+use crate::sources::order_journal::{self, Fill, ScenarioJournal, ScenariosView};
 use crate::sources::recorder::{self, RecorderStats};
 use crate::sources::scenario_ctl::{self, RunningTrader, ScenarioToml};
 use crate::sources::systemd::{self, UnitStatus};
@@ -53,6 +53,7 @@ pub enum Tab {
     Scenarios,
     Risk,
     Data,
+    Fills,
 }
 
 impl Tab {
@@ -63,6 +64,7 @@ impl Tab {
             '3' => Tab::Scenarios,
             '4' => Tab::Risk,
             '5' => Tab::Data,
+            '6' => Tab::Fills,
             _ => self,
         }
     }
@@ -73,7 +75,8 @@ impl Tab {
             Tab::FeedsBooks => Tab::Scenarios,
             Tab::Scenarios => Tab::Risk,
             Tab::Risk => Tab::Data,
-            Tab::Data => Tab::Overview,
+            Tab::Data => Tab::Fills,
+            Tab::Fills => Tab::Overview,
         }
     }
 }
@@ -99,7 +102,7 @@ Options:
   -h, --help             Print this help and exit
   -V, --version          Print version and exit
 
-Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Events  [Tab] switch  [q] quit
+Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Events  [6] Fills  [Tab] switch  [q] quit
 Overview tab: [up/down] select unit  [Enter] open its journal  [r]estart [s]tart [x]stop [f] reset-failed  [S]/[X] kairos.target up/down
               trading units require a typed confirm (the unit name); research crons and reset-failed are y/N
               in the journal view: [up/down][PgUp/PgDn] scroll (newest at bottom)  [Esc] close
@@ -107,7 +110,8 @@ Scenarios tab: [up/down] select  [PgUp/PgDn] page  [s]tart a stopped row  [x]sto
                a green dot marks running, red marks stopped; a running trader started elsewhere is still listed and stoppable
                starting a LIVE toml needs a typed confirm (the toml stem); a PAPER start and any stop are y/N
                the trader binary defaults to <scenario-dir>/build/kairos_scenario_trader (--trader-bin or KAIROS_SCENARIO_TRADER override)
-Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)";
+Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)
+Fills tab: [up/down] select  [PgUp/PgDn] page  today's per-fill detail + estimated T+2 settlement";
 
 pub fn version_line() -> String {
     format!("kairos-top {}", env!("CARGO_PKG_VERSION"))
@@ -200,6 +204,8 @@ pub struct Shared {
     pub disk_free: Mutex<Option<u64>>,
     pub hub: Mutex<Option<HubReport>>,
     pub scenarios: Mutex<Vec<ScenarioJournal>>,
+    pub fills: Mutex<Vec<Fill>>,
+    pub fills_date: Mutex<String>,
     pub available: Mutex<(Vec<ScenarioToml>, usize)>,
     pub running: Mutex<Vec<RunningTrader>>,
     pub timers: Mutex<Fetch<Vec<TimerEntry>>>,
@@ -216,6 +222,8 @@ pub struct Snapshot {
     pub disk_free: Option<u64>,
     pub feed: FeedState,
     pub scenarios: ScenariosView,
+    pub fills: Vec<Fill>,
+    pub fills_date: String,
     pub available: (Vec<ScenarioToml>, usize),
     pub running: Vec<RunningTrader>,
     pub timers: Fetch<Vec<TimerEntry>>,
@@ -238,6 +246,8 @@ impl Snapshot {
             disk_free: *shared.disk_free.lock().unwrap(),
             feed: feed.lock().unwrap().clone(),
             scenarios,
+            fills: shared.fills.lock().unwrap().clone(),
+            fills_date: shared.fills_date.lock().unwrap().clone(),
             available: shared.available.lock().unwrap().clone(),
             running: shared.running.lock().unwrap().clone(),
             timers: shared.timers.lock().unwrap().clone(),
@@ -313,6 +323,8 @@ pub async fn refresh_scenarios(shared: Arc<Shared>, journal_dir: PathBuf) {
         tick.tick().await;
         let date = order_journal::today_tw();
         *shared.scenarios.lock().unwrap() = order_journal::scan_journal(&journal_dir, &date);
+        *shared.fills.lock().unwrap() = order_journal::scan_fills(&journal_dir, &date);
+        *shared.fills_date.lock().unwrap() = date;
     }
 }
 
@@ -429,6 +441,7 @@ mod tests {
         assert_eq!(Tab::Scenarios.select('2'), Tab::FeedsBooks);
         assert_eq!(Tab::Overview.select('4'), Tab::Risk);
         assert_eq!(Tab::Overview.select('5'), Tab::Data);
+        assert_eq!(Tab::Overview.select('6'), Tab::Fills);
         assert_eq!(Tab::Data.select('1'), Tab::Overview);
     }
 
@@ -439,6 +452,7 @@ mod tests {
         assert_eq!(Tab::Scenarios.select('z'), Tab::Scenarios);
         assert_eq!(Tab::Risk.select('z'), Tab::Risk);
         assert_eq!(Tab::Data.select('z'), Tab::Data);
+        assert_eq!(Tab::Fills.select('z'), Tab::Fills);
     }
 
     #[test]
@@ -447,7 +461,8 @@ mod tests {
         assert_eq!(Tab::FeedsBooks.next(), Tab::Scenarios);
         assert_eq!(Tab::Scenarios.next(), Tab::Risk);
         assert_eq!(Tab::Risk.next(), Tab::Data);
-        assert_eq!(Tab::Data.next(), Tab::Overview);
+        assert_eq!(Tab::Data.next(), Tab::Fills);
+        assert_eq!(Tab::Fills.next(), Tab::Overview);
     }
 
     #[test]
