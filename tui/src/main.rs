@@ -5,15 +5,17 @@ mod sources;
 mod terminal;
 
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 
 use app::{Cli, Config, Shared, Snapshot, Tab};
 use sources::feed::{self, FeedState};
+use sources::halt::{self, HaltAction, HaltKey, HaltPrompt, HaltUi};
 
 const TICK: Duration = Duration::from_millis(750);
 
@@ -61,8 +63,10 @@ async fn main() -> Result<()> {
     tokio::spawn(app::refresh_archive(shared.clone(), kqr_dir));
     tokio::spawn(app::refresh_events(shared.clone()));
 
+    let halt_path = halt::hub_halt_path();
+
     let mut term = terminal::enter()?;
-    let res = run(&mut term, &shared, &feed_state, &cfg).await;
+    let res = run(&mut term, &shared, &feed_state, &cfg, halt_path).await;
     terminal::restore()?;
     res
 }
@@ -72,27 +76,95 @@ async fn run(
     shared: &Shared,
     feed_state: &Mutex<FeedState>,
     cfg: &Config,
+    halt_path: Option<PathBuf>,
 ) -> Result<()> {
     let mut events = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
     let mut tab = Tab::Overview;
+    let mut prompt = HaltPrompt::Idle;
+    let mut halt_result: Option<String> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 let snap = Snapshot::capture(shared, feed_state);
-                term.draw(|frame| panels::render(frame, &snap, cfg, tab))?;
+                let ui = halt_ui(&halt_path, &prompt, &halt_result);
+                term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui))?;
             }
             Some(Ok(event)) = events.next() => {
-                if should_quit(&event) {
+                let key = match &event {
+                    Event::Key(k) if k.kind == KeyEventKind::Press => *k,
+                    _ => continue,
+                };
+                let mut redraw = false;
+                if prompt.is_active() {
+                    if let Some(hk) = to_halt_key(&key) {
+                        let (next, action) = halt::handle_key(&prompt, hk);
+                        prompt = next;
+                        if let Some(a) = action {
+                            halt_result = Some(apply_halt(a, halt_path.as_deref()));
+                        }
+                        redraw = true;
+                    }
+                } else if tab == Tab::Risk
+                    && matches!(key.code, KeyCode::Char('k') | KeyCode::Char('c'))
+                {
+                    if halt_path.is_some() {
+                        prompt = match key.code {
+                            KeyCode::Char('k') => HaltPrompt::ConfirmHalt(String::new()),
+                            _ => HaltPrompt::ConfirmResume(String::new()),
+                        };
+                    } else {
+                        halt_result = Some("kill switch unavailable (no runtime dir)".to_string());
+                    }
+                    redraw = true;
+                } else if should_quit(&event) {
                     return Ok(());
-                }
-                if let Some(next) = tab_for(&event, tab) {
+                } else if let Some(next) = tab_for(&event, tab) {
                     tab = next;
+                    redraw = true;
+                }
+                if redraw {
                     let snap = Snapshot::capture(shared, feed_state);
-                    term.draw(|frame| panels::render(frame, &snap, cfg, tab))?;
+                    let ui = halt_ui(&halt_path, &prompt, &halt_result);
+                    term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui))?;
                 }
             }
         }
+    }
+}
+
+fn halt_ui(path: &Option<PathBuf>, prompt: &HaltPrompt, last_result: &Option<String>) -> HaltUi {
+    HaltUi {
+        path: path.clone(),
+        prompt: prompt.clone(),
+        last_result: last_result.clone(),
+    }
+}
+
+fn to_halt_key(key: &KeyEvent) -> Option<HaltKey> {
+    match key.code {
+        KeyCode::Char(c) => Some(HaltKey::Char(c)),
+        KeyCode::Enter => Some(HaltKey::Enter),
+        KeyCode::Backspace => Some(HaltKey::Backspace),
+        KeyCode::Esc => Some(HaltKey::Cancel),
+        _ => None,
+    }
+}
+
+fn apply_halt(action: HaltAction, path: Option<&Path>) -> String {
+    let path = match path {
+        Some(p) => p,
+        None => return "kill switch unavailable (no runtime dir)".to_string(),
+    };
+    match action {
+        HaltAction::Arm => match halt::arm_halt(path) {
+            Ok(()) => "adminHalt armed".to_string(),
+            Err(e) => format!("arm failed: {e}"),
+        },
+        HaltAction::Clear => match halt::clear_halt(path) {
+            Ok(()) => "halt cleared".to_string(),
+            Err(e) => format!("clear failed: {e}"),
+        },
     }
 }
 

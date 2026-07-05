@@ -93,7 +93,8 @@ Options:
   -h, --help             Print this help and exit
   -V, --version          Print version and exit
 
-Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Events  [Tab] switch  [q] quit";
+Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Events  [Tab] switch  [q] quit
+Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)";
 
 pub fn version_line() -> String {
     format!("kairos-top {}", env!("CARGO_PKG_VERSION"))

@@ -8,6 +8,7 @@ use crate::app::Fetch;
 use crate::format::format_price;
 use crate::sources::age::format_age;
 use crate::sources::blacklist::BlacklistFreshness;
+use crate::sources::halt::{HaltPrompt, HaltUi};
 use crate::sources::hub_status::HubReport;
 
 const MAX_BLACKLIST_ROWS: usize = 8;
@@ -209,18 +210,63 @@ fn blacklist_lines(state: &Fetch<BlacklistFreshness>) -> Vec<Line<'static>> {
     lines
 }
 
+fn kill_switch_lines(halt: &HaltUi) -> Vec<Line<'static>> {
+    if halt.path.is_none() {
+        return vec![Line::from(Span::styled(
+            "kill switch unavailable (no runtime dir)",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        ))];
+    }
+    let cyan = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut lines = match &halt.prompt {
+        HaltPrompt::Idle => vec![Line::from(vec![
+            Span::styled("[k]", cyan),
+            Span::raw(" HALT (arm adminHalt)   "),
+            Span::styled("[c]", cyan),
+            Span::raw(" clear (resume)"),
+        ])],
+        HaltPrompt::ConfirmHalt(buf) => vec![
+            Line::from(Span::styled(
+                "type HALT and Enter to arm adminHalt   [Esc] cancel",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
+        ],
+        HaltPrompt::ConfirmResume(buf) => vec![
+            Line::from(Span::styled(
+                "type RESUME and Enter to clear the halt   [Esc] cancel",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
+        ],
+    };
+    if let Some(msg) = &halt.last_result {
+        lines.push(Line::from(Span::styled(msg.clone(), dim)));
+    }
+    lines
+}
+
 pub fn render(
     frame: &mut Frame,
     area: Rect,
     hub: &Option<HubReport>,
     blacklist: &Fetch<BlacklistFreshness>,
+    halt: &HaltUi,
 ) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Length(3),
-            Constraint::Length(6),
+            Constraint::Length(5),
+            Constraint::Length(5),
             Constraint::Min(0),
         ])
         .split(area);
@@ -228,17 +274,22 @@ pub fn render(
     frame.render_widget(halt_banner(hub), rows[0]);
     render_account(frame, rows[1], hub);
     frame.render_widget(
+        Paragraph::new(kill_switch_lines(halt))
+            .block(Block::default().title("kill switch").borders(Borders::ALL)),
+        rows[2],
+    );
+    frame.render_widget(
         Paragraph::new(open_order_lines(hub)).block(
             Block::default()
                 .title("open orders (by scenario)")
                 .borders(Borders::ALL),
         ),
-        rows[2],
+        rows[3],
     );
     frame.render_widget(
         Paragraph::new(blacklist_lines(blacklist))
             .block(Block::default().title("blacklist").borders(Borders::ALL)),
-        rows[3],
+        rows[4],
     );
 }
 
@@ -264,9 +315,21 @@ mod tests {
         }
     }
 
+    fn enabled_halt() -> HaltUi {
+        HaltUi {
+            path: Some(std::path::PathBuf::from("/run/user/1001/kairos-hub-halt")),
+            prompt: HaltPrompt::Idle,
+            last_result: None,
+        }
+    }
+
     fn draw(hub: &Option<HubReport>, bl: &Fetch<BlacklistFreshness>) {
+        draw_with(hub, bl, &enabled_halt());
+    }
+
+    fn draw_with(hub: &Option<HubReport>, bl: &Fetch<BlacklistFreshness>, halt: &HaltUi) {
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| render(f, f.area(), hub, bl)).unwrap();
+        term.draw(|f| render(f, f.area(), hub, bl, halt)).unwrap();
     }
 
     #[test]
@@ -321,5 +384,28 @@ mod tests {
             ..Default::default()
         };
         draw(&Some(report(false, 1, 0, 0, 1)), &Fetch::Ok(bl));
+    }
+
+    #[test]
+    fn renders_kill_switch_prompts() {
+        let hub = Some(report(false, 50_000_000, 0, 0, 1));
+        let bl = Fetch::Ok(BlacklistFreshness::default());
+        let mut halt = enabled_halt();
+        halt.prompt = HaltPrompt::ConfirmHalt("HAL".to_string());
+        draw_with(&hub, &bl, &halt);
+        halt.prompt = HaltPrompt::ConfirmResume("RES".to_string());
+        halt.last_result = Some("halt cleared".to_string());
+        draw_with(&hub, &bl, &halt);
+    }
+
+    #[test]
+    fn renders_kill_switch_disabled() {
+        let hub = Some(report(false, 50_000_000, 0, 0, 1));
+        let halt = HaltUi {
+            path: None,
+            prompt: HaltPrompt::Idle,
+            last_result: None,
+        };
+        draw_with(&hub, &Fetch::Ok(BlacklistFreshness::default()), &halt);
     }
 }
