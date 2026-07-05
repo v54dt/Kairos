@@ -51,8 +51,8 @@ class StubBackend : public OrderBackend {
 };
 
 void Submit(OrderHub& hub, int client, const std::string& id, long shares) {
-  OrderSubmitMsg s{id,    "2330", Market::kTse, Board::kOddLot, Side::kBuy, "Cash",
-                   "ROD", 92500,  shares};
+  OrderSubmitMsg s{id,     "2330", Market::kTse, Board::kOddLot, Side::kBuy,
+                   "Cash", "ROD",  92500,        shares};
   auto bytes = EncodeOrderSubmit(s);
   hub.OnClientMessage(client, bytes.data(), bytes.size());
 }
