@@ -6,20 +6,24 @@ mod terminal;
 
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use futures::StreamExt;
 
-use app::{Cli, Config, Shared, Snapshot, Tab};
+use app::{Cli, Config, Fetch, Shared, Snapshot, Tab};
+use panels::DrillView;
 use sources::feed::{self, FeedState};
 use sources::halt::{self, HaltAction, HaltKey, HaltPrompt, HaltUi};
+use sources::journald::{self, LogLine};
 use sources::scenario_ctl::{self, Focus, ScenarioAction, ScenarioPrompt, ScenarioUi};
 use sources::service::{self, ConfirmPrompt, ServiceUi, Verb};
 
 const TICK: Duration = Duration::from_millis(750);
+const DRILL_REFRESH: Duration = Duration::from_secs(2);
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -94,14 +98,26 @@ async fn run(
     let mut confirm = ConfirmPrompt::Idle;
     let action_result: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let mut scen = ScenState::default();
+    let mut drill: Option<JournalDrill> = None;
     loop {
         tokio::select! {
             _ = tick.tick() => {
+                if let Some(d) = drill.as_mut()
+                    && d.last_spawn.elapsed() >= DRILL_REFRESH
+                {
+                    d.spawn_tail();
+                }
                 let snap = Snapshot::capture(shared, feed_state);
                 let ui = halt_ui(&halt_path, &prompt, &halt_result);
                 let service = service_ui(sel, &confirm, &action_result);
                 let scenario = scen.ui();
-                term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario))?;
+                let drill_view = drill.as_ref().map(|d| d.view());
+                term.draw(|frame| {
+                    panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario);
+                    if tab == Tab::Overview && let Some(v) = &drill_view {
+                        panels::render_drill_overlay(frame, v);
+                    }
+                })?;
             }
             Some(Ok(event)) = events.next() => {
                 let key = match &event {
@@ -144,7 +160,17 @@ async fn run(
                         redraw = true;
                     }
                 } else if let Some(ok) = overview_key(tab, &key) {
-                    apply_overview_key(ok, &mut sel, &mut confirm, &snap);
+                    if ok == OverviewKey::OpenJournal {
+                        if let Some(unit) =
+                            open_target(&prompt, &confirm, &scen.confirm, &snap, sel)
+                        {
+                            let mut d = JournalDrill::new(unit);
+                            d.spawn_tail();
+                            drill = Some(d);
+                        }
+                    } else {
+                        apply_overview_key(ok, &mut sel, &mut confirm, &snap);
+                    }
                     redraw = true;
                 } else if let Some(sk) = scenarios_key(tab, &key) {
                     apply_scenarios_key(sk, &snap, &mut scen);
@@ -169,13 +195,97 @@ async fn run(
                     let ui = halt_ui(&halt_path, &prompt, &halt_result);
                     let service = service_ui(sel, &confirm, &action_result);
                     let scenario = scen.ui();
+                    let drill_view = drill.as_ref().map(|d| d.view());
                     term.draw(|frame| {
-                        panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario)
+                        panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario);
+                        if tab == Tab::Overview && let Some(v) = &drill_view {
+                            panels::render_drill_overlay(frame, v);
+                        }
                     })?;
                 }
             }
         }
     }
+}
+
+/// Read-only journal drill-down over the Overview tab. Holds the target unit
+/// name captured at open time (so a later selection change never retargets an
+/// in-flight fetch), the scroll position as lines-from-bottom, and the shared
+/// fetch slot written by a background journalctl task.
+struct JournalDrill {
+    unit: String,
+    rev: usize,
+    state: Arc<Mutex<Fetch<Vec<LogLine>>>>,
+    inflight: Arc<AtomicBool>,
+    last_spawn: Instant,
+}
+
+impl JournalDrill {
+    fn new(unit: String) -> Self {
+        JournalDrill {
+            unit,
+            rev: 0,
+            state: Arc::new(Mutex::new(Fetch::Loading)),
+            inflight: Arc::new(AtomicBool::new(false)),
+            last_spawn: Instant::now(),
+        }
+    }
+
+    /// Spawn a one-shot journalctl tail into the shared slot. Guarded by the
+    /// inflight flag so slow calls never stack and never block the render loop.
+    fn spawn_tail(&mut self) {
+        if self.inflight.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.last_spawn = Instant::now();
+        let unit = self.unit.clone();
+        let state = self.state.clone();
+        let inflight = self.inflight.clone();
+        tokio::spawn(async move {
+            let r = match journald::tail_unit(&unit, app::DRILLDOWN_TAIL).await {
+                Ok(v) => Fetch::Ok(v),
+                Err(e) => Fetch::Err(e.to_string()),
+            };
+            *state.lock().unwrap() = r;
+            inflight.store(false, Ordering::SeqCst);
+        });
+    }
+
+    fn view(&self) -> DrillView {
+        DrillView {
+            unit: self.unit.clone(),
+            state: self.state.lock().unwrap().clone(),
+            rev: self.rev,
+        }
+    }
+}
+
+/// Resolve the Overview-selected unit name, mirroring `apply_overview_key`'s
+/// clamp: only a non-empty `Fetch::Ok` yields a target; anything else is None.
+fn selected_unit(snap: &Snapshot, sel: usize) -> Option<String> {
+    match &snap.systemd {
+        Fetch::Ok(units) if !units.is_empty() => {
+            let idx = sel.min(units.len() - 1);
+            Some(units[idx].unit.clone())
+        }
+        _ => None,
+    }
+}
+
+/// The unit a drill-down would open on, or None if any confirm/prompt is active
+/// (so a drill and the K6 service-confirm can never both be opened) or no unit
+/// is selectable.
+fn open_target(
+    prompt: &HaltPrompt,
+    confirm: &ConfirmPrompt,
+    scen_confirm: &ScenarioPrompt,
+    snap: &Snapshot,
+    sel: usize,
+) -> Option<String> {
+    if prompt.is_active() || confirm.is_active() || scen_confirm.is_active() {
+        return None;
+    }
+    selected_unit(snap, sel)
 }
 
 fn service_ui(
@@ -310,6 +420,7 @@ enum OverviewKey {
     Act(Verb),
     TargetStart,
     TargetStop,
+    OpenJournal,
 }
 
 // Ctrl+C carries CONTROL and must reach should_quit, not an Overview action.
@@ -326,6 +437,7 @@ fn overview_key(tab: Tab, key: &KeyEvent) -> Option<OverviewKey> {
         KeyCode::Char('f') => Some(OverviewKey::Act(Verb::ResetFailed)),
         KeyCode::Char('S') => Some(OverviewKey::TargetStart),
         KeyCode::Char('X') => Some(OverviewKey::TargetStop),
+        KeyCode::Enter => Some(OverviewKey::OpenJournal),
         _ => None,
     }
 }
@@ -358,6 +470,7 @@ fn apply_overview_key(
         OverviewKey::TargetStart | OverviewKey::TargetStop => {
             *confirm = target_confirm(&ok);
         }
+        OverviewKey::OpenJournal => {}
     }
 }
 
@@ -648,6 +761,98 @@ mod tests {
             ScenarioPrompt::Idle,
             "stop must not cross-fire"
         );
+    }
+
+    use sources::systemd::UnitStatus;
+
+    fn unit(name: &str) -> UnitStatus {
+        UnitStatus {
+            unit: name.to_string(),
+            load: "loaded".to_string(),
+            active: "failed".to_string(),
+            sub: "failed".to_string(),
+            description: "desc".to_string(),
+        }
+    }
+
+    fn systemd_snapshot(systemd: Fetch<Vec<UnitStatus>>) -> Snapshot {
+        let mut snap = scen_snapshot(vec![], vec![]);
+        snap.systemd = systemd;
+        snap
+    }
+
+    #[test]
+    fn selected_unit_targets_the_selected_name() {
+        let units = vec![
+            unit("kairos-core.service"),
+            unit("kairos-orderhub.service"),
+            unit("kairos-driver.service"),
+        ];
+        let snap = systemd_snapshot(Fetch::Ok(units));
+        assert_eq!(
+            selected_unit(&snap, 1),
+            Some("kairos-orderhub.service".to_string())
+        );
+        // A cursor past the end clamps to the last unit, never panics.
+        assert_eq!(
+            selected_unit(&snap, 99),
+            Some("kairos-driver.service".to_string())
+        );
+    }
+
+    #[test]
+    fn selected_unit_none_when_not_ready() {
+        assert_eq!(selected_unit(&systemd_snapshot(Fetch::Loading), 0), None);
+        assert_eq!(
+            selected_unit(&systemd_snapshot(Fetch::Err("boom".to_string())), 0),
+            None
+        );
+        assert_eq!(selected_unit(&systemd_snapshot(Fetch::Ok(vec![])), 0), None);
+    }
+
+    #[test]
+    fn open_snapshots_owned_unit_name() {
+        let units = vec![unit("kairos-core.service"), unit("kairos-orderhub.service")];
+        let snap = systemd_snapshot(Fetch::Ok(units));
+        let target = selected_unit(&snap, 1).unwrap();
+        let d = JournalDrill::new(target);
+        assert_eq!(d.unit, "kairos-orderhub.service");
+        assert_eq!(d.rev, 0);
+    }
+
+    #[test]
+    fn open_refused_while_a_confirm_is_active() {
+        let units = vec![unit("kairos-orderhub.service")];
+        let snap = systemd_snapshot(Fetch::Ok(units));
+        let active = service::begin(Verb::Restart, "kairos-orderhub.service");
+        assert!(active.is_active());
+        assert_eq!(
+            open_target(&HaltPrompt::Idle, &active, &ScenarioPrompt::Idle, &snap, 0),
+            None
+        );
+        // With every prompt idle the selected unit is offered.
+        assert_eq!(
+            open_target(
+                &HaltPrompt::Idle,
+                &ConfirmPrompt::Idle,
+                &ScenarioPrompt::Idle,
+                &snap,
+                0
+            ),
+            Some("kairos-orderhub.service".to_string())
+        );
+    }
+
+    #[test]
+    fn enter_opens_journal_only_on_overview() {
+        let enter = press(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            overview_key(Tab::Overview, &enter),
+            Some(OverviewKey::OpenJournal)
+        );
+        assert_eq!(overview_key(Tab::Risk, &enter), None);
+        let ctrl_enter = press(KeyCode::Enter, KeyModifiers::CONTROL);
+        assert_eq!(overview_key(Tab::Overview, &ctrl_enter), None);
     }
 
     #[test]
