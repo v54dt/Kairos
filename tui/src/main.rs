@@ -159,7 +159,8 @@ async fn run(
                         let (next, action) = scenario_ctl::handle_key(&scen.confirm, hk);
                         scen.confirm = next;
                         if let Some(a) = action {
-                            *scen.result.lock().unwrap() = Some(apply_scenario_action(a));
+                            *scen.result.lock().unwrap() =
+                                Some(apply_scenario_action(a, &cfg.trader_bin));
                         }
                         redraw = true;
                     }
@@ -354,10 +355,13 @@ impl ScenState {
 
 /// Run a confirmed scenario action. START spawns a detached trader; STOP sends a
 /// validated SIGINT. Both surface a human result line; neither panics.
-fn apply_scenario_action(action: ScenarioAction) -> String {
+fn apply_scenario_action(action: ScenarioAction, trader_bin: &Path) -> String {
     match action {
         ScenarioAction::Start { toml, launch } => {
-            let bin = scenario_ctl::trader_bin();
+            if let Err(e) = scenario_ctl::ensure_trader_bin(trader_bin) {
+                return e;
+            }
+            let bin = trader_bin.to_string_lossy();
             let argv = scenario_ctl::build_spawn_argv(&bin, &toml, launch);
             match scenario_ctl::spawn_detached(&argv) {
                 Ok(m) | Err(m) => m,
