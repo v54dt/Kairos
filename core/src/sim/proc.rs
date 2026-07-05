@@ -215,6 +215,32 @@ pub fn wait_ready(
     }
 }
 
+/// Expand replay sources into a concrete KQR file list for kairos-replayd: a
+/// directory contributes its `*.kqr` files (sorted for a stable merge tie-break); a
+/// file passes through. Errors on a missing path or a directory holding no KQR file,
+/// so `kairos-sim replay <FILE|DIR>...` matches what it advertises.
+pub fn resolve_kqr_sources(sources: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    for src in sources {
+        let meta = std::fs::metadata(src)
+            .map_err(|e| anyhow::anyhow!("cannot access replay source {}: {e}", src.display()))?;
+        if meta.is_dir() {
+            let mut found: Vec<PathBuf> = std::fs::read_dir(src)?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("kqr"))
+                .collect();
+            found.sort();
+            if found.is_empty() {
+                anyhow::bail!("no .kqr files in directory {}", src.display());
+            }
+            files.extend(found);
+        } else {
+            files.push(src.clone());
+        }
+    }
+    Ok(files)
+}
+
 /// Sidecar file (outside the Aeron dir, so the driver's delete-on-start never
 /// clears it) recording the running sim's process groups for `down`/`status`.
 pub fn pidfile_path(paths: &SimPaths) -> PathBuf {
@@ -321,6 +347,34 @@ mod tests {
         );
         remove_pidfile(&paths);
         assert!(read_pidfile(&paths).is_empty());
+    }
+
+    #[test]
+    fn resolve_kqr_sources_expands_dir_and_passes_files() {
+        let dir = tmp("kqr-src");
+        for f in ["s1002-x.kqr", "s1001-x.kqr", "notes.txt"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        // A directory expands to its sorted *.kqr files, skipping non-KQR entries.
+        let got = resolve_kqr_sources(std::slice::from_ref(&dir)).unwrap();
+        assert_eq!(
+            got,
+            vec![dir.join("s1001-x.kqr"), dir.join("s1002-x.kqr")]
+        );
+        // An explicit file passes through; multiple sources concatenate in order.
+        let file = dir.join("s1001-x.kqr");
+        let got = resolve_kqr_sources(&[file.clone(), dir.clone()]).unwrap();
+        assert_eq!(
+            got,
+            vec![file.clone(), dir.join("s1001-x.kqr"), dir.join("s1002-x.kqr")]
+        );
+    }
+
+    #[test]
+    fn resolve_kqr_sources_errors_on_missing_and_empty_dir() {
+        let dir = tmp("kqr-empty");
+        assert!(resolve_kqr_sources(std::slice::from_ref(&dir)).is_err());
+        assert!(resolve_kqr_sources(&[dir.join("nope.kqr")]).is_err());
     }
 
     #[test]

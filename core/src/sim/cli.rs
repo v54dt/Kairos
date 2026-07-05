@@ -21,7 +21,7 @@ pub struct Opts {
 pub enum Command {
     Up(Opts),
     Replay {
-        source: PathBuf,
+        sources: Vec<PathBuf>,
         speed: Option<f64>,
         opts: Opts,
     },
@@ -31,7 +31,7 @@ pub enum Command {
 
 const USAGE: &str = "usage: kairos-sim <up|replay|down|status> [options]\n  \
     up                         bring up an isolated sim pipeline (needs --symbols)\n  \
-    replay <FILE|DIR>          bring up + replay a KQR tape (needs --symbols)\n  \
+    replay <FILE|DIR>...       bring up + replay KQR tapes/dirs (needs --symbols)\n  \
     down                       tear down any running sim children (idempotent)\n  \
     status                     report what is up\n\
     options:\n  \
@@ -59,7 +59,7 @@ pub fn parse(args: &[String]) -> anyhow::Result<Command> {
         .ok_or_else(|| anyhow::anyhow!("no subcommand\n{USAGE}"))?;
 
     let mut opts = Opts::default();
-    let mut source: Option<PathBuf> = None;
+    let mut sources: Vec<PathBuf> = Vec::new();
     let mut speed: Option<f64> = None;
 
     let mut it = rest.iter();
@@ -80,12 +80,7 @@ pub fn parse(args: &[String]) -> anyhow::Result<Command> {
             "--bin-dir" => opts.bin_dir = Some(next()?),
             "-h" | "--help" => anyhow::bail!("{USAGE}"),
             _ if a.starts_with('-') => anyhow::bail!("unknown flag {a}\n{USAGE}"),
-            _ => {
-                if source.is_some() {
-                    anyhow::bail!("unexpected extra argument {a}");
-                }
-                source = Some(PathBuf::from(a));
-            }
+            _ => sources.push(PathBuf::from(a)),
         }
     }
 
@@ -102,9 +97,11 @@ pub fn parse(args: &[String]) -> anyhow::Result<Command> {
         }
         "replay" => {
             require_symbols(&opts)?;
-            let source = source.ok_or_else(|| anyhow::anyhow!("replay needs a KQR file or dir"))?;
+            if sources.is_empty() {
+                anyhow::bail!("replay needs at least one KQR file or dir");
+            }
             Ok(Command::Replay {
-                source,
+                sources,
                 speed,
                 opts,
             })
@@ -157,13 +154,27 @@ mod tests {
         .unwrap();
         match c {
             Command::Replay {
-                source,
+                sources,
                 speed,
                 opts,
             } => {
-                assert_eq!(source, PathBuf::from("/tmp/t.kqr"));
+                assert_eq!(sources, vec![PathBuf::from("/tmp/t.kqr")]);
                 assert_eq!(speed, Some(60.0));
                 assert_eq!(opts.symbols, vec!["2330"]);
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn replay_accepts_multiple_sources() {
+        let c = parse(&v(&["replay", "/a.kqr", "/b.kqr", "--symbols", "2330"])).unwrap();
+        match c {
+            Command::Replay { sources, .. } => {
+                assert_eq!(
+                    sources,
+                    vec![PathBuf::from("/a.kqr"), PathBuf::from("/b.kqr")]
+                );
             }
             _ => panic!("wrong command"),
         }

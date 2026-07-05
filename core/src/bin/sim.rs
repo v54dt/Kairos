@@ -46,10 +46,10 @@ fn main() -> anyhow::Result<()> {
     match cmd {
         SimCommand::Up(opts) => run(&opts, None)?,
         SimCommand::Replay {
-            source,
+            sources,
             speed,
             opts,
-        } => run(&opts, Some((source, speed)))?,
+        } => run(&opts, Some((sources, speed)))?,
         SimCommand::Down(opts) => down(&opts)?,
         SimCommand::Status(opts) => status(&opts)?,
     }
@@ -94,8 +94,14 @@ fn resolve_isolated(opts: &Opts) -> anyhow::Result<SimPaths> {
 /// Bring up the isolated pipeline and (optionally) a replay, then block until a
 /// signal and tear everything down. `replay` is Some((source, speed)) for the
 /// replay subcommand, None for `up`.
-fn run(opts: &Opts, replay: Option<(PathBuf, Option<f64>)>) -> anyhow::Result<()> {
+fn run(opts: &Opts, replay: Option<(Vec<PathBuf>, Option<f64>)>) -> anyhow::Result<()> {
     let paths = resolve_isolated(opts)?;
+    // Resolve replay sources (expanding directories to their KQR files) before any
+    // spawn, so a bad path fails loud without bringing the pipeline up first.
+    let replay = match replay {
+        Some((sources, speed)) => Some((proc::resolve_kqr_sources(&sources)?, speed)),
+        None => None,
+    };
     let exe = std::env::current_exe()?;
     let bin_dir = match &opts.bin_dir {
         Some(d) => PathBuf::from(d),
@@ -150,11 +156,11 @@ fn run(opts: &Opts, replay: Option<(PathBuf, Option<f64>)>) -> anyhow::Result<()
         return Ok(());
     }
 
-    if let (Some(bin), Some((source, speed))) = (&replayd_bin, &replay) {
+    if let (Some(bin), Some((files, speed))) = (&replayd_bin, &replay) {
         // No KAIROS_AERON_DIR override: replayd publishes via --aeron-dir=sim, and its
         // own live-dir guard must keep seeing the real live dir from the inherited env.
         let mut replayd = Command::new(bin);
-        replayd.arg(source).arg("--aeron-dir").arg(&paths.aeron_dir);
+        replayd.args(files).arg("--aeron-dir").arg(&paths.aeron_dir);
         if let Some(n) = speed {
             replayd
                 .args(["--pace", "accel", "--speed"])
