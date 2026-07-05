@@ -12,5 +12,6 @@ pub mod metrics;
 pub mod model;
 pub mod record;
 pub mod replay;
+pub mod sim;
 pub mod subreg;
 pub mod uds;

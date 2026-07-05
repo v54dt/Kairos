@@ -105,7 +105,7 @@ pub fn effective_stack_dir(explicit: Option<&str>) -> Option<String> {
 
 /// The current user name, matching Aeron's `aeron_username()`: `$USER` first, then
 /// the passwd entry for the real uid, then the literal `"default"`.
-fn current_username() -> String {
+pub fn current_username() -> String {
     if let Some(u) = std::env::var("USER").ok().filter(|u| !u.is_empty()) {
         return u;
     }
