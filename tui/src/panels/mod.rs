@@ -15,6 +15,7 @@ use ratatui::widgets::Paragraph;
 
 use crate::app::{Config, Snapshot, Tab};
 use crate::sources::halt::HaltUi;
+use crate::sources::scenario_ctl::ScenarioUi;
 use crate::sources::service::ServiceUi;
 
 const JOURNAL_HEIGHT: u16 = 14;
@@ -26,6 +27,7 @@ pub fn render(
     tab: Tab,
     halt: &HaltUi,
     service: &ServiceUi,
+    scenario: &ScenarioUi,
 ) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -37,7 +39,14 @@ pub fn render(
     match tab {
         Tab::Overview => render_overview(frame, outer[1], snap, cfg, service),
         Tab::FeedsBooks => book::render(frame, outer[1], &snap.feed, cfg),
-        Tab::Scenarios => scenarios::render(frame, outer[1], &snap.scenarios),
+        Tab::Scenarios => scenarios::render(
+            frame,
+            outer[1],
+            &snap.scenarios,
+            &snap.available,
+            &snap.running,
+            scenario,
+        ),
         Tab::Risk => risk::render(frame, outer[1], &snap.scenarios.hub, &snap.blacklist, halt),
         Tab::Data => data::render(frame, outer[1], snap),
     }

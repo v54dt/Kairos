@@ -16,6 +16,7 @@ use futures::StreamExt;
 use app::{Cli, Config, Shared, Snapshot, Tab};
 use sources::feed::{self, FeedState};
 use sources::halt::{self, HaltAction, HaltKey, HaltPrompt, HaltUi};
+use sources::scenario_ctl::ScenarioUi;
 use sources::service::{self, ConfirmPrompt, ServiceUi, Verb};
 
 const TICK: Duration = Duration::from_millis(750);
@@ -98,7 +99,8 @@ async fn run(
                 let snap = Snapshot::capture(shared, feed_state);
                 let ui = halt_ui(&halt_path, &prompt, &halt_result);
                 let service = service_ui(sel, &confirm, &action_result);
-                term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui, &service))?;
+                let scenario = ScenarioUi::default();
+                term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario))?;
             }
             Some(Ok(event)) = events.next() => {
                 let key = match &event {
@@ -153,7 +155,10 @@ async fn run(
                 if redraw {
                     let ui = halt_ui(&halt_path, &prompt, &halt_result);
                     let service = service_ui(sel, &confirm, &action_result);
-                    term.draw(|frame| panels::render(frame, &snap, cfg, tab, &ui, &service))?;
+                    let scenario = ScenarioUi::default();
+                    term.draw(|frame| {
+                        panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario)
+                    })?;
                 }
             }
         }

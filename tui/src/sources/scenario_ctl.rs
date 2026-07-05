@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use crate::sources::halt::HaltKey;
+
 /// One scenario `.toml` discovered on disk, parsed just enough to drive the
 /// start UI: its name/symbol for display and whether it launches LIVE.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -208,6 +210,175 @@ pub fn is_scenario_trader_pid(pid: i32) -> bool {
         .is_some()
 }
 
+/// Which sub-list the Scenarios panel cursor is acting on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Focus {
+    #[default]
+    Available,
+    Running,
+}
+
+impl Focus {
+    pub fn toggle(self) -> Focus {
+        match self {
+            Focus::Available => Focus::Running,
+            Focus::Running => Focus::Available,
+        }
+    }
+}
+
+/// An action authorized by a completed confirmation. `Start` carries the launch
+/// mode captured at confirm time, so a paper confirm can never emit a live start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScenarioAction {
+    Start { toml: PathBuf, launch: Launch },
+    Stop { pid: i32 },
+}
+
+/// Confirmation prompt state. A LIVE start requires typing the toml stem then
+/// Enter (the sole real-money gate for a detached trader); a PAPER start and any
+/// STOP are a single y/N. `Idle` means nothing is pending. Each variant binds the
+/// exact target shown so the operator cannot confirm a different scenario.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum ScenarioPrompt {
+    #[default]
+    Idle,
+    TypedStart {
+        toml: PathBuf,
+        name: String,
+        symbol: String,
+        stem: String,
+        buf: String,
+    },
+    SimpleStart {
+        toml: PathBuf,
+        name: String,
+        symbol: String,
+    },
+    SimpleStop {
+        pid: i32,
+        toml: String,
+        live: bool,
+    },
+}
+
+impl ScenarioPrompt {
+    pub fn is_active(&self) -> bool {
+        !matches!(self, ScenarioPrompt::Idle)
+    }
+}
+
+/// Open a start confirmation for a scenario. Routes through [`classify_launch`]
+/// so a LIVE toml always gets the typed confirm and a PAPER toml the y/N — a
+/// single key can never spawn a live trader.
+pub fn begin_start(s: &ScenarioToml) -> ScenarioPrompt {
+    match classify_launch(s.live) {
+        Launch::Live => ScenarioPrompt::TypedStart {
+            toml: s.path.clone(),
+            name: s.name.clone(),
+            symbol: s.symbol.clone(),
+            stem: toml_stem(&s.path),
+            buf: String::new(),
+        },
+        Launch::Paper => ScenarioPrompt::SimpleStart {
+            toml: s.path.clone(),
+            name: s.name.clone(),
+            symbol: s.symbol.clone(),
+        },
+    }
+}
+
+/// Open a stop confirmation for a running trader. A stop only ever reduces
+/// exposure, so it is always a y/N.
+pub fn begin_stop(t: &RunningTrader) -> ScenarioPrompt {
+    ScenarioPrompt::SimpleStop {
+        pid: t.pid,
+        toml: t.toml.clone(),
+        live: t.live,
+    }
+}
+
+/// Advance the confirm state machine. A typed start fires only on Enter with the
+/// buffer equal to the toml stem; a simple start/stop fires only on 'y'/'Y'.
+/// Anything else, or Cancel (Esc), returns to `Idle` without acting.
+pub fn handle_key(
+    prompt: &ScenarioPrompt,
+    key: HaltKey,
+) -> (ScenarioPrompt, Option<ScenarioAction>) {
+    match prompt {
+        ScenarioPrompt::Idle => (ScenarioPrompt::Idle, None),
+        ScenarioPrompt::TypedStart {
+            toml,
+            name,
+            symbol,
+            stem,
+            buf,
+        } => match key {
+            HaltKey::Cancel => (ScenarioPrompt::Idle, None),
+            HaltKey::Enter => {
+                if buf == stem {
+                    (
+                        ScenarioPrompt::Idle,
+                        Some(ScenarioAction::Start {
+                            toml: toml.clone(),
+                            launch: Launch::Live,
+                        }),
+                    )
+                } else {
+                    (ScenarioPrompt::Idle, None)
+                }
+            }
+            HaltKey::Backspace => {
+                let mut b = buf.clone();
+                b.pop();
+                (rebuild_typed(toml, name, symbol, stem, b), None)
+            }
+            HaltKey::Char(c) => {
+                let mut b = buf.clone();
+                b.push(c);
+                (rebuild_typed(toml, name, symbol, stem, b), None)
+            }
+        },
+        ScenarioPrompt::SimpleStart { toml, .. } => match key {
+            HaltKey::Char('y') | HaltKey::Char('Y') => (
+                ScenarioPrompt::Idle,
+                Some(ScenarioAction::Start {
+                    toml: toml.clone(),
+                    launch: Launch::Paper,
+                }),
+            ),
+            _ => (ScenarioPrompt::Idle, None),
+        },
+        ScenarioPrompt::SimpleStop { pid, .. } => match key {
+            HaltKey::Char('y') | HaltKey::Char('Y') => (
+                ScenarioPrompt::Idle,
+                Some(ScenarioAction::Stop { pid: *pid }),
+            ),
+            _ => (ScenarioPrompt::Idle, None),
+        },
+    }
+}
+
+fn rebuild_typed(toml: &Path, name: &str, symbol: &str, stem: &str, buf: String) -> ScenarioPrompt {
+    ScenarioPrompt::TypedStart {
+        toml: toml.to_path_buf(),
+        name: name.to_string(),
+        symbol: symbol.to_string(),
+        stem: stem.to_string(),
+        buf,
+    }
+}
+
+/// Read-only state the Scenarios panel needs to render process control.
+#[derive(Clone, Debug, Default)]
+pub struct ScenarioUi {
+    pub focus: Focus,
+    pub avail_sel: usize,
+    pub run_sel: usize,
+    pub confirm: ScenarioPrompt,
+    pub last_result: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +531,143 @@ live = false
     fn own_process_is_not_a_trader() {
         // The test binary is not kairos_scenario_trader.
         assert!(!is_scenario_trader_pid(std::process::id() as i32));
+    }
+
+    fn live_scen() -> ScenarioToml {
+        parse_scenario_toml(PathBuf::from("/e/2330.toml"), LIVE_TOML)
+    }
+
+    fn paper_scen() -> ScenarioToml {
+        parse_scenario_toml(PathBuf::from("/e/0050.toml"), PAPER_TOML)
+    }
+
+    fn feed(mut p: ScenarioPrompt, s: &str) -> ScenarioPrompt {
+        for c in s.chars() {
+            p = handle_key(&p, HaltKey::Char(c)).0;
+        }
+        p
+    }
+
+    #[test]
+    fn live_start_is_typed_confirm() {
+        assert!(matches!(
+            begin_start(&live_scen()),
+            ScenarioPrompt::TypedStart { .. }
+        ));
+    }
+
+    #[test]
+    fn paper_start_is_simple_confirm() {
+        assert!(matches!(
+            begin_start(&paper_scen()),
+            ScenarioPrompt::SimpleStart { .. }
+        ));
+    }
+
+    #[test]
+    fn ambiguous_toml_start_is_typed_confirm() {
+        // Missing [mode] => live default => typed confirm (fail-safe).
+        let ambiguous = parse_scenario_toml(PathBuf::from("/e/mystery.toml"), "[scenario]\n");
+        assert!(matches!(
+            begin_start(&ambiguous),
+            ScenarioPrompt::TypedStart { .. }
+        ));
+    }
+
+    #[test]
+    fn typed_start_fires_only_on_stem_and_enter() {
+        let p = feed(begin_start(&live_scen()), "2330");
+        let (next, action) = handle_key(&p, HaltKey::Enter);
+        assert_eq!(
+            action,
+            Some(ScenarioAction::Start {
+                toml: PathBuf::from("/e/2330.toml"),
+                launch: Launch::Live,
+            })
+        );
+        assert_eq!(next, ScenarioPrompt::Idle);
+    }
+
+    #[test]
+    fn typed_start_wrong_buffer_cancels_no_action() {
+        let p = feed(begin_start(&live_scen()), "233");
+        let (next, action) = handle_key(&p, HaltKey::Enter);
+        assert_eq!(action, None);
+        assert_eq!(next, ScenarioPrompt::Idle);
+    }
+
+    #[test]
+    fn typed_start_esc_cancels_no_action() {
+        let p = feed(begin_start(&live_scen()), "2330");
+        let (next, action) = handle_key(&p, HaltKey::Cancel);
+        assert_eq!(action, None);
+        assert_eq!(next, ScenarioPrompt::Idle);
+    }
+
+    #[test]
+    fn typed_start_backspace_edits() {
+        let p = feed(begin_start(&live_scen()), "23X");
+        match handle_key(&p, HaltKey::Backspace).0 {
+            ScenarioPrompt::TypedStart { buf, .. } => assert_eq!(buf, "23"),
+            other => panic!("expected TypedStart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn paper_start_fires_only_on_y() {
+        for c in ['y', 'Y'] {
+            let (next, action) = handle_key(&begin_start(&paper_scen()), HaltKey::Char(c));
+            assert_eq!(
+                action,
+                Some(ScenarioAction::Start {
+                    toml: PathBuf::from("/e/0050.toml"),
+                    launch: Launch::Paper,
+                })
+            );
+            assert_eq!(next, ScenarioPrompt::Idle);
+        }
+        for key in [
+            HaltKey::Char('n'),
+            HaltKey::Char('x'),
+            HaltKey::Enter,
+            HaltKey::Cancel,
+        ] {
+            let (next, action) = handle_key(&begin_start(&paper_scen()), key);
+            assert_eq!(action, None, "{key:?} must not start a paper trader");
+            assert_eq!(next, ScenarioPrompt::Idle);
+        }
+    }
+
+    #[test]
+    fn stop_is_simple_confirm_and_fires_only_on_y() {
+        let t = RunningTrader {
+            pid: 4242,
+            toml: "/e/2330.toml".to_string(),
+            live: true,
+        };
+        assert!(matches!(
+            begin_stop(&t),
+            ScenarioPrompt::SimpleStop { pid: 4242, .. }
+        ));
+        let (next, action) = handle_key(&begin_stop(&t), HaltKey::Char('y'));
+        assert_eq!(action, Some(ScenarioAction::Stop { pid: 4242 }));
+        assert_eq!(next, ScenarioPrompt::Idle);
+        for key in [HaltKey::Char('n'), HaltKey::Enter, HaltKey::Cancel] {
+            let (_, action) = handle_key(&begin_stop(&t), key);
+            assert_eq!(action, None, "{key:?} must not stop");
+        }
+    }
+
+    #[test]
+    fn idle_ignores_keys() {
+        let (next, action) = handle_key(&ScenarioPrompt::Idle, HaltKey::Char('y'));
+        assert_eq!(next, ScenarioPrompt::Idle);
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn focus_toggles() {
+        assert_eq!(Focus::Available.toggle(), Focus::Running);
+        assert_eq!(Focus::Running.toggle(), Focus::Available);
     }
 }
