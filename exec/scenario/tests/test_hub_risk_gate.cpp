@@ -519,6 +519,35 @@ void TestPriceCollar() {
   hub2.Stop();
 }
 
+// ---- collar reference resets at the trading-day boundary ----------------
+
+void TestCollarDayBoundaryReset() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.price_collar_pct = 10;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+  hub.SetTradingDayForTest(20260704);
+
+  // Day N: establish the reference from the account's own fill at 100.00.
+  Feed(hub, 7, Order("d1", "2330", Side::kBuy, 10000, 1000));
+  backend.FireAck("d1", true, "");
+  backend.FireFill("d1", Fill{1000, 10000});
+
+  // Same day: a +20% price is off-band against that reference -> rejected.
+  Feed(hub, 7, Order("gap", "2330", Side::kBuy, 12000, 1000));
+  CHECK(backend.submits.size() == 1);
+  CHECK(sink.Last().kind == OrderMsgKind::kAck && !sink.Last().ack.ok);
+
+  // Day N+1: the reference is cleared at the rollover, so the first order is a
+  // cold start (collar inactive) instead of being wedged by yesterday's fill.
+  hub.SetTradingDayForTest(20260705);
+  Feed(hub, 7, Order("open", "2330", Side::kBuy, 12000, 1000));
+  CHECK(backend.submits.size() == 2);
+  hub.Stop();
+}
+
 // ---- all guards disabled: PR #96 behavior unchanged --------------------
 
 void TestGuardsAllDisabled() {
@@ -602,6 +631,7 @@ int main() {
   TestMaxOrderSize();
   TestDuplicateOrder();
   TestPriceCollar();
+  TestCollarDayBoundaryReset();
   TestGuardsAllDisabled();
   TestCancelsNeverBlockedUnderGuards();
   TestGuardsCombinedFailClosed();

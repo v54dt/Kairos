@@ -157,6 +157,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       if (today != current_trading_day_) {
         current_trading_day_ = today;
         account_day_realized_cents_ = 0;
+        last_fill_price_cents_.clear();  // yesterday's fill is not a valid collar reference today
       }
       long now_ms = risk_.dup_order_window_ms > 0 ? NowMonoMs() : 0;
       // Fail-closed field validation: a doubtful submit is rejected, never forwarded.
