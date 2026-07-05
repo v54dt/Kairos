@@ -61,9 +61,18 @@ ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSi
   quotes_->SetCallback([this, sym](const std::string& s, const TopOfBook& tob) {
     if (s == sym) {
       book_.Update(tob);
+      backend_->OnMarketBook(s, tob, tob.quote_ts_us);  // no-op unless queue-sim paper
       cv_.notify_all();
     }
   });
+  // A trade subscription flips UdsQuoteClient into decoding Trade frames, so it is
+  // registered only for a backend that consumes them (queue-sim paper) — the live
+  // and instant-paper quote paths stay bit-identical.
+  if (backend_->WantsMarketTrades()) {
+    quotes_->SetTradeCallback([this, sym](const std::string& s, const Trade& t) {
+      if (s == sym) backend_->OnMarketTrade(s, t, t.trade_ts_us);
+    });
+  }
   // Restart-safe accounting: replay today's fills so the budget isn't re-bought,
   // then append to the same journal.
   if (!s_.journal_dir.empty()) {

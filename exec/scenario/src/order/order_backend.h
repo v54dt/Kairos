@@ -1,10 +1,12 @@
 #ifndef KAIROS_EXEC_ORDER_BACKEND_H_
 #define KAIROS_EXEC_ORDER_BACKEND_H_
 
+#include <cstdint>
 #include <functional>
 #include <string>
 
 #include "order_codec.h"  // OrderSubmitMsg (the full order spec)
+#include "quote_book.h"   // TopOfBook, Trade (market-event hooks)
 #include "scenario.h"
 #include "tw_market.h"
 
@@ -33,6 +35,17 @@ class OrderBackend {
   // callbacks match even on synchronous fills, and one backend can serve any symbol.
   virtual void Submit(const OrderSubmitMsg& order) = 0;
   virtual void Cancel(const std::string& id) = 0;  // also used to re-peg (cancel + re-place)
+
+  // Optional market-event feed: the engine forwards the exact TopOfBook/Trade
+  // stream the strategy sees so a queue-model backend fills against the same
+  // market. No-ops here, so PaperOrderBackend and HubOrderBackend are unchanged.
+  virtual void OnMarketBook(const std::string& /*symbol*/, const TopOfBook& /*book*/,
+                            std::int64_t /*ts_us*/) {}
+  virtual void OnMarketTrade(const std::string& /*symbol*/, const Trade& /*trade*/,
+                             std::int64_t /*ts_us*/) {}
+  // True only for backends that consume trades; gates the engine's trade
+  // subscription so the live quote client never starts decoding Trade frames.
+  virtual bool WantsMarketTrades() const { return false; }
 
   void SetCallbacks(AckFn ack, FillFn fill, CancelFn cancel, DisconnectFn disconnect = {}) {
     on_ack_ = std::move(ack);

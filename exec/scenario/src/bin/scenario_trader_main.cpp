@@ -1,5 +1,6 @@
 // kairos_scenario_trader <scenario.toml> [mode] [--budget n] [--ignore-window] [--yes]
-//   (default)        PAPER: real quotes, simulated fills, no order socket
+//   (default)        PAPER: real quotes, queue-model simulated fills, no order socket
+//   --paper-instant  PAPER: real quotes, instant full fills (pipeline sanity mode)
 //   --check          offline: print the plan, no connection
 //   --quotes [secs]  quote-only: print the live quote for `secs`, no orders
 //   --live           real orders (requires typing LIVE, or --yes to skip)
@@ -15,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "blacklist.h"
 #include "dashboard_metrics.h"
@@ -24,6 +26,7 @@
 #include "hub_order_backend.h"
 #include "ntfy_dispatcher.h"
 #include "order_backend.h"
+#include "queue_sim_backend.h"
 #include "scenario.h"
 #include "socket_path.h"
 #include "tw_fees.h"
@@ -79,6 +82,7 @@ int RunQuotes(const Scenario& s, int secs) {
 int main(int argc, char** argv) {
   std::string path;
   bool flag_check = false, flag_quotes = false, flag_live = false, assume_yes = false;
+  bool flag_paper_instant = false;
   bool ignore_window = false;
   bool ignore_blacklist = false;
   int quotes_secs = 30;
@@ -93,6 +97,8 @@ int main(int argc, char** argv) {
         quotes_secs = std::atoi(argv[++i]);
     } else if (a == "--live") {
       flag_live = true;
+    } else if (a == "--paper-instant") {
+      flag_paper_instant = true;
     } else if (a == "--yes" || a == "-y") {
       assume_yes = true;
     } else if (a == "--ignore-window") {
@@ -107,7 +113,8 @@ int main(int argc, char** argv) {
   }
   if (path.empty()) {
     std::fprintf(stderr,
-                 "usage: kairos_scenario_trader <scenario.toml> [--check|--quotes [s]|--live] "
+                 "usage: kairos_scenario_trader <scenario.toml> "
+                 "[--check|--quotes [s]|--live|--paper-instant] "
                  "[--budget n] [--ignore-window] [--ignore-blacklist] [--yes]\n");
     return 1;
   }
@@ -175,9 +182,9 @@ int main(int argc, char** argv) {
 
   // --live routes orders through the shared order hub (kairos_order_hubd); the hub
   // holds the account creds and the 1 req/s gate, so the scenario just connects.
-  PaperOrderBackend paper;
-  std::unique_ptr<OrderBackend> live;
-  OrderBackend* backend = &paper;
+  // Default paper = queue-model sim (realistic passive fills); --paper-instant
+  // keeps the old instant-full-fill backend for pipeline sanity checks.
+  std::unique_ptr<OrderBackend> backend_owned;
   if (scenario.live) {
     if (!assume_yes) {
       std::printf("*** LIVE via order hub: %s %s NT$ %ld. Type LIVE to confirm: ",
@@ -190,9 +197,14 @@ int main(int argc, char** argv) {
         return 0;
       }
     }
-    live = std::make_unique<HubOrderBackend>(OrderSocketPath());
-    backend = live.get();
+    backend_owned = std::make_unique<HubOrderBackend>(OrderSocketPath());
+  } else if (flag_paper_instant) {
+    backend_owned = std::make_unique<PaperOrderBackend>();
+  } else {
+    backend_owned = std::make_unique<QueueSimBackend>(FillMode::kProbQueue,
+                                                      std::vector<std::string>{scenario.symbol});
   }
+  OrderBackend* backend = backend_owned.get();
 
   std::unique_ptr<HttpPoster> poster;
   std::unique_ptr<NtfyDispatcher> dispatcher;

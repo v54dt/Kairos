@@ -37,15 +37,33 @@ class SimOrderBackend : public OrderBackend {
   void OnBook(const std::string& symbol, const TopOfBook& book);
   void OnTrade(const std::string& symbol, const Trade& trade);
 
+  // OrderBackend market-event hooks (in-process paper): forward the engine's
+  // stream into the fill model. WantsMarketTrades() opts the engine's trade feed
+  // in so passive fills advance on real trades.
+  void OnMarketBook(const std::string& symbol, const TopOfBook& book, std::int64_t ts_us) override;
+  void OnMarketTrade(const std::string& symbol, const Trade& trade, std::int64_t ts_us) override;
+  bool WantsMarketTrades() const override { return true; }
+
   // Flush pending closing-auction orders at end of tape / shutdown (see
   // FillEngine::Finalize). Safe to call once the market-event stream has ended.
   void Finalize();
 
  private:
+  void ApplyBookLocked(const std::string& symbol, const TopOfBook& book);
+  void ApplyTradeLocked(const std::string& symbol, const Trade& trade);
+  void FlushPendingBookLocked();
+
   std::mutex mu_;
   FillEngine engine_;
   std::int64_t last_ts_us_ = 0;
   bool connected_ = false;
+  // In-process paper defers each post-trade depth Quote (the concords feed emits it
+  // BEFORE the paired Trade) until after that Trade, so the queue model sees the
+  // trade-then-book order its no-double-count reconciliation requires. Only the
+  // OnMarket* hooks buffer; offline replay via OnBook/OnTrade applies immediately.
+  TopOfBook pending_book_;
+  std::string pending_book_symbol_;
+  bool has_pending_book_ = false;
 };
 
 }  // namespace kairos::exec

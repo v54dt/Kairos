@@ -24,12 +24,33 @@ bool SimOrderBackend::Connect() {
   return true;
 }
 
-void SimOrderBackend::Disconnect() { connected_ = false; }
+void SimOrderBackend::Disconnect() {
+  std::lock_guard<std::mutex> lock(mu_);
+  FlushPendingBookLocked();
+  connected_ = false;
+}
 
 bool SimOrderBackend::IsConnected() const { return connected_; }
 
+void SimOrderBackend::ApplyBookLocked(const std::string& symbol, const TopOfBook& book) {
+  if (book.quote_ts_us > last_ts_us_) last_ts_us_ = book.quote_ts_us;
+  engine_.OnBook(symbol, book, book.quote_ts_us);
+}
+
+void SimOrderBackend::ApplyTradeLocked(const std::string& symbol, const Trade& trade) {
+  if (trade.trade_ts_us > last_ts_us_) last_ts_us_ = trade.trade_ts_us;
+  engine_.OnTrade(symbol, trade.price, trade.volume, trade.trade_ts_us, trade.is_trial);
+}
+
+void SimOrderBackend::FlushPendingBookLocked() {
+  if (!has_pending_book_) return;
+  has_pending_book_ = false;
+  ApplyBookLocked(pending_book_symbol_, pending_book_);
+}
+
 void SimOrderBackend::Submit(const OrderSubmitMsg& m) {
   std::lock_guard<std::mutex> lock(mu_);
+  FlushPendingBookLocked();  // queue init needs the latest post-trade depth
   SimOrder o;
   o.id = m.id;
   o.symbol = m.symbol;
@@ -43,23 +64,40 @@ void SimOrderBackend::Submit(const OrderSubmitMsg& m) {
 
 void SimOrderBackend::Cancel(const std::string& id) {
   std::lock_guard<std::mutex> lock(mu_);
+  FlushPendingBookLocked();
   engine_.Cancel(id, last_ts_us_);
 }
 
 void SimOrderBackend::OnBook(const std::string& symbol, const TopOfBook& book) {
   std::lock_guard<std::mutex> lock(mu_);
-  if (book.quote_ts_us > last_ts_us_) last_ts_us_ = book.quote_ts_us;
-  engine_.OnBook(symbol, book, book.quote_ts_us);
+  ApplyBookLocked(symbol, book);
 }
 
 void SimOrderBackend::OnTrade(const std::string& symbol, const Trade& trade) {
   std::lock_guard<std::mutex> lock(mu_);
-  if (trade.trade_ts_us > last_ts_us_) last_ts_us_ = trade.trade_ts_us;
-  engine_.OnTrade(symbol, trade.price, trade.volume, trade.trade_ts_us, trade.is_trial);
+  ApplyTradeLocked(symbol, trade);
+}
+
+void SimOrderBackend::OnMarketBook(const std::string& symbol, const TopOfBook& book,
+                                   std::int64_t /*ts_us*/) {
+  std::lock_guard<std::mutex> lock(mu_);
+  FlushPendingBookLocked();  // a genuine prior book (no trade followed) applies in order
+  if (book.quote_ts_us > last_ts_us_) last_ts_us_ = book.quote_ts_us;
+  pending_book_ = book;
+  pending_book_symbol_ = symbol;
+  has_pending_book_ = true;
+}
+
+void SimOrderBackend::OnMarketTrade(const std::string& symbol, const Trade& trade,
+                                    std::int64_t /*ts_us*/) {
+  std::lock_guard<std::mutex> lock(mu_);
+  ApplyTradeLocked(symbol, trade);  // trade first, then its post-trade depth
+  FlushPendingBookLocked();
 }
 
 void SimOrderBackend::Finalize() {
   std::lock_guard<std::mutex> lock(mu_);
+  FlushPendingBookLocked();
   engine_.Finalize();
 }
 
