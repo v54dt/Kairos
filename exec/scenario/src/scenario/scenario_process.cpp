@@ -133,8 +133,6 @@ void ProcessManager::MonitorLoop(Child* c) {
           std::lock_guard<std::mutex> lock(mu_);
           long now = static_cast<long>(std::time(nullptr));
           c->state = ApplyStdoutLine(c->state, buf, &c->counters, now);
-          if (c->state == ScenarioState::kInWindow || c->state == ScenarioState::kFillRemainder)
-            c->reached_in_window = true;
           std::string reason = ExtractFailureReason(buf);
           if (!reason.empty()) c->last_fail_reason = reason;
           if (buf.rfind("kairos-exec: end - ", 0) == 0) c->saw_end_line = true;
@@ -173,8 +171,9 @@ void ProcessManager::MaybeScheduleRestart(Child* c) {
   // operator stop, or anything during shutdown.
   if (c->state != ScenarioState::kCrashed || c->requested_stop || shutting_down_) return;
   RestartState& rs = restart_[c->name];
+  // Reset only after a full-cooldown run: an instantaneous in-window signal must not.
   auto uptime = std::chrono::steady_clock::now() - c->spawn_time;
-  if (c->reached_in_window || uptime >= policy_.healthy_reset) rs.restart_count = 0;
+  if (uptime >= policy_.healthy_reset) rs.restart_count = 0;
   if (rs.restart_count >= policy_.max_retries) {
     rs.gave_up = true;
     c->last_exit_reason =

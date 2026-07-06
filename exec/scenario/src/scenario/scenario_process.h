@@ -20,8 +20,8 @@ namespace kairos::exec {
 // Crash-restart tuning. Injectable so tests can use millisecond durations. A crash
 // re-spawns after an exponential backoff (base, 2*base, ... capped at max_delay);
 // after max_retries consecutive crash restarts the supervisor gives up. The
-// consecutive-crash counter resets once a run stays healthy (reaches in-window or
-// survives healthy_reset), so an occasional crash never exhausts the cap.
+// consecutive-crash counter resets only once a run survives healthy_reset, so an
+// occasional crash never exhausts the cap while a crash-loop still gives up.
 struct RestartPolicy {
   std::chrono::milliseconds base_delay{1000};
   std::chrono::milliseconds max_delay{60000};
@@ -80,7 +80,6 @@ class ProcessManager {
     bool requested_stop = false;
     bool saw_end_line = false;
     bool reaped = false;
-    bool reached_in_window = false;
     ScenarioState state = ScenarioState::kStarting;
     ScenarioCounters counters;
     std::string last_fail_reason;

@@ -217,7 +217,8 @@ int main() {
     ::unlink(marker.c_str());
   }
 
-  // (h) A healthy run (reaches in-window) resets the counter, so it never gives up.
+  // (h) A run that survives the healthy_reset cooldown resets the counter, so an
+  // occasional crash after a healthy uptime never gives up.
   {
     std::string marker = TempPath("h");
     ::unlink(marker.c_str());
@@ -225,19 +226,44 @@ int main() {
     p.base_delay = std::chrono::milliseconds(15);
     p.max_delay = std::chrono::milliseconds(30);
     p.max_retries = 3;
-    p.healthy_reset = std::chrono::milliseconds(100000);
+    p.healthy_reset = std::chrono::milliseconds(60);  // each run outlives the cooldown
     ProcessManager pm(p);
-    // Prints the in-window banner + a fill (reaches in-window == healthy) then crashes.
-    std::string script = "date +%s >> '" + marker +
-                         "'; printf 'kairos-exec: Buy 2330 NT$ 300000, cross, PAPER\\n';"
-                         "printf 'kairos-exec: fill k-1 1000 @ 925.00  (cum 1000 sh)\\n'; exit 9";
-    CHECK(pm.Spawn("h", Sh(script), false));
-    // Let it churn several restarts; because each run is healthy, it keeps resetting.
+    // Sleeps past the cooldown (healthy uptime) then crashes; the reset keeps the cap away.
+    CHECK(pm.Spawn("h", Sh("date +%s >> '" + marker + "'; sleep 0.12; exit 9"), false));
+    // Let it churn several restarts; because each run survives the cooldown, it keeps resetting.
     CHECK(WaitFor([&] { return CountLines(marker) >= 5; }, 5000));
     ProcessManager::ChildStatus s = pm.StatusOf("h");
     CHECK(!s.gave_up);            // never gave up despite >max_retries crashes
-    CHECK(s.restart_count <= 1);  // reset each healthy run
+    CHECK(s.restart_count <= 1);  // reset by each cooldown-surviving run
     pm.StopChild("h");
+    ::unlink(marker.c_str());
+  }
+
+  // (h2) A trader that reaches in-window but crashes BEFORE the cooldown still hits
+  // the cap and gives up: an instantaneous in-window signal must not reset the counter
+  // (else a live crash-loop after the first fill would re-enter the market forever).
+  {
+    std::string marker = TempPath("h2");
+    ::unlink(marker.c_str());
+    RestartPolicy p;
+    p.base_delay = std::chrono::milliseconds(15);
+    p.max_delay = std::chrono::milliseconds(60);
+    p.max_retries = 3;
+    p.healthy_reset = std::chrono::milliseconds(100000);  // no run gets near the cooldown
+    ProcessManager pm(p);
+    // Reaches in-window (banner + fill) then crashes immediately -- zero healthy uptime.
+    std::string script = "date +%s >> '" + marker +
+                         "'; printf 'kairos-exec: Buy 2330 NT$ 300000, cross, PAPER\\n';"
+                         "printf 'kairos-exec: fill k-1 1000 @ 925.00  (cum 1000 sh)\\n'; exit 9";
+    CHECK(pm.Spawn("h2", Sh(script), /*live=*/true));
+    CHECK(WaitFor([&] { return pm.StatusOf("h2").gave_up; }, 4000));
+    ProcessManager::ChildStatus s = pm.StatusOf("h2");
+    CHECK(s.state == ScenarioState::kCrashed);  // terminal crashed, not re-spawned
+    CHECK(s.restart_count == 3);                // exactly max_retries, then gave up
+    int runs = CountLines(marker);
+    CHECK(runs == 4);  // original + max_retries restarts
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(CountLines(marker) == runs);  // no market re-entry after giving up
     ::unlink(marker.c_str());
   }
 

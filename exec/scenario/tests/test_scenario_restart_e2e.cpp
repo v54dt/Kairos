@@ -279,6 +279,72 @@ int main() {
     }
   }
 
+  // ---- Scenario 3: an in-window crash-loop still gives up (no cap bypass) ----
+  // The trader reaches in-window (prints a fill) then crashes immediately. Reaching
+  // in-window must NOT reset the retry counter, so the cap still fires.
+  {
+    const std::string ctl = (base / "ctl3.sock").string();
+    const std::string runs = (base / "runs3.log").string();
+    const std::string crasher = (base / "crasher3.sh").string();
+    {
+      std::ofstream f(crasher);
+      f << "#!/bin/sh\ndate +%s.%N >> '" << runs << "'\n"
+        << "printf 'kairos-exec: Buy 2330 NT$ 300000, cross, PAPER\\n'\n"
+        << "printf 'kairos-exec: fill k-1 1000 @ 925.00  (cum 1000 sh)\\n'\nexit 9\n";
+    }
+    ::chmod(crasher.c_str(), 0755);
+
+    pid_t sup = SpawnSupervisor(
+        bin, {"--scenario-dir", scenario_dir, "--trader-bin", crasher, "--ctl-sock", ctl},
+        {{"KAIROS_RESTART_BASE_MS", "60"},
+         {"KAIROS_RESTART_MAX_MS", "120"},
+         {"KAIROS_RESTART_MAX_RETRIES", "3"},
+         {"KAIROS_RESTART_HEALTHY_MS", "100000"}});
+    std::printf("e2e: supervisor(3) pid=%d\n", sup);
+    if (!WaitForPath(ctl, 5000)) {
+      std::printf("test_scenario_restart_e2e: FAIL (ctl3 never appeared)\n");
+      ::kill(-sup, SIGKILL);
+      return 1;
+    }
+    Request(ctl, R"({"cmd":"start","name":"2330","mode":"live"})");
+
+    std::string state;
+    bool gave_up = false;
+    long rcount = 0;
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (std::chrono::steady_clock::now() < deadline) {
+      std::string list = Request(ctl, R"({"cmd":"list"})");
+      state = FieldStr(list, "state");
+      gave_up = FieldBool(list, "gave_up");
+      rcount = FieldLong(list, "restart_count");
+      if (gave_up) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    }
+    int run_count = CountLines(runs);
+    std::printf("e2e: in-window loop gave_up=%d state=%s restart_count=%ld runs=%d\n", gave_up,
+                state.c_str(), rcount, run_count);
+    if (!(gave_up && state == "crashed" && rcount == 3 && run_count == 4)) {
+      std::printf("test_scenario_restart_e2e: FAIL (in-window crash-loop bypassed the cap)\n");
+      rc = 1;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    if (CountLines(runs) != run_count) {
+      std::printf("test_scenario_restart_e2e: FAIL (in-window restart fired after give-up)\n");
+      rc = 1;
+    }
+
+    ::kill(-sup, SIGTERM);
+    int st = 0;
+    ::waitpid(sup, &st, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    if (::killpg(sup, 0) == 0) {
+      std::printf("test_scenario_restart_e2e: FAIL (orphan supervisor(3) pgid %d)\n", sup);
+      rc = 1;
+    } else {
+      std::printf("e2e: supervisor(3) pgroup gone (no orphan)\n");
+    }
+  }
+
   std::filesystem::remove_all(base);
   std::printf("test_scenario_restart_e2e: %s\n", rc == 0 ? "OK" : "FAILED");
   return rc;
