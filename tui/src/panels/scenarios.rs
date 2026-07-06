@@ -9,15 +9,14 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::sources::age::format_age;
 use crate::sources::hub_status::HubReport;
 use crate::sources::order_journal::{ScenarioJournal, ScenariosView};
-use crate::sources::scenario_ctl::{
-    RunningTrader, ScenarioPrompt, ScenarioRow, ScenarioToml, ScenarioUi, merge_rows,
-};
+use crate::sources::scenario_ctl::{ScenarioPrompt, ScenarioUi};
+use crate::sources::supervisor::{SupervisorRow, SupervisorState};
 
 const HUB_HEIGHT: u16 = 9;
 const ACTIONS_HEIGHT: u16 = 5;
 const TODAY_WIDTH: u16 = 50;
-const STEM_WIDTH: usize = 22;
-const SYMBOL_WIDTH: usize = 8;
+const NAME_WIDTH: usize = 18;
+const STATE_WIDTH: usize = 14;
 
 /// Vertical scroll so the 0-indexed selected data row stays visible inside a
 /// `view_h`-tall list area (header rendered separately, so no border/header
@@ -72,37 +71,46 @@ fn trunc(s: &str, n: usize) -> String {
 fn header_line() -> Line<'static> {
     Line::from(Span::styled(
         format!(
-            "    {:<w$} {:<s$} {:<5}  {}",
-            "toml",
-            "symbol",
-            "orders",
+            "    {:<n$} {:<st$} {:<5} {:>7} {:>6}  {}",
+            "scenario",
+            "state",
+            "order",
             "pid",
-            w = STEM_WIDTH,
-            s = SYMBOL_WIDTH,
+            "fills",
+            "reason",
+            n = NAME_WIDTH,
+            st = STATE_WIDTH,
         ),
         Style::default().fg(Color::DarkGray),
     ))
 }
 
-fn row_line(row: &ScenarioRow, selected: bool) -> Line<'static> {
+fn row_line(row: &SupervisorRow, selected: bool) -> Line<'static> {
     let marker = if selected { "> " } else { "  " };
-    let pid = row.pid().map(|p| format!("pid {p}")).unwrap_or_default();
+    let pid = if row.state.is_running() && row.pid > 0 {
+        format!("pid {}", row.pid)
+    } else {
+        String::new()
+    };
     let mut line = Line::from(vec![
         Span::raw(marker),
-        dot_span(row.is_running()),
+        dot_span(row.state.is_running()),
         Span::raw(format!(
-            " {:<w$} ",
-            trunc(&row.stem, STEM_WIDTH),
-            w = STEM_WIDTH
+            " {:<n$} ",
+            trunc(&row.name, NAME_WIDTH),
+            n = NAME_WIDTH
         )),
         Span::raw(format!(
-            "{:<s$} ",
-            trunc(&row.symbol, SYMBOL_WIDTH),
-            s = SYMBOL_WIDTH
+            "{:<st$} ",
+            trunc(&row.state.name(), STATE_WIDTH),
+            st = STATE_WIDTH
         )),
         orders_span(row.live),
-        Span::raw("  "),
-        Span::raw(pid),
+        Span::raw(format!(" {pid:>7} {:>6}  ", row.cum_fills)),
+        Span::styled(
+            trunc(&row.last_exit_reason, 40),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]);
     if selected {
         line = line.style(Style::default().add_modifier(Modifier::REVERSED));
@@ -110,33 +118,40 @@ fn row_line(row: &ScenarioRow, selected: bool) -> Line<'static> {
     line
 }
 
-fn data_lines(rows: &[ScenarioRow], sel: usize) -> Vec<Line<'static>> {
-    if rows.is_empty() {
-        return vec![dim("no scenarios in scenario dir")];
+fn data_lines(sup: &SupervisorState, sel: usize) -> Vec<Line<'static>> {
+    if !sup.connected {
+        return vec![
+            Line::from(Span::styled(
+                "supervisor not connected — is kairos_scenario_supervisord running?",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            dim(sup.last_error.as_deref().unwrap_or("no reply from daemon")),
+        ];
     }
-    rows.iter()
+    if sup.rows.is_empty() {
+        return vec![dim("no scenarios reported by the supervisor")];
+    }
+    sup.rows
+        .iter()
         .enumerate()
         .map(|(i, r)| row_line(r, i == sel))
         .collect()
 }
 
-fn footer_line(total: usize, offset: usize, view_h: usize, skipped: usize) -> Line<'static> {
-    let skip = if skipped > 0 {
-        format!("  ({skipped} skipped)")
-    } else {
-        String::new()
-    };
+fn footer_line(total: usize, offset: usize, view_h: usize) -> Line<'static> {
     if total == 0 {
-        return dim(&format!("showing 0\u{2013}0 of 0{skip}"));
+        return dim("showing 0\u{2013}0 of 0");
     }
     let first = offset + 1;
     let last = (offset + view_h.max(1)).min(total);
-    dim(&format!("showing {first}\u{2013}{last} of {total}{skip}"))
+    dim(&format!("showing {first}\u{2013}{last} of {total}"))
 }
 
 fn legend_line() -> Line<'static> {
     Line::from(Span::styled(
-        "[up/down] select  [PgUp/PgDn] page  [s]tart  [x]stop   LIVE start needs typed confirm",
+        "[up/down] select  [PgUp/PgDn] page  [s]tart paper  [l]ive  [t]est  [x]stop   LIVE needs typed confirm",
         Style::default().fg(Color::DarkGray),
     ))
 }
@@ -151,32 +166,32 @@ fn actions_lines(ui: &ScenarioUi) -> Vec<Line<'static>> {
         .add_modifier(Modifier::BOLD);
     let mut lines = match &ui.confirm {
         ScenarioPrompt::Idle => vec![legend_line()],
-        ScenarioPrompt::TypedStart {
-            name,
-            symbol,
-            stem,
-            buf,
-            ..
-        } => vec![
+        ScenarioPrompt::TypedStart { name, buf } => vec![
             Line::from(Span::styled(
-                format!("START LIVE {name} ({symbol}) — REAL orders"),
+                format!("START LIVE {name} — REAL orders"),
                 red,
             )),
             Line::from(Span::styled(
-                format!("type '{stem}' and Enter to confirm   [Esc] cancel"),
+                format!("type '{name}' and Enter to confirm   [Esc] cancel"),
                 red,
             )),
             Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
         ],
-        ScenarioPrompt::SimpleStart { name, symbol, .. } => vec![Line::from(Span::styled(
-            format!("START PAPER {name} ({symbol})?  [y/N]"),
-            yellow,
-        ))],
-        ScenarioPrompt::SimpleStop { pid, toml, live } => {
-            let mode = if *live { "LIVE" } else { "PAPER" };
-            let toml = toml.rsplit('/').next().unwrap_or(toml);
+        ScenarioPrompt::SimpleStart { name, mode } => {
+            let label = if *mode == crate::sources::supervisor::Mode::Test {
+                "TEST"
+            } else {
+                "PAPER"
+            };
             vec![Line::from(Span::styled(
-                format!("STOP pid {pid} {toml} ({mode})?  [y/N]"),
+                format!("START {label} {name}?  [y/N]"),
+                yellow,
+            ))]
+        }
+        ScenarioPrompt::SimpleStop { name, live } => {
+            let mode = if *live { "LIVE" } else { "PAPER" };
+            vec![Line::from(Span::styled(
+                format!("STOP {name} ({mode})?  [y/N]"),
                 yellow,
             ))]
         }
@@ -289,8 +304,7 @@ pub fn render(
     frame: &mut Frame,
     area: Rect,
     view: &ScenariosView,
-    avail: &(Vec<ScenarioToml>, usize),
-    running: &[RunningTrader],
+    sup: &SupervisorState,
     ui: &ScenarioUi,
 ) {
     let rows = Layout::default()
@@ -302,8 +316,8 @@ pub fn render(
         ])
         .split(area);
 
-    let merged = merge_rows(&avail.0, running);
-    let sel = ui.sel.min(merged.len().saturating_sub(1));
+    let total = sup.rows.len();
+    let sel = ui.sel.min(total.saturating_sub(1));
 
     let list_block = Block::default().title("scenarios").borders(Borders::ALL);
     let inner = list_block.inner(rows[0]);
@@ -320,11 +334,11 @@ pub fn render(
     let view_h = parts[1].height as usize;
     let offset = scroll_offset(view_h, sel);
     frame.render_widget(
-        Paragraph::new(data_lines(&merged, sel)).scroll((offset, 0)),
+        Paragraph::new(data_lines(sup, sel)).scroll((offset, 0)),
         parts[1],
     );
     frame.render_widget(
-        Paragraph::new(footer_line(merged.len(), offset as usize, view_h, avail.1)),
+        Paragraph::new(footer_line(total, offset as usize, view_h)),
         parts[2],
     );
 
@@ -357,51 +371,52 @@ pub fn render(
 mod tests {
     use super::*;
     use crate::sources::hub_status::{HubReport, HubStatus};
+    use crate::sources::supervisor::ScenarioState;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use std::path::PathBuf;
 
-    fn scen(stem: &str, symbol: &str, live: bool) -> ScenarioToml {
-        ScenarioToml {
-            path: PathBuf::from(format!("/e/{stem}.toml")),
-            name: format!("{symbol}-plan"),
-            symbol: symbol.to_string(),
-            live,
-        }
-    }
-
-    fn trader(pid: i32, stem: &str, live: bool) -> RunningTrader {
-        RunningTrader {
+    fn row(
+        name: &str,
+        state: ScenarioState,
+        pid: i64,
+        fills: i64,
+        reason: &str,
+        live: bool,
+    ) -> SupervisorRow {
+        SupervisorRow {
+            name: name.to_string(),
+            state,
             pid,
-            toml: format!("/e/{stem}.toml"),
+            cum_fills: fills,
+            cum_shares: fills * 1000,
+            last_fill_ts: 0,
+            last_exit_reason: reason.to_string(),
             live,
         }
     }
 
-    fn draw(
-        w: u16,
-        h: u16,
-        view: &ScenariosView,
-        avail: &(Vec<ScenarioToml>, usize),
-        running: &[RunningTrader],
-        ui: &ScenarioUi,
-    ) {
+    fn connected(rows: Vec<SupervisorRow>) -> SupervisorState {
+        SupervisorState {
+            connected: true,
+            last_error: None,
+            rows,
+        }
+    }
+
+    fn draw(w: u16, h: u16, view: &ScenariosView, sup: &SupervisorState, ui: &ScenarioUi) {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(f, f.area(), view, avail, running, ui))
-            .unwrap();
+        term.draw(|f| render(f, f.area(), view, sup, ui)).unwrap();
     }
 
     fn buffer_text(
         w: u16,
         h: u16,
         view: &ScenariosView,
-        avail: &(Vec<ScenarioToml>, usize),
-        running: &[RunningTrader],
+        sup: &SupervisorState,
         ui: &ScenarioUi,
     ) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(f, f.area(), view, avail, running, ui))
-            .unwrap();
+        term.draw(|f| render(f, f.area(), view, sup, ui)).unwrap();
         let buf = term.backend().buffer().clone();
         let area = buf.area;
         let mut s = String::new();
@@ -416,32 +431,50 @@ mod tests {
 
     #[test]
     fn renders_empty_without_panic() {
-        let view = ScenariosView::default();
-        draw(100, 30, &view, &(vec![], 0), &[], &ScenarioUi::default());
+        draw(
+            100,
+            30,
+            &ScenariosView::default(),
+            &connected(vec![]),
+            &ScenarioUi::default(),
+        );
     }
 
     #[test]
-    fn renders_many_with_skipped_and_no_hub() {
-        let avail: Vec<_> = (0..40)
-            .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
-            .collect();
-        let ui = ScenarioUi {
-            sel: 39,
+    fn not_connected_shows_banner() {
+        let sup = SupervisorState {
+            connected: false,
+            last_error: Some("connection refused".to_string()),
             ..Default::default()
         };
-        draw(100, 30, &ScenariosView::default(), &(avail, 3), &[], &ui);
-    }
-
-    #[test]
-    fn running_row_shows_green_dot_and_pid() {
-        let avail = vec![scen("2330", "2330", true)];
-        let running = vec![trader(4242, "2330", true)];
         let text = buffer_text(
             100,
             30,
             &ScenariosView::default(),
-            &(avail, 0),
-            &running,
+            &sup,
+            &ScenarioUi::default(),
+        );
+        assert!(
+            text.contains("supervisor not connected"),
+            "not-connected banner missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn running_row_shows_green_dot_pid_state_and_live() {
+        let sup = connected(vec![row(
+            "2330",
+            ScenarioState::InWindow,
+            4242,
+            3,
+            "",
+            true,
+        )]);
+        let text = buffer_text(
+            120,
+            30,
+            &ScenariosView::default(),
+            &sup,
             &ScenarioUi::default(),
         );
         assert!(
@@ -452,23 +485,34 @@ mod tests {
             text.contains("pid 4242"),
             "running row must show its pid:\n{text}"
         );
+        assert!(
+            text.contains("in-window"),
+            "row must show the state name:\n{text}"
+        );
         assert!(text.contains("LIVE"), "orders column shows LIVE:\n{text}");
     }
 
     #[test]
-    fn stopped_row_shows_dot_but_no_pid() {
-        let avail = vec![scen("0050", "0050", false)];
+    fn closed_exited_row_shows_reason_and_no_pid() {
+        let sup = connected(vec![row(
+            "2454",
+            ScenarioState::ClosedExited,
+            0,
+            5,
+            "window closed / run complete",
+            false,
+        )]);
         let text = buffer_text(
-            100,
+            120,
             30,
             &ScenariosView::default(),
-            &(avail, 0),
-            &[],
+            &sup,
             &ScenarioUi::default(),
         );
+        assert!(text.contains("closed-exited"), "state name shown:\n{text}");
         assert!(
-            text.contains('\u{25cf}'),
-            "stopped row still shows a dot:\n{text}"
+            text.contains("window closed"),
+            "self-exit reason must be visible:\n{text}"
         );
         assert_eq!(
             text.matches("pid").count(),
@@ -480,60 +524,33 @@ mod tests {
 
     #[test]
     fn footer_shows_visible_range_of_total() {
-        let avail: Vec<_> = (0..40)
-            .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
+        let rows: Vec<_> = (0..40)
+            .map(|i| row(&format!("s{i}"), ScenarioState::Stopped, 0, 0, "", false))
             .collect();
         let text = buffer_text(
             100,
             30,
             &ScenariosView::default(),
-            &(avail, 0),
-            &[],
+            &connected(rows),
             &ScenarioUi::default(),
         );
-        assert!(
-            text.contains("showing 1"),
-            "footer must show the visible range start:\n{text}"
-        );
-        assert!(
-            text.contains("of 40"),
-            "footer must show the total:\n{text}"
-        );
-    }
-
-    #[test]
-    fn orphan_running_trader_is_stoppable_row() {
-        // A trader whose toml is not on disk still appears (stoppable), matched
-        // by stem to nothing in `avail`.
-        let running = vec![trader(9001, "ghost", true)];
-        let text = buffer_text(
-            100,
-            30,
-            &ScenariosView::default(),
-            &(vec![], 0),
-            &running,
-            &ScenarioUi::default(),
-        );
-        assert!(
-            text.contains("ghost"),
-            "orphan trader must be listed:\n{text}"
-        );
-        assert!(text.contains("pid 9001"), "orphan shows its pid:\n{text}");
+        assert!(text.contains("showing 1"), "footer start missing:\n{text}");
+        assert!(text.contains("of 40"), "footer total missing:\n{text}");
     }
 
     #[test]
     fn selection_scrolls_into_view_on_small_terminal() {
-        let avail: Vec<_> = (0..40)
-            .map(|i| scen(&format!("s{i}"), &format!("{i:04}"), i % 2 == 0))
+        let rows: Vec<_> = (0..40)
+            .map(|i| row(&format!("s{i}"), ScenarioState::Stopped, 0, 0, "", false))
             .collect();
         let ui = ScenarioUi {
             sel: 39,
             ..Default::default()
         };
-        let text = buffer_text(80, 24, &ScenariosView::default(), &(avail, 0), &[], &ui);
+        let text = buffer_text(80, 24, &ScenariosView::default(), &connected(rows), &ui);
         assert!(
             text.contains("s39 "),
-            "selected scenario scrolled off-screen:\n{text}"
+            "selected row scrolled off-screen:\n{text}"
         );
         assert!(
             text.contains("[up/down] select"),
@@ -545,28 +562,23 @@ mod tests {
     fn renders_confirm_overlays() {
         let ui_live = ScenarioUi {
             confirm: ScenarioPrompt::TypedStart {
-                toml: PathBuf::from("/e/2330.toml"),
-                name: "2330-plan".to_string(),
-                symbol: "2330".to_string(),
-                stem: "2330".to_string(),
+                name: "2330".to_string(),
                 buf: "23".to_string(),
             },
-            last_result: Some("launched pid 4242".to_string()),
+            last_result: Some("start 2330 (live): ok".to_string()),
             ..Default::default()
         };
         draw(
             80,
             20,
             &ScenariosView::default(),
-            &(vec![], 0),
-            &[],
+            &connected(vec![]),
             &ui_live,
         );
 
         let ui_stop = ScenarioUi {
             confirm: ScenarioPrompt::SimpleStop {
-                pid: 4242,
-                toml: "/e/2330.toml".to_string(),
+                name: "2330".to_string(),
                 live: true,
             },
             ..Default::default()
@@ -575,8 +587,7 @@ mod tests {
             80,
             20,
             &ScenariosView::default(),
-            &(vec![], 0),
-            &[],
+            &connected(vec![]),
             &ui_stop,
         );
     }
@@ -593,6 +604,6 @@ mod tests {
                 age: Duration::from_secs(1),
             }),
         };
-        draw(100, 30, &view, &(vec![], 0), &[], &ScenarioUi::default());
+        draw(100, 30, &view, &connected(vec![]), &ScenarioUi::default());
     }
 }

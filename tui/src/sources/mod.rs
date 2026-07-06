@@ -9,5 +9,6 @@ pub mod order_journal;
 pub mod recorder;
 pub mod scenario_ctl;
 pub mod service;
+pub mod supervisor;
 pub mod systemd;
 pub mod timers;
