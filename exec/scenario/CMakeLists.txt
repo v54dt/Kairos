@@ -191,6 +191,10 @@ add_executable(test_scenario_process tests/test_scenario_process.cpp)
 target_link_libraries(test_scenario_process PRIVATE kairos_scenario_process)
 add_test(NAME test_scenario_process COMMAND test_scenario_process)
 
+add_executable(test_scenario_restart tests/test_scenario_restart.cpp)
+target_link_libraries(test_scenario_restart PRIVATE kairos_scenario_process)
+add_test(NAME test_scenario_restart COMMAND test_scenario_restart)
+
 add_executable(test_scenario_ctl_server tests/test_scenario_ctl_server.cpp)
 target_link_libraries(test_scenario_ctl_server PRIVATE kairos_scenario_ctl_server)
 add_test(NAME test_scenario_ctl_server COMMAND test_scenario_ctl_server)
@@ -199,6 +203,12 @@ add_test(NAME test_scenario_ctl_server COMMAND test_scenario_ctl_server)
 # present, so it stays green in CI (which has no sim binary).
 add_executable(test_scenario_supervisor_e2e tests/test_scenario_supervisor_e2e.cpp)
 add_test(NAME test_scenario_supervisor_e2e COMMAND test_scenario_supervisor_e2e)
+
+# Crash-restart end-to-end against the real supervisor binary (no sim needed): a crasher trader-bin
+# drives backoff -> give-up and stop-during-backoff cancellation.
+add_executable(test_scenario_restart_e2e tests/test_scenario_restart_e2e.cpp)
+add_dependencies(test_scenario_restart_e2e kairos_scenario_supervisord)
+add_test(NAME test_scenario_restart_e2e COMMAND test_scenario_restart_e2e)
 
 add_executable(test_market_fees tests/test_market_fees.cpp)
 target_include_directories(test_market_fees PRIVATE ${KAIROS_INC})

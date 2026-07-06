@@ -19,7 +19,7 @@ namespace kairos::exec {
 // explicit, valid mode; only mode=live ever routes to a --live trader.
 class Supervisor {
  public:
-  Supervisor(std::string scenario_dir, std::string trader_bin);
+  Supervisor(std::string scenario_dir, std::string trader_bin, RestartPolicy policy = {});
 
   // Parse one JSON-lines request and dispatch it; returns the JSON response line
   // (already newline-terminated). A malformed/rejected request yields an ok=false

@@ -29,6 +29,20 @@ std::string DefaultScenarioDir() {
   std::string base = (home != nullptr && home[0] != '\0') ? home : ".";
   return base + "/Kairos/exec/scenario";
 }
+
+// Optional crash-restart overrides; unset keeps the RestartPolicy defaults.
+RestartPolicy RestartPolicyFromEnv() {
+  RestartPolicy p;
+  if (const char* v = std::getenv("KAIROS_RESTART_BASE_MS"); v != nullptr && v[0] != '\0')
+    p.base_delay = std::chrono::milliseconds(std::atol(v));
+  if (const char* v = std::getenv("KAIROS_RESTART_MAX_MS"); v != nullptr && v[0] != '\0')
+    p.max_delay = std::chrono::milliseconds(std::atol(v));
+  if (const char* v = std::getenv("KAIROS_RESTART_MAX_RETRIES"); v != nullptr && v[0] != '\0')
+    p.max_retries = std::atoi(v);
+  if (const char* v = std::getenv("KAIROS_RESTART_HEALTHY_MS"); v != nullptr && v[0] != '\0')
+    p.healthy_reset = std::chrono::milliseconds(std::atol(v));
+  return p;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -59,7 +73,7 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, OnSig);
   std::signal(SIGPIPE, SIG_IGN);  // a dead client must not kill the daemon on write
 
-  Supervisor sup(scenario_dir, trader_bin);
+  Supervisor sup(scenario_dir, trader_bin, RestartPolicyFromEnv());
   ScenarioCtlServer server(&sup, ctl_sock);
   std::printf("kairos-scenario-supervisor: scenario-dir %s, trader %s\n", scenario_dir.c_str(),
               trader_bin.c_str());

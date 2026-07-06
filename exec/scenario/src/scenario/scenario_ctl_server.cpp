@@ -30,8 +30,8 @@ void WriteAll(int fd, const std::string& s) {
 
 }  // namespace
 
-Supervisor::Supervisor(std::string scenario_dir, std::string trader_bin)
-    : scenario_dir_(std::move(scenario_dir)), trader_bin_(std::move(trader_bin)) {}
+Supervisor::Supervisor(std::string scenario_dir, std::string trader_bin, RestartPolicy policy)
+    : scenario_dir_(std::move(scenario_dir)), trader_bin_(std::move(trader_bin)), pm_(policy) {}
 
 std::vector<ScenarioSnapshotRow> Supervisor::Snapshot() {
   std::vector<ScenarioInfo> scenarios = EnumerateScenarios(scenario_dir_);
@@ -50,6 +50,8 @@ std::vector<ScenarioSnapshotRow> Supervisor::Snapshot() {
       row.last_fill_ts = st.counters.last_fill_ts;
       row.last_exit_reason = st.last_exit_reason;
       row.live = st.live;
+      row.restart_count = st.restart_count;
+      row.gave_up = st.gave_up;
     } else {
       row.state = StateName(ScenarioState::kStopped);
     }

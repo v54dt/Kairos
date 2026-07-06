@@ -127,8 +127,9 @@ int main() {
   // Snapshot serialization emits every field.
   {
     std::vector<ScenarioSnapshotRow> rows;
-    rows.push_back({"2330", "in-window", 4242, 3, 6000, 1720000000, "", true});
-    rows.push_back({"2317", "stopped", 0, 0, 0, 0, "window closed", false});
+    rows.push_back({"2330", "in-window", 4242, 3, 6000, 1720000000, "", true, 0, false});
+    rows.push_back(
+        {"2317", "crashed", 0, 0, 0, 0, "crashed; gave up after 5 restarts", false, 5, true});
     std::string s = SerializeScenarioSnapshot(true, "", rows);
     CHECK(s.find("\"ok\":true") != std::string::npos);
     CHECK(s.find("\"name\":\"2330\"") != std::string::npos);
@@ -138,8 +139,14 @@ int main() {
     CHECK(s.find("\"cum_shares\":6000") != std::string::npos);
     CHECK(s.find("\"last_fill_ts\":1720000000") != std::string::npos);
     CHECK(s.find("\"live\":true") != std::string::npos);
-    CHECK(s.find("\"last_exit_reason\":\"window closed\"") != std::string::npos);
     CHECK(s.find("\"live\":false") != std::string::npos);
+    // Restart fields surface for the TUI: a healthy row and a gave-up row.
+    CHECK(s.find("\"restart_count\":0") != std::string::npos);
+    CHECK(s.find("\"restart_count\":5") != std::string::npos);
+    CHECK(s.find("\"gave_up\":false") != std::string::npos);
+    CHECK(s.find("\"gave_up\":true") != std::string::npos);
+    CHECK(s.find("\"last_exit_reason\":\"crashed; gave up after 5 restarts\"") !=
+          std::string::npos);
     CHECK(!s.empty() && s.back() == '\n');
   }
   // An error response carries ok=false + the reason.

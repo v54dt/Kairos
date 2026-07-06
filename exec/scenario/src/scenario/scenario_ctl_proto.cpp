@@ -195,7 +195,9 @@ std::string SerializeScenarioSnapshot(bool ok, const std::string& err,
            "\",\"pid\":" + std::to_string(r.pid) + ",\"cum_fills\":" + std::to_string(r.cum_fills) +
            ",\"cum_shares\":" + std::to_string(r.cum_shares) +
            ",\"last_fill_ts\":" + std::to_string(r.last_fill_ts) + ",\"last_exit_reason\":\"" +
-           JsonEscape(r.last_exit_reason) + "\",\"live\":" + (r.live ? "true" : "false") + "}";
+           JsonEscape(r.last_exit_reason) + "\",\"live\":" + (r.live ? "true" : "false") +
+           ",\"restart_count\":" + std::to_string(r.restart_count) +
+           ",\"gave_up\":" + (r.gave_up ? "true" : "false") + "}";
   }
   out += "]}\n";
   return out;
