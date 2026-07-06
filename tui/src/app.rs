@@ -13,7 +13,7 @@ use crate::sources::hub_status::{self, HubReport};
 use crate::sources::journald::{self, LogLine};
 use crate::sources::order_journal::{self, Fill, ScenarioJournal, ScenariosView};
 use crate::sources::recorder::{self, RecorderStats};
-use crate::sources::scenario_ctl::{self, RunningTrader, ScenarioToml};
+use crate::sources::supervisor::{self, SupervisorState};
 use crate::sources::systemd::{self, UnitStatus};
 use crate::sources::timers::{self, TimerEntry};
 
@@ -42,8 +42,7 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub journal_dir: PathBuf,
     pub blacklist_path: Option<PathBuf>,
-    pub scenario_dir: PathBuf,
-    pub trader_bin: PathBuf,
+    pub supervisor_sock: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -97,8 +96,7 @@ Options:
   --data-dir <PATH>      Recorder data directory
   --journal-dir <PATH>   Order-journal directory (default: <data-dir>/journal)
   --blacklist-path <PATH> Restricted-symbol blacklist CSV (F1 gate)
-  --scenario-dir <PATH>  Scenario .toml directory (default: ~/Kairos/exec/scenario)
-  --trader-bin <PATH>    Scenario-trader executable (default: <scenario-dir>/build/kairos_scenario_trader)
+  --supervisor-sock <PATH> Scenario supervisor control socket (default: $KAIROS_SCENARIO_CTL_SOCK or $XDG_RUNTIME_DIR/kairos-scenario-ctl.sock)
   -h, --help             Print this help and exit
   -V, --version          Print version and exit
 
@@ -106,10 +104,10 @@ Keys: [1] Overview  [2] Feeds & Books  [3] Scenarios  [4] Risk  [5] Data & Event
 Overview tab: [up/down] select unit  [Enter] open its journal  [r]estart [s]tart [x]stop [f] reset-failed  [S]/[X] kairos.target up/down
               trading units require a typed confirm (the unit name); research crons and reset-failed are y/N
               in the journal view: [up/down][PgUp/PgDn] scroll (newest at bottom)  [Esc] close
-Scenarios tab: [up/down] select  [PgUp/PgDn] page  [s]tart a stopped row  [x]stop a running row
-               a green dot marks running, red marks stopped; a running trader started elsewhere is still listed and stoppable
-               starting a LIVE toml needs a typed confirm (the toml stem); a PAPER start and any stop are y/N
-               the trader binary defaults to <scenario-dir>/build/kairos_scenario_trader (--trader-bin or KAIROS_SCENARIO_TRADER override)
+Scenarios tab: [up/down] select  [PgUp/PgDn] page  [s]tart paper  [l]ive  [t]est  [x]stop
+               state + last exit reason come straight from the supervisor daemon (green dot = running, red = stopped/exited/crashed)
+               a LIVE start needs a typed confirm (the scenario name); a paper/test start and any stop are y/N
+               requires kairos_scenario_supervisord running; if it is down the panel shows a not-connected banner
 Risk tab: [k] arm adminHalt (type HALT)  [c] clear halt (type RESUME)
 Fills tab: [up/down] select  [PgUp/PgDn] page  today's per-fill detail + estimated T+2 settlement";
 
@@ -126,8 +124,7 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
     let mut data_dir = default_data_dir();
     let mut journal_dir: Option<PathBuf> = None;
     let mut blacklist_path: Option<PathBuf> = None;
-    let mut scenario_dir: Option<PathBuf> = None;
-    let mut trader_bin_flag: Option<String> = None;
+    let mut supervisor_sock: Option<PathBuf> = None;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -153,47 +150,28 @@ pub fn parse_cli<I: IntoIterator<Item = String>>(args: I) -> Cli {
                     blacklist_path = Some(PathBuf::from(v));
                 }
             }
-            "--scenario-dir" => {
+            "--supervisor-sock" => {
                 if let Some(v) = args.next() {
-                    scenario_dir = Some(PathBuf::from(v));
-                }
-            }
-            "--trader-bin" => {
-                if let Some(v) = args.next() {
-                    trader_bin_flag = Some(v);
+                    supervisor_sock = Some(PathBuf::from(v));
                 }
             }
             _ => {}
         }
     }
     let journal_dir = journal_dir.unwrap_or_else(|| data_dir.join("journal"));
-    let scenario_dir = scenario_dir.unwrap_or_else(default_scenario_dir);
-    let trader_bin = scenario_ctl::resolve_trader_bin(
-        trader_bin_flag.as_deref(),
-        std::env::var("KAIROS_SCENARIO_TRADER").ok().as_deref(),
-        &scenario_dir,
-    );
+    let supervisor_sock = supervisor_sock.or_else(supervisor::supervisor_ctl_path);
     Cli::Run(Config {
         symbols,
         data_dir,
         journal_dir,
         blacklist_path,
-        scenario_dir,
-        trader_bin,
+        supervisor_sock,
     })
 }
 
 fn default_data_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join("Kairos").join("data")
-}
-
-fn default_scenario_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join("Kairos")
-        .join("exec")
-        .join("scenario")
 }
 
 #[derive(Default)]
@@ -206,8 +184,7 @@ pub struct Shared {
     pub scenarios: Mutex<Vec<ScenarioJournal>>,
     pub fills: Mutex<Vec<Fill>>,
     pub fills_date: Mutex<String>,
-    pub available: Mutex<(Vec<ScenarioToml>, usize)>,
-    pub running: Mutex<Vec<RunningTrader>>,
+    pub supervisor: Mutex<SupervisorState>,
     pub timers: Mutex<Fetch<Vec<TimerEntry>>>,
     pub blacklist: Mutex<Fetch<BlacklistFreshness>>,
     pub archive: Mutex<Fetch<ArchiveScan>>,
@@ -224,8 +201,7 @@ pub struct Snapshot {
     pub scenarios: ScenariosView,
     pub fills: Vec<Fill>,
     pub fills_date: String,
-    pub available: (Vec<ScenarioToml>, usize),
-    pub running: Vec<RunningTrader>,
+    pub supervisor: SupervisorState,
     pub timers: Fetch<Vec<TimerEntry>>,
     pub blacklist: Fetch<BlacklistFreshness>,
     pub archive: Fetch<ArchiveScan>,
@@ -248,8 +224,7 @@ impl Snapshot {
             scenarios,
             fills: shared.fills.lock().unwrap().clone(),
             fills_date: shared.fills_date.lock().unwrap().clone(),
-            available: shared.available.lock().unwrap().clone(),
-            running: shared.running.lock().unwrap().clone(),
+            supervisor: shared.supervisor.lock().unwrap().clone(),
             timers: shared.timers.lock().unwrap().clone(),
             blacklist: shared.blacklist.lock().unwrap().clone(),
             archive: shared.archive.lock().unwrap().clone(),
@@ -328,19 +303,19 @@ pub async fn refresh_scenarios(shared: Arc<Shared>, journal_dir: PathBuf) {
     }
 }
 
-pub async fn refresh_available(shared: Arc<Shared>, scenario_dir: PathBuf) {
+pub async fn refresh_supervisor(shared: Arc<Shared>, sock: Option<PathBuf>) {
     let mut tick = interval(REFRESH);
     loop {
         tick.tick().await;
-        *shared.available.lock().unwrap() = scenario_ctl::enumerate_available(&scenario_dir);
-    }
-}
-
-pub async fn refresh_running(shared: Arc<Shared>) {
-    let mut tick = interval(REFRESH);
-    loop {
-        tick.tick().await;
-        *shared.running.lock().unwrap() = scenario_ctl::enumerate_running();
+        let state = match &sock {
+            Some(p) => supervisor::poll_once(p).await,
+            None => SupervisorState {
+                connected: false,
+                last_error: Some("no runtime dir for the control socket".to_string()),
+                ..Default::default()
+            },
+        };
+        *shared.supervisor.lock().unwrap() = state;
     }
 }
 
@@ -498,38 +473,26 @@ mod tests {
     }
 
     #[test]
-    fn scenario_dir_flag_honored() {
-        match parse_cli(args(&["--scenario-dir", "/tmp/s"])) {
-            Cli::Run(cfg) => assert_eq!(cfg.scenario_dir, PathBuf::from("/tmp/s")),
-            _ => panic!("expected Run"),
-        }
-    }
-
-    #[test]
-    fn scenario_dir_defaults_under_home() {
-        match parse_cli(args(&[])) {
-            Cli::Run(cfg) => assert!(cfg.scenario_dir.ends_with("exec/scenario")),
-            _ => panic!("expected Run"),
-        }
-    }
-
-    #[test]
-    fn trader_bin_flag_honored() {
-        match parse_cli(args(&["--trader-bin", "/opt/kairos_scenario_trader"])) {
+    fn supervisor_sock_flag_honored() {
+        match parse_cli(args(&["--supervisor-sock", "/tmp/ctl.sock"])) {
             Cli::Run(cfg) => {
-                assert_eq!(cfg.trader_bin, PathBuf::from("/opt/kairos_scenario_trader"))
+                assert_eq!(cfg.supervisor_sock, Some(PathBuf::from("/tmp/ctl.sock")))
             }
             _ => panic!("expected Run"),
         }
     }
 
     #[test]
-    fn trader_bin_defaults_under_scenario_dir_build() {
-        match parse_cli(args(&["--scenario-dir", "/tmp/s"])) {
-            Cli::Run(cfg) => assert_eq!(
-                cfg.trader_bin,
-                PathBuf::from("/tmp/s/build/kairos_scenario_trader")
-            ),
+    fn scenario_dir_and_trader_bin_flags_are_gone() {
+        // They now belong to the supervisor daemon, not the TUI: unknown flags are
+        // ignored and the run still builds with defaults.
+        match parse_cli(args(&[
+            "--scenario-dir",
+            "/tmp/s",
+            "--trader-bin",
+            "/opt/t",
+        ])) {
+            Cli::Run(cfg) => assert_eq!(cfg.symbols, vec!["2330", "0050"]),
             _ => panic!("expected Run"),
         }
     }

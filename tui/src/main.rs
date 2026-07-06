@@ -21,6 +21,7 @@ use sources::halt::{self, HaltAction, HaltKey, HaltPrompt, HaltUi};
 use sources::journald::{self, LogLine};
 use sources::scenario_ctl::{self, ScenarioAction, ScenarioPrompt, ScenarioUi};
 use sources::service::{self, ConfirmPrompt, ServiceUi, Verb};
+use sources::supervisor;
 
 const TICK: Duration = Duration::from_millis(750);
 const DRILL_REFRESH: Duration = Duration::from_secs(2);
@@ -64,11 +65,10 @@ async fn main() -> Result<()> {
         shared.clone(),
         cfg.journal_dir.clone(),
     ));
-    tokio::spawn(app::refresh_available(
+    tokio::spawn(app::refresh_supervisor(
         shared.clone(),
-        cfg.scenario_dir.clone(),
+        cfg.supervisor_sock.clone(),
     ));
-    tokio::spawn(app::refresh_running(shared.clone()));
     tokio::spawn(app::refresh_timers(shared.clone()));
     tokio::spawn(app::refresh_blacklist(shared.clone(), blacklist_path));
     tokio::spawn(app::refresh_archive(shared.clone(), kqr_dir));
@@ -160,8 +160,7 @@ async fn run(
                         let (next, action) = scenario_ctl::handle_key(&scen.confirm, hk);
                         scen.confirm = next;
                         if let Some(a) = action {
-                            *scen.result.lock().unwrap() =
-                                Some(apply_scenario_action(a, &cfg.trader_bin));
+                            spawn_scenario_action(a, cfg.supervisor_sock.clone(), scen.result.clone());
                         }
                         redraw = true;
                     }
@@ -351,24 +350,35 @@ impl ScenState {
     }
 }
 
-/// Run a confirmed scenario action. START spawns a detached trader; STOP sends a
-/// validated SIGINT. Both surface a human result line; neither panics.
-fn apply_scenario_action(action: ScenarioAction, trader_bin: &Path) -> String {
+/// The human description + exact wire line for a confirmed scenario action. Only
+/// a `Start { mode: Live }` (produced solely by the typed-name confirm) stamps the
+/// "live" token.
+fn scenario_request(action: &ScenarioAction) -> (String, String) {
     match action {
-        ScenarioAction::Start { toml, launch } => {
-            if let Err(e) = scenario_ctl::ensure_trader_bin(trader_bin) {
-                return e;
-            }
-            let bin = trader_bin.to_string_lossy();
-            let argv = scenario_ctl::build_spawn_argv(&bin, &toml, launch);
-            match scenario_ctl::spawn_detached(&argv) {
-                Ok(m) | Err(m) => m,
-            }
-        }
-        ScenarioAction::Stop { pid } => match scenario_ctl::stop_trader(pid) {
-            Ok(m) | Err(m) => m,
-        },
+        ScenarioAction::Start { name, mode } => (
+            format!("start {name} ({})", mode.token()),
+            supervisor::start_request(name, *mode),
+        ),
+        ScenarioAction::Stop { name } => (format!("stop {name}"), supervisor::stop_request(name)),
     }
+}
+
+/// Send a confirmed scenario action to the supervisor over UDS off the UI thread,
+/// writing the daemon's ok/err reply into the shared result slot. Never panics.
+fn spawn_scenario_action(
+    action: ScenarioAction,
+    sock: Option<PathBuf>,
+    slot: Arc<Mutex<Option<String>>>,
+) {
+    let (desc, line) = scenario_request(&action);
+    *slot.lock().unwrap() = Some(format!("{desc} ..."));
+    tokio::spawn(async move {
+        let msg = match sock {
+            Some(p) => format!("{desc}: {}", supervisor::send_command(&p, &line).await),
+            None => format!("{desc}: supervisor not connected (no runtime dir)"),
+        };
+        *slot.lock().unwrap() = Some(msg);
+    });
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -377,7 +387,9 @@ enum ScenariosKey {
     Down,
     PageUp,
     PageDown,
-    Start,
+    StartPaper,
+    StartLive,
+    StartTest,
     Stop,
 }
 
@@ -394,7 +406,9 @@ fn scenarios_key(tab: Tab, key: &KeyEvent) -> Option<ScenariosKey> {
         KeyCode::Down | KeyCode::Char('j') => Some(ScenariosKey::Down),
         KeyCode::PageUp => Some(ScenariosKey::PageUp),
         KeyCode::PageDown => Some(ScenariosKey::PageDown),
-        KeyCode::Char('s') => Some(ScenariosKey::Start),
+        KeyCode::Char('s') => Some(ScenariosKey::StartPaper),
+        KeyCode::Char('l') => Some(ScenariosKey::StartLive),
+        KeyCode::Char('t') => Some(ScenariosKey::StartTest),
         KeyCode::Char('x') => Some(ScenariosKey::Stop),
         _ => None,
     }
@@ -405,36 +419,36 @@ fn bump(sel: usize, len: usize) -> usize {
 }
 
 fn apply_scenarios_key(sk: ScenariosKey, snap: &Snapshot, scen: &mut ScenState) {
-    let rows = scenario_ctl::merge_rows(&snap.available.0, &snap.running);
+    let rows = &snap.supervisor.rows;
     let len = rows.len();
+    // A start opens a confirm only on a NON-running row; a start key on a running
+    // row is a no-op with a brief note, so a start can never cross-fire onto a
+    // running target. Mode is explicit per key: 's' paper, 'l' live (typed
+    // confirm), 't' test.
+    let begin_start = |scen: &mut ScenState, open: fn(&str) -> ScenarioPrompt| {
+        if let Some(row) = rows.get(scen.sel.min(len.saturating_sub(1))) {
+            if row.state.is_running() {
+                *scen.result.lock().unwrap() = Some("already running".to_string());
+            } else {
+                scen.confirm = open(&row.name);
+            }
+        }
+    };
     match sk {
         ScenariosKey::Up => scen.sel = scen.sel.saturating_sub(1),
         ScenariosKey::Down => scen.sel = bump(scen.sel, len),
         ScenariosKey::PageUp => scen.sel = scen.sel.saturating_sub(SCEN_PAGE),
         ScenariosKey::PageDown => scen.sel = (scen.sel + SCEN_PAGE).min(len.saturating_sub(1)),
-        // Start acts only on a stopped row carrying an on-disk toml; 's' on a
-        // running or orphan row is a no-op with a brief note, so a start can
-        // never cross-fire onto a stop target.
-        ScenariosKey::Start => {
-            if let Some(row) = rows.get(scen.sel.min(len.saturating_sub(1))) {
-                match (&row.avail, row.is_running()) {
-                    (Some(s), false) => scen.confirm = scenario_ctl::begin_start(s),
-                    (_, true) => {
-                        *scen.result.lock().unwrap() = Some("already running".to_string());
-                    }
-                    (None, false) => {}
-                }
-            }
-        }
-        // Stop acts only on a running row's re-validated pid; 'x' on a stopped
-        // row is a no-op with a brief note.
+        ScenariosKey::StartPaper => begin_start(scen, scenario_ctl::begin_start_paper),
+        ScenariosKey::StartLive => begin_start(scen, scenario_ctl::begin_start_live),
+        ScenariosKey::StartTest => begin_start(scen, scenario_ctl::begin_start_test),
+        // Stop acts only on a running row; 'x' on a stopped row is a no-op note.
         ScenariosKey::Stop => {
             if let Some(row) = rows.get(scen.sel.min(len.saturating_sub(1))) {
-                match &row.running {
-                    Some(t) => scen.confirm = scenario_ctl::begin_stop(t),
-                    None => {
-                        *scen.result.lock().unwrap() = Some("not running".to_string());
-                    }
+                if row.state.is_running() {
+                    scen.confirm = scenario_ctl::begin_stop(&row.name, row.live);
+                } else {
+                    *scen.result.lock().unwrap() = Some("not running".to_string());
                 }
             }
         }
@@ -734,9 +748,9 @@ mod tests {
         assert!(should_quit(&Event::Key(q)));
     }
 
-    use sources::scenario_ctl::{Launch, RunningTrader, ScenarioToml};
+    use sources::supervisor::{ScenarioState, SupervisorRow, SupervisorState};
 
-    fn scen_snapshot(avail: Vec<ScenarioToml>, running: Vec<RunningTrader>) -> Snapshot {
+    fn scen_snapshot(rows: Vec<SupervisorRow>) -> Snapshot {
         Snapshot {
             systemd: app::Fetch::Loading,
             journal: app::Fetch::Loading,
@@ -746,8 +760,11 @@ mod tests {
             scenarios: Default::default(),
             fills: Vec::new(),
             fills_date: String::new(),
-            available: (avail, 0),
-            running,
+            supervisor: SupervisorState {
+                connected: true,
+                last_error: None,
+                rows,
+            },
             timers: app::Fetch::Loading,
             blacklist: app::Fetch::Loading,
             archive: app::Fetch::Loading,
@@ -756,21 +773,16 @@ mod tests {
         }
     }
 
-    fn live_toml() -> ScenarioToml {
-        ScenarioToml {
-            path: PathBuf::from("/e/2330.toml"),
-            name: "2330-plan".to_string(),
-            symbol: "2330".to_string(),
-            live: true,
-        }
-    }
-
-    fn paper_toml() -> ScenarioToml {
-        ScenarioToml {
-            path: PathBuf::from("/e/0050.toml"),
-            name: "0050-plan".to_string(),
-            symbol: "0050".to_string(),
-            live: false,
+    fn row(name: &str, state: ScenarioState, pid: i64, live: bool) -> SupervisorRow {
+        SupervisorRow {
+            name: name.to_string(),
+            state,
+            pid,
+            cum_fills: 0,
+            cum_shares: 0,
+            last_fill_ts: 0,
+            last_exit_reason: String::new(),
+            live,
         }
     }
 
@@ -803,7 +815,9 @@ mod tests {
             (KeyCode::Down, ScenariosKey::Down),
             (KeyCode::PageUp, ScenariosKey::PageUp),
             (KeyCode::PageDown, ScenariosKey::PageDown),
-            (KeyCode::Char('s'), ScenariosKey::Start),
+            (KeyCode::Char('s'), ScenariosKey::StartPaper),
+            (KeyCode::Char('l'), ScenariosKey::StartLive),
+            (KeyCode::Char('t'), ScenariosKey::StartTest),
             (KeyCode::Char('x'), ScenariosKey::Stop),
         ];
         for (code, want) in cases {
@@ -813,80 +827,77 @@ mod tests {
     }
 
     #[test]
-    fn start_on_stopped_row_opens_confirm_bound_to_selection() {
-        let snap = scen_snapshot(vec![paper_toml(), live_toml()], vec![]);
+    fn live_start_on_stopped_row_opens_typed_confirm_bound_to_selection() {
+        let snap = scen_snapshot(vec![
+            row("0050", ScenarioState::Stopped, 0, false),
+            row("2330", ScenarioState::Stopped, 0, false),
+        ]);
         let mut scen = ScenState {
-            sel: 1, // the live toml
+            sel: 1,
             ..Default::default()
         };
-        apply_scenarios_key(ScenariosKey::Start, &snap, &mut scen);
+        apply_scenarios_key(ScenariosKey::StartLive, &snap, &mut scen);
         match &scen.confirm {
-            ScenarioPrompt::TypedStart { toml, .. } => {
-                assert_eq!(toml, &PathBuf::from("/e/2330.toml"));
-            }
+            ScenarioPrompt::TypedStart { name, .. } => assert_eq!(name, "2330"),
             other => panic!("expected TypedStart, got {other:?}"),
         }
     }
 
     #[test]
-    fn start_on_a_running_row_is_a_no_op() {
-        let running = vec![RunningTrader {
-            pid: 10,
-            toml: "/e/2330.toml".to_string(),
-            live: true,
-        }];
-        let snap = scen_snapshot(vec![live_toml()], running);
-        let mut scen = ScenState::default(); // sel 0 = the running 2330 row
-        apply_scenarios_key(ScenariosKey::Start, &snap, &mut scen);
-        assert_eq!(
+    fn paper_start_on_stopped_row_opens_simple_confirm() {
+        let snap = scen_snapshot(vec![row("0050", ScenarioState::Stopped, 0, false)]);
+        let mut scen = ScenState::default();
+        apply_scenarios_key(ScenariosKey::StartPaper, &snap, &mut scen);
+        assert!(matches!(
             scen.confirm,
-            ScenarioPrompt::Idle,
-            "start on a running row must not open a confirm"
-        );
+            ScenarioPrompt::SimpleStart {
+                mode: supervisor::Mode::Paper,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn start_on_a_running_row_is_a_no_op() {
+        let snap = scen_snapshot(vec![row("2330", ScenarioState::InWindow, 10, true)]);
+        for sk in [
+            ScenariosKey::StartPaper,
+            ScenariosKey::StartLive,
+            ScenariosKey::StartTest,
+        ] {
+            let mut scen = ScenState::default();
+            apply_scenarios_key(sk, &snap, &mut scen);
+            assert_eq!(
+                scen.confirm,
+                ScenarioPrompt::Idle,
+                "start on a running row must not open a confirm"
+            );
+        }
     }
 
     #[test]
     fn stop_on_a_stopped_row_is_a_no_op() {
-        let snap = scen_snapshot(vec![live_toml()], vec![]);
-        let mut scen = ScenState::default(); // sel 0 = the stopped 2330 row
+        let snap = scen_snapshot(vec![row("2330", ScenarioState::ClosedExited, 0, false)]);
+        let mut scen = ScenState::default();
         apply_scenarios_key(ScenariosKey::Stop, &snap, &mut scen);
         assert_eq!(
             scen.confirm,
             ScenarioPrompt::Idle,
-            "stop on a stopped row must not open a confirm"
+            "stop on a stopped/exited row must not open a confirm"
         );
     }
 
     #[test]
     fn stop_on_a_running_row_opens_confirm() {
-        let running = vec![RunningTrader {
-            pid: 4242,
-            toml: "/e/2330.toml".to_string(),
-            live: true,
-        }];
-        let snap = scen_snapshot(vec![live_toml()], running);
+        let snap = scen_snapshot(vec![row("2330", ScenarioState::InWindow, 4242, true)]);
         let mut scen = ScenState::default();
         apply_scenarios_key(ScenariosKey::Stop, &snap, &mut scen);
         assert!(
-            matches!(scen.confirm, ScenarioPrompt::SimpleStop { pid: 4242, .. }),
+            matches!(
+                &scen.confirm,
+                ScenarioPrompt::SimpleStop { name, .. } if name == "2330"
+            ),
             "stop on a running row must open a SimpleStop confirm"
-        );
-    }
-
-    #[test]
-    fn stop_on_an_orphan_row_opens_confirm() {
-        // A running trader whose toml is not on disk is still stoppable.
-        let running = vec![RunningTrader {
-            pid: 9001,
-            toml: "/e/ghost.toml".to_string(),
-            live: false,
-        }];
-        let snap = scen_snapshot(vec![], running);
-        let mut scen = ScenState::default();
-        apply_scenarios_key(ScenariosKey::Stop, &snap, &mut scen);
-        assert!(
-            matches!(scen.confirm, ScenarioPrompt::SimpleStop { pid: 9001, .. }),
-            "an orphan trader must remain stoppable"
         );
     }
 
@@ -903,7 +914,7 @@ mod tests {
     }
 
     fn systemd_snapshot(systemd: Fetch<Vec<UnitStatus>>) -> Snapshot {
-        let mut snap = scen_snapshot(vec![], vec![]);
+        let mut snap = scen_snapshot(vec![]);
         snap.systemd = systemd;
         snap
     }
@@ -1065,7 +1076,7 @@ mod tests {
     #[test]
     fn fills_nav_clamps_within_bounds() {
         use sources::order_journal::Fill;
-        let mut snap = scen_snapshot(vec![], vec![]);
+        let mut snap = scen_snapshot(vec![]);
         snap.fills = (0..25)
             .map(|i| Fill {
                 t: i,
@@ -1088,13 +1099,29 @@ mod tests {
     }
 
     #[test]
-    fn paper_start_action_argv_has_no_live() {
-        // The action produced by confirming a paper start builds a paper argv.
-        let argv = scenario_ctl::build_spawn_argv(
-            "kairos_scenario_trader",
-            &PathBuf::from("/e/0050.toml"),
-            Launch::Paper,
+    fn paper_start_action_request_has_no_live_token() {
+        // The action produced by confirming a paper start builds a paper request.
+        let (_, line) = scenario_request(&ScenarioAction::Start {
+            name: "0050".to_string(),
+            mode: supervisor::Mode::Paper,
+        });
+        assert!(
+            !line.contains("live"),
+            "paper request must not carry live: {line}"
         );
-        assert!(!argv.iter().any(|a| a == "--live"));
+        assert!(line.contains("\"mode\":\"paper\""));
+    }
+
+    #[test]
+    fn live_action_request_stamps_live_token() {
+        let (_, line) = scenario_request(&ScenarioAction::Stop {
+            name: "2330".to_string(),
+        });
+        assert!(line.contains("\"cmd\":\"stop\""));
+        let (_, live) = scenario_request(&ScenarioAction::Start {
+            name: "2330".to_string(),
+            mode: supervisor::Mode::Live,
+        });
+        assert!(live.contains("\"mode\":\"live\""));
     }
 }

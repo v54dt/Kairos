@@ -44,14 +44,9 @@ pub fn render(
     match tab {
         Tab::Overview => render_overview(frame, outer[1], snap, cfg, service),
         Tab::FeedsBooks => book::render(frame, outer[1], &snap.feed, cfg),
-        Tab::Scenarios => scenarios::render(
-            frame,
-            outer[1],
-            &snap.scenarios,
-            &snap.available,
-            &snap.running,
-            scenario,
-        ),
+        Tab::Scenarios => {
+            scenarios::render(frame, outer[1], &snap.scenarios, &snap.supervisor, scenario)
+        }
         Tab::Risk => risk::render(frame, outer[1], &snap.scenarios.hub, &snap.blacklist, halt),
         Tab::Data => data::render(frame, outer[1], snap),
         Tab::Fills => fills::render(frame, outer[1], &snap.fills, &snap.fills_date, fills_sel),
