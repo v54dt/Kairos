@@ -191,6 +191,10 @@ add_executable(test_scenario_process tests/test_scenario_process.cpp)
 target_link_libraries(test_scenario_process PRIVATE kairos_scenario_process)
 add_test(NAME test_scenario_process COMMAND test_scenario_process)
 
+add_executable(test_scenario_restart tests/test_scenario_restart.cpp)
+target_link_libraries(test_scenario_restart PRIVATE kairos_scenario_process)
+add_test(NAME test_scenario_restart COMMAND test_scenario_restart)
+
 add_executable(test_scenario_ctl_server tests/test_scenario_ctl_server.cpp)
 target_link_libraries(test_scenario_ctl_server PRIVATE kairos_scenario_ctl_server)
 add_test(NAME test_scenario_ctl_server COMMAND test_scenario_ctl_server)
