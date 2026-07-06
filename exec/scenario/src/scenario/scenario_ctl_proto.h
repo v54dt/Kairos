@@ -44,6 +44,8 @@ struct ScenarioSnapshotRow {
   long last_fill_ts = 0;
   std::string last_exit_reason;
   bool live = false;
+  long restart_count = 0;
+  bool gave_up = false;
 };
 
 // Serialize the whole response as one JSON line (matches the hand-rolled JSONL
