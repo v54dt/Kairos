@@ -84,6 +84,17 @@ void OrderHub::RemoveDupEntry(const std::string& id) {
   }
 }
 
+void OrderHub::RememberOrder(const std::string& id, const std::string& symbol, Side side) {
+  order_meta_[id] = OrderMeta{symbol, side};
+  meta_fifo_.push_back(id);
+  while (meta_fifo_.size() > kOrderMetaCap) {
+    order_meta_.erase(meta_fifo_.front());
+    meta_fifo_.pop_front();
+  }
+}
+
+void OrderHub::ForgetOrder(const std::string& id) { order_meta_.erase(id); }
+
 bool OrderHub::CollarReference(const std::string& symbol, Cents* ref) const {
   auto it = last_fill_price_cents_.find(symbol);
   if (it == last_fill_price_cents_.end()) return false;
@@ -114,6 +125,11 @@ void OrderHub::SetTradingDayForTest(long day) {
 void OrderHub::SetMonoMsForTest(long ms) {
   std::lock_guard<std::mutex> lock(mu_);
   forced_mono_ms_ = ms;
+}
+
+std::size_t OrderHub::OrderMetaCountForTest() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return order_meta_.size();
 }
 
 void OrderHub::RejectSubmit(int client, const std::string& id, const std::string& reason) {
@@ -162,6 +178,8 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         current_trading_day_ = today;
         account_day_realized_cents_ = 0;
         last_fill_price_cents_.clear();  // yesterday's fill is not a valid collar reference today
+        order_meta_.clear();             // yesterday's ids are not journaled under today's file
+        meta_fifo_.clear();
       }
       long now_ms = risk_.dup_order_window_ms > 0 ? NowMonoMs() : 0;
       // Fail-closed field validation: a doubtful submit is rejected, never forwarded.
@@ -199,6 +217,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         ClientStats& cs = clients_[client];
         routes_[o.id] = Route{client, o.shares, false, false, o.symbol, o.side, o.price};
         open_ids_.insert(o.id);
+        RememberOrder(o.id, o.symbol, o.side);
         account_open_notional_cents_ += n;
         cs.open_notional += n;
         ++cs.open_orders;
@@ -271,6 +290,7 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
         ReleaseOpen(it->second);  // backend rejected: free its reserved notional
         open_ids_.erase(it->first);
         RemoveDupEntry(id);  // terminal: a legitimate retry must not read as a dup
+        ForgetOrder(id);     // rejected: it will never fill, no journaling needed
       }
       auto cs = clients_.find(client);
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
@@ -307,6 +327,7 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
           it->second.closed = true;
           open_ids_.erase(it->first);
           RemoveDupEntry(id);  // terminal: a legitimate re-order must not read as a dup
+          ForgetOrder(id);     // fully filled: no further fill to journal
           if (cs != clients_.end()) --cs->second.open_orders;
         }
       }
@@ -338,6 +359,7 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
         ReleaseOpen(it->second);  // successful cancel: free reserved notional
         open_ids_.erase(it->first);
         RemoveDupEntry(id);  // terminal: a re-peg at the same price must not read as a dup
+        ForgetOrder(id);     // cancel-acked: no post-death fill expected for this id
         if (cs != clients_.end()) ++cs->second.cancelled;
       }
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
