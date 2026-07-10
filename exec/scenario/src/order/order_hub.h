@@ -106,9 +106,15 @@ class OrderHub {
 
   // The (symbol, side) of one order, kept past its route so a fill that arrives
   // after the owning client is gone can still be named for the journal.
+  // shares_accounted tracks how many of shares_total already reached the journal
+  // (routed to the live trader, which journals its own, plus any the hub wrote),
+  // so an unroutable fill is capped at the order size and a redelivery on a
+  // fully-accounted id is not journaled twice.
   struct OrderMeta {
     std::string symbol;
     Side side = Side::kBuy;
+    long shares_total = 0;
+    long shares_accounted = 0;
   };
 
   // Lifetime aggregate for one connected client (fd), for the status snapshot.
@@ -141,7 +147,7 @@ class OrderHub {
   // Track/untrack an order's (symbol, side) for post-death fill journaling. Kept
   // past OnClientDisconnect on purpose; dropped only on a hub-observed terminal.
   // Caller holds mu_.
-  void RememberOrder(const std::string& id, const std::string& symbol, Side side);
+  void RememberOrder(const std::string& id, const std::string& symbol, Side side, long shares);
   void ForgetOrder(const std::string& id);
   // The account's last fill price for `symbol` if one exists (the collar
   // reference); false at cold start (no fill yet). Caller holds mu_.

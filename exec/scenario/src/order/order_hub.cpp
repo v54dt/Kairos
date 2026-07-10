@@ -86,8 +86,9 @@ void OrderHub::RemoveDupEntry(const std::string& id) {
   }
 }
 
-void OrderHub::RememberOrder(const std::string& id, const std::string& symbol, Side side) {
-  order_meta_[id] = OrderMeta{symbol, side};
+void OrderHub::RememberOrder(const std::string& id, const std::string& symbol, Side side,
+                             long shares) {
+  order_meta_[id] = OrderMeta{symbol, side, shares, 0};
   meta_fifo_.push_back(id);
   while (meta_fifo_.size() > kOrderMetaCap) {
     order_meta_.erase(meta_fifo_.front());
@@ -219,7 +220,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         ClientStats& cs = clients_[client];
         routes_[o.id] = Route{client, o.shares, false, false, o.symbol, o.side, o.price};
         open_ids_.insert(o.id);
-        RememberOrder(o.id, o.symbol, o.side);
+        RememberOrder(o.id, o.symbol, o.side, o.shares);
         account_open_notional_cents_ += n;
         cs.open_notional += n;
         ++cs.open_orders;
@@ -310,7 +311,8 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
 
 void OrderHub::OnFill(const std::string& id, const Fill& f) {
   int client = -1;
-  bool named = false;  // the id is still in order_meta_ (needed only when unroutable)
+  bool named = false;       // the id is still in order_meta_ (needed only when unroutable)
+  long journal_shares = 0;  // unroutable shares to persist, capped by the order size
   std::string symbol;
   Side side = Side::kBuy;
   {
@@ -320,6 +322,12 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
       client = it->second.client;
       auto cs = clients_.find(client);
       if (risk_.price_collar_pct > 0) last_fill_price_cents_[it->second.symbol] = f.price;
+      // A routed fill is journaled by the owning trader; record it against the
+      // order size so a redelivery after that trader is gone is not journaled again.
+      if (auto m = order_meta_.find(id); m != order_meta_.end()) {
+        m->second.shares_accounted =
+            std::min<long>(m->second.shares_total, m->second.shares_accounted + f.shares);
+      }
       if (!it->second.closed) {
         long before = it->second.shares_remaining;
         long acct_sh = std::min<long>(f.shares, before > 0 ? before : 0);
@@ -343,9 +351,15 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
     } else {
       auto m = order_meta_.find(id);
       if (m != order_meta_.end()) {
-        named = true;
-        symbol = m->second.symbol;
-        side = m->second.side;
+        long room = m->second.shares_total - m->second.shares_accounted;
+        journal_shares = std::min<long>(f.shares, room > 0 ? room : 0);
+        if (journal_shares > 0) {
+          named = true;
+          symbol = m->second.symbol;
+          side = m->second.side;
+          m->second.shares_accounted += journal_shares;
+          if (m->second.shares_accounted >= m->second.shares_total) ForgetOrder(id);
+        }
       }
     }
   }
@@ -358,21 +372,24 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
   // No client route: the trader that placed this order has exited. Persist the
   // fill into the SAME per-(symbol,side,day) journal it replays, so a restart
   // accounts it and does not re-buy the budget. Only unroutable fills are
-  // journaled here; a routed fill is the trader's own to record.
+  // journaled here; a routed fill is the trader's own to record. journal_shares
+  // is capped at the order's still-unaccounted quantity, so a redelivered fill
+  // on a fully-accounted id (named=false, journal_shares=0) is not written twice.
   std::fprintf(stderr, "kairos-order-hub: UNROUTABLE fill id=%s %ld @ %s (no client route)\n",
                id.c_str(), f.shares, CentsToString(f.price).c_str());
   if (risk_.journal_dir.empty()) return;
   if (!named) {
-    std::fprintf(stderr,
-                 "kairos-order-hub: cannot journal unroutable fill id=%s (order id not tracked)\n",
-                 id.c_str());
+    std::fprintf(
+        stderr,
+        "kairos-order-hub: cannot journal unroutable fill id=%s (untracked or already accounted)\n",
+        id.c_str());
     return;
   }
   std::string name = symbol + "-" + SideName(side) + "-" + JournalDayUtc8();
   std::string path = JournalPath(risk_.journal_dir, name);
-  if (OrderJournal::AppendFill(risk_.journal_dir, name, id, f.shares, f.price)) {
+  if (OrderJournal::AppendFill(risk_.journal_dir, name, id, journal_shares, f.price)) {
     std::fprintf(stderr, "kairos-order-hub: journaled unroutable fill id=%s %ld @ %s -> %s\n",
-                 id.c_str(), f.shares, CentsToString(f.price).c_str(), path.c_str());
+                 id.c_str(), journal_shares, CentsToString(f.price).c_str(), path.c_str());
   } else {
     std::fprintf(stderr, "kairos-order-hub: FAILED to journal unroutable fill id=%s to %s\n",
                  id.c_str(), path.c_str());

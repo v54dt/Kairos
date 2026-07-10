@@ -184,7 +184,40 @@ int main() {
     b2.FireFill("k9-2", Fill{1, 10000});  // stray, meta gone
     CHECK(ReadJournalFills(path2).empty());
 
+    // A broker that RE-DELIVERS the same fill on an orphaned id (standby/resync
+    // feed replay) must not double-journal: the unroutable path caps at the order
+    // size and forgets the id once fully accounted, so a restart replays it once.
+    const std::string name3 = std::string("2454-Buy-") + JournalDayUtc8();
+    const std::string path3 = JournalPath(dir, name3);
+    std::remove(path3.c_str());
+    OrderSubmitMsg os3{"k9-3", "2454", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",  50000,  1000};
+    Feed(h2, 8, EncodeOrderSubmit(os3));
+    h2.OnClientDisconnect(8);
+    b2.FireFill("k9-3", Fill{1000, 50000});  // first delivery -> journaled
+    b2.FireFill("k9-3", Fill{1000, 50000});  // redelivery -> dropped (fully accounted)
+    b2.FireFill("k9-3", Fill{1000, 50000});  // redelivery -> dropped
+    auto fills3 = ReadJournalFills(path3);
+    CHECK(fills3.size() == 1);
+    CHECK(fills3[0].shares == 1000);
+
+    // An unroutable fill larger than the order's unaccounted quantity is capped
+    // at that quantity, never over-counting past the order size.
+    const std::string name4 = std::string("2603-Buy-") + JournalDayUtc8();
+    const std::string path4 = JournalPath(dir, name4);
+    std::remove(path4.c_str());
+    OrderSubmitMsg os4{"k9-4", "2603", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",  30000,  500};
+    Feed(h2, 9, EncodeOrderSubmit(os4));
+    h2.OnClientDisconnect(9);
+    b2.FireFill("k9-4", Fill{800, 30000});  // over-delivery -> capped at 500
+    auto fills4 = ReadJournalFills(path4);
+    CHECK(fills4.size() == 1);
+    CHECK(fills4[0].shares == 500);
+
     h2.Stop();
+    std::remove(path3.c_str());
+    std::remove(path4.c_str());
     std::remove(path.c_str());
     std::remove(path2.c_str());
     ::rmdir(dir.c_str());
