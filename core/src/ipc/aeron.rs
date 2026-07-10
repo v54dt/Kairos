@@ -23,25 +23,30 @@ pub fn resolve_aeron_dir(explicit: Option<&str>) -> Option<String> {
         .filter(|d| !d.is_empty())
 }
 
-fn client(aeron_dir: Option<&str>) -> anyhow::Result<Aeron> {
+/// Build a started client and report the Aeron directory it actually resolved to
+/// (an explicit/env dir, else Aeron's own default) so a caller can probe driver
+/// liveness against the same CnC file.
+fn client(aeron_dir: Option<&str>) -> anyhow::Result<(Aeron, String)> {
     let ctx = AeronContext::new().context("aeron context")?;
     if let Some(dir) = resolve_aeron_dir(aeron_dir) {
         ctx.set_dir(&dir.as_str().into_c_string())
             .map_err(|e| anyhow::anyhow!("set aeron dir: {e:?}"))?;
     }
+    let dir = ctx.get_dir().to_owned();
     let aeron = Aeron::new(&ctx).context("aeron client")?;
     aeron.start().context("aeron start")?;
-    Ok(aeron)
+    Ok((aeron, dir))
 }
 
 pub struct AeronSub {
     _aeron: Aeron,
     subscription: AeronSubscription,
+    aeron_dir: String,
 }
 
 impl AeronSub {
     pub fn connect(aeron_dir: Option<&str>, stream_id: i32) -> anyhow::Result<Self> {
-        let aeron = client(aeron_dir)?;
+        let (aeron, dir) = client(aeron_dir)?;
         let subscription = aeron
             .add_subscription(
                 AERON_IPC_STREAM,
@@ -54,7 +59,24 @@ impl AeronSub {
         Ok(Self {
             _aeron: aeron,
             subscription,
+            aeron_dir: dir,
         })
+    }
+
+    /// Whether the media driver's to-driver consumer heartbeat is fresher than
+    /// `timeout_ms`. The driver conductor writes this beat every duty cycle regardless
+    /// of quote flow, so it reads active on an idle-but-healthy weekend and inactive
+    /// only when the driver is gone (heartbeat stale, cleared to NULL, or CnC unmapped).
+    pub fn driver_active(&self, timeout_ms: i64) -> bool {
+        let Ok(cnc) = AeronCnc::new_on_heap(&self.aeron_dir) else {
+            return false;
+        };
+        match cnc.get_to_driver_heartbeat_ms() {
+            Ok(heartbeat_ms) if heartbeat_ms > 0 => {
+                Aeron::epoch_clock() - heartbeat_ms <= timeout_ms
+            }
+            _ => false,
+        }
     }
 
     pub fn poll<F: FnMut(&[u8])>(
@@ -78,7 +100,7 @@ pub struct AeronPub {
 
 impl AeronPub {
     pub fn connect(aeron_dir: Option<&str>, stream_id: i32) -> anyhow::Result<Self> {
-        let aeron = client(aeron_dir)?;
+        let (aeron, _dir) = client(aeron_dir)?;
         let publication = aeron
             .add_publication(AERON_IPC_STREAM, stream_id, CONNECT_TIMEOUT)
             .map_err(|e| anyhow::anyhow!("add publication: {e:?}"))?;

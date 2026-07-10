@@ -10,7 +10,7 @@ use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::frame::{read_frame, write_frame};
 use kairos_core::uds::server::run_server;
 use tokio::net::UnixStream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 fn quote(symbol: &str, last: i64) -> Quote {
     Quote {
@@ -104,6 +104,7 @@ async fn uds_snapshot_then_live_push_with_filtering() {
     let srv_book = book.clone();
     let srv_tx = tx.clone();
     let srv_socket = socket.clone();
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         let _ = run_server(
             &srv_socket,
@@ -112,6 +113,7 @@ async fn uds_snapshot_then_live_push_with_filtering() {
             registry,
             change_tx,
             std::sync::Arc::new(Metrics::default()),
+            shutdown_rx,
         )
         .await;
     });
@@ -166,6 +168,7 @@ async fn subscribe_refcounts_and_disconnect_releases() {
     let srv_tx = tx.clone();
     let srv_socket = socket.clone();
     let srv_reg = registry.clone();
+    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         let _ = run_server(
             &srv_socket,
@@ -174,6 +177,7 @@ async fn subscribe_refcounts_and_disconnect_releases() {
             srv_reg,
             change_tx,
             std::sync::Arc::new(Metrics::default()),
+            shutdown_rx,
         )
         .await;
     });
@@ -215,5 +219,153 @@ async fn subscribe_refcounts_and_disconnect_releases() {
         "registry should be empty after client disconnects"
     );
 
+    let _ = std::fs::remove_file(&socket);
+}
+
+// A shutdown that flips WHILE frames are being written to a slow reader must never cut
+// a length-prefixed frame: the client drains only whole frames and then a clean EOF.
+// read_frame returns Err on a mid-payload EOF, so "every read Ok, terminating in
+// Ok(None)" is exactly the proof that no frame was truncated at the shutdown cut.
+#[tokio::test]
+async fn shutdown_delivers_whole_frames_then_eof_to_a_slow_reader() {
+    let socket = format!("/tmp/kairos-uds-shutdown-test-{}.sock", std::process::id());
+    let book = Arc::new(RwLock::new(Book::new()));
+    let (tx, _rx) = broadcast::channel::<FeedEvent>(4096);
+    let registry = Arc::new(Mutex::new(SubRegistry::new()));
+    let (change_tx, _change_rx) = std::sync::mpsc::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let srv_book = book.clone();
+    let srv_tx = tx.clone();
+    let srv_socket = socket.clone();
+    let server = tokio::spawn(async move {
+        let _ = run_server(
+            &srv_socket,
+            srv_book,
+            srv_tx,
+            registry,
+            change_tx,
+            std::sync::Arc::new(Metrics::default()),
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    wait_for_socket(&socket).await;
+
+    let mut client = UnixStream::connect(&socket).await.unwrap();
+    write_frame(&mut client, &encode_subscribe(&["2330"]))
+        .await
+        .unwrap();
+
+    // Push a long burst of subscribed-symbol frames so the writer is mid-stream (and,
+    // against a slow reader, blocked inside a socket write) when shutdown flips.
+    let producer = tokio::spawn(async move {
+        for i in 0..5000 {
+            if tx.send(FeedEvent::Quote(quote("2330", 58000 + i))).is_err() {
+                break;
+            }
+            if i % 500 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+    });
+
+    // Read a few frames slowly, then trigger shutdown mid-stream and keep draining.
+    let mut frames = 0usize;
+    let mut hit_eof = false;
+    for read_n in 0..100_000 {
+        if read_n == 20 {
+            shutdown_tx.send(true).unwrap();
+        }
+        if read_n % 5 == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        match tokio::time::timeout(Duration::from_secs(5), read_frame(&mut client)).await {
+            Ok(Ok(Some(frame))) => {
+                assert!(!frame.is_empty(), "a whole frame is never zero-length");
+                frames += 1;
+            }
+            Ok(Ok(None)) => {
+                hit_eof = true;
+                break;
+            }
+            Ok(Err(e)) => panic!("frame was cut at shutdown (partial read): {e:?}"),
+            Err(_) => panic!("timed out draining frames after shutdown"),
+        }
+    }
+
+    assert!(
+        hit_eof,
+        "server must close the connection (EOF) after draining"
+    );
+    assert!(frames > 0, "client should have received whole frames");
+
+    let _ = producer.await;
+    // The server drains all clients and returns cleanly (the exit-0 path).
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .expect("run_server did not return after shutdown")
+        .unwrap();
+
+    let _ = std::fs::remove_file(&socket);
+}
+
+// A client that subscribes and then never reads wedges its writer inside write_frame
+// once the kernel send buffer fills — past the shutdown-watch select point. Shutdown
+// must still return in bounded time by aborting that straggler, or the whole process
+// hangs until systemd SIGKILLs it. This proves run_server returns without external help.
+#[tokio::test]
+async fn shutdown_is_bounded_even_with_a_wedged_non_reading_client() {
+    let socket = format!("/tmp/kairos-uds-wedged-test-{}.sock", std::process::id());
+    let book = Arc::new(RwLock::new(Book::new()));
+    let (tx, _rx) = broadcast::channel::<FeedEvent>(8192);
+    let registry = Arc::new(Mutex::new(SubRegistry::new()));
+    let (change_tx, _change_rx) = std::sync::mpsc::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let srv_book = book.clone();
+    let srv_tx = tx.clone();
+    let srv_socket = socket.clone();
+    let server = tokio::spawn(async move {
+        let _ = run_server(
+            &srv_socket,
+            srv_book,
+            srv_tx,
+            registry,
+            change_tx,
+            std::sync::Arc::new(Metrics::default()),
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    wait_for_socket(&socket).await;
+
+    // Subscribe, then deliberately never read: hold the client so the socket stays open.
+    let mut client = UnixStream::connect(&socket).await.unwrap();
+    write_frame(&mut client, &encode_subscribe(&["2330"]))
+        .await
+        .unwrap();
+
+    // Flood subscribed frames until the kernel send buffer fills and the server's writer
+    // parks inside write_frame (past its shutdown select).
+    for i in 0..20_000 {
+        if tx.send(FeedEvent::Quote(quote("2330", 58000 + i))).is_err() {
+            break;
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    shutdown_tx.send(true).unwrap();
+
+    // Bounded exit: the drain grace is 3s, so allow a margin. Before the fix this hung
+    // until the non-reading client drained (i.e. indefinitely).
+    tokio::time::timeout(Duration::from_secs(6), server)
+        .await
+        .expect("run_server did not return within the bounded shutdown grace")
+        .unwrap();
+
+    drop(client);
     let _ = std::fs::remove_file(&socket);
 }

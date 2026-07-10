@@ -16,3 +16,4 @@ pub mod sim;
 pub mod subreg;
 pub mod tapegen;
 pub mod uds;
+pub mod watchdog;

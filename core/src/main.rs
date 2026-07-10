@@ -3,6 +3,7 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -16,7 +17,15 @@ use kairos_core::metrics::Metrics;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::path::quote_socket_path;
 use kairos_core::uds::server::run_server;
-use tokio::sync::broadcast;
+use kairos_core::watchdog::{
+    DRIVER_DEAD_GRACE, DriverLivenessWatchdog, PollErrorWatchdog, driver_timeout_ms_from_env,
+    max_poll_errors_from_env,
+};
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::{broadcast, watch};
+
+/// How often the poll loop probes the media driver's CnC heartbeat.
+const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Re-publish the desired set at least this often (also the upstream heartbeat
 /// that recovers a sidecar restart/reconnect).
@@ -31,17 +40,45 @@ async fn main() -> anyhow::Result<()> {
     let metrics = Arc::new(Metrics::default());
     metrics.clone().spawn_logger();
 
+    // On SIGTERM/SIGINT: flip the async watch (server stops accepting and drains
+    // in-flight frames) and the sync flag the poll thread reads (so a driver-timeout
+    // race during teardown cannot turn a clean stop into exit 1).
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let shutting_down = Arc::new(AtomicBool::new(false));
+    let signal_flag = shutting_down.clone();
+    tokio::spawn(async move {
+        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
+        tokio::select! {
+            _ = sigterm.recv() => {}
+            _ = sigint.recv() => {}
+        }
+        eprintln!("kairos-core: shutdown signal received; draining and exiting");
+        signal_flag.store(true, Ordering::SeqCst);
+        let _ = shutdown_tx.send(true);
+    });
+
     let aeron_book = book.clone();
     let aeron_tx = tx.clone();
     let aeron_metrics = metrics.clone();
-    thread::spawn(move || aeron_poll_loop(aeron_book, aeron_tx, aeron_metrics));
+    let aeron_shutdown = shutting_down.clone();
+    thread::spawn(move || aeron_poll_loop(aeron_book, aeron_tx, aeron_metrics, aeron_shutdown));
 
     let control_registry = registry.clone();
     thread::spawn(move || control_publish_loop(control_registry, change_rx));
 
     let socket_path = quote_socket_path();
     eprintln!("kairos-core: UDS quote server on {socket_path}");
-    run_server(&socket_path, book, tx, registry, change_tx, metrics).await?;
+    run_server(
+        &socket_path,
+        book,
+        tx,
+        registry,
+        change_tx,
+        metrics,
+        shutdown_rx,
+    )
+    .await?;
     Ok(())
 }
 
@@ -73,6 +110,7 @@ fn aeron_poll_loop(
     book: Arc<RwLock<Book>>,
     tx: broadcast::Sender<FeedEvent>,
     metrics: Arc<Metrics>,
+    shutting_down: Arc<AtomicBool>,
 ) {
     let sub = match AeronSub::connect(None, DEFAULT_STREAM_ID) {
         Ok(s) => s,
@@ -83,7 +121,25 @@ fn aeron_poll_loop(
     };
     let mut idle: u32 = 0;
     let mut last_err: Option<Instant> = None;
+    let mut poll_wd = PollErrorWatchdog::new(max_poll_errors_from_env());
+    let mut live_wd = DriverLivenessWatchdog::new(DRIVER_DEAD_GRACE);
+    let driver_timeout_ms = driver_timeout_ms_from_env();
+    let mut last_liveness = Instant::now();
     loop {
+        if shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        if last_liveness.elapsed() >= LIVENESS_CHECK_INTERVAL {
+            last_liveness = Instant::now();
+            if live_wd.observe(sub.driver_active(driver_timeout_ms), Instant::now())
+                && !shutting_down.load(Ordering::SeqCst)
+            {
+                eprintln!(
+                    "kairos-core: FATAL media driver inactive (no CnC heartbeat for >{driver_timeout_ms}ms); exiting for restart"
+                );
+                std::process::exit(1);
+            }
+        }
         match sub.poll(
             |data| match decode_feed_event(data) {
                 Ok(FeedEvent::Quote(q)) => {
@@ -99,9 +155,22 @@ fn aeron_poll_loop(
             },
             64,
         ) {
-            Ok(n) if n > 0 => idle = 0,
-            Ok(_) => idle_backoff(&mut idle),
+            Ok(n) if n > 0 => {
+                idle = 0;
+                poll_wd.on_ok();
+            }
+            Ok(_) => {
+                poll_wd.on_ok();
+                idle_backoff(&mut idle);
+            }
             Err(e) => {
+                if poll_wd.on_err() && !shutting_down.load(Ordering::SeqCst) {
+                    eprintln!(
+                        "kairos-core: FATAL aeron poll errored {} times consecutively ({e:?}); exiting for restart",
+                        poll_wd.threshold()
+                    );
+                    std::process::exit(1);
+                }
                 if last_err.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
                     eprintln!("kairos-core: aeron poll error: {e:?}");
                     last_err = Some(Instant::now());
