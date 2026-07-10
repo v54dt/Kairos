@@ -92,10 +92,11 @@ target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
 add_library(kairos_sim src/sim/fill_model.cpp src/sim/fill_engine.cpp src/sim/auction.cpp)
 target_include_directories(kairos_sim PUBLIC ${KAIROS_INC})
 
-# Mock-hub OrderBackend over the fill-model library (no SDK, no real-order path).
-add_library(kairos_sim_backend src/sim/sim_order_backend.cpp)
+# Mock-hub OrderBackend over the fill-model library (no SDK, no real-order path). The seeded fault
+# injector is sim-only and links in here so faults are impossible to reach from the live hub.
+add_library(kairos_sim_backend src/sim/sim_order_backend.cpp src/sim/fault_injector.cpp)
 target_include_directories(kairos_sim_backend PUBLIC ${KAIROS_INC})
-target_link_libraries(kairos_sim_backend PUBLIC kairos_sim)
+target_link_libraries(kairos_sim_backend PUBLIC kairos_sim pthread)
 
 add_library(kairos_blacklist src/blacklist/blacklist.cpp)
 target_include_directories(kairos_blacklist PUBLIC ${KAIROS_INC})
@@ -263,6 +264,16 @@ add_executable(test_sim_hub_server tests/test_sim_hub_server.cpp)
 target_link_libraries(test_sim_hub_server PRIVATE kairos_sim_backend kairos_order_hub_server
                                                   kairos_order_codec)
 add_test(NAME test_sim_hub_server COMMAND test_sim_hub_server)
+
+add_executable(test_sim_faults tests/test_sim_faults.cpp)
+target_link_libraries(test_sim_faults PRIVATE kairos_sim_backend)
+add_test(NAME test_sim_faults COMMAND test_sim_faults)
+
+# Opt-in fault regression drills against the real sim pipeline + trader: self-skips (exit 0) unless
+# KAIROS_FAULT_DRILLS=1, so default CI stays green.
+add_executable(test_sim_fault_drills tests/test_sim_fault_drills.cpp)
+add_dependencies(test_sim_fault_drills kairos_sim_hubd kairos_scenario_trader)
+add_test(NAME test_sim_fault_drills COMMAND test_sim_fault_drills)
 
 add_executable(test_order_codec tests/test_order_codec.cpp)
 target_link_libraries(test_order_codec PRIVATE kairos_order_codec)

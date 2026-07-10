@@ -1,19 +1,29 @@
 #include "sim_order_backend.h"
 
+#include <cstdio>
 #include <utility>
 
 namespace kairos::exec {
 
-SimOrderBackend::SimOrderBackend(FillMode mode, const std::vector<std::string>& symbols)
-    : engine_(
+SimOrderBackend::SimOrderBackend(FillMode mode, const std::vector<std::string>& symbols,
+                                 FaultConfig faults)
+    : faults_(faults),
+      engine_(
           mode,
           [this](const std::string& id, bool ok, const std::string& e) {
-            if (on_ack_) on_ack_(id, ok, e);
+            faults_.OnAck(id, ok, e, [this](const std::string& i, bool o, const std::string& err) {
+              std::lock_guard<std::mutex> wire(wire_mu_);
+              if (on_ack_) on_ack_(i, o, err);
+            });
           },
           [this](const std::string& id, const Fill& f) {
-            if (on_fill_) on_fill_(id, f);
+            faults_.OnFill(id, f, [this](const std::string& i, const Fill& fill) {
+              std::lock_guard<std::mutex> wire(wire_mu_);
+              if (on_fill_) on_fill_(i, fill);
+            });
           },
           [this](const std::string& id, bool ok) {
+            std::lock_guard<std::mutex> wire(wire_mu_);
             if (on_cancel_) on_cancel_(id, ok);
           }) {
   for (const auto& s : symbols) engine_.AddSymbol(s);
@@ -50,6 +60,13 @@ void SimOrderBackend::FlushPendingBookLocked() {
 
 void SimOrderBackend::Submit(const OrderSubmitMsg& m) {
   std::lock_guard<std::mutex> lock(mu_);
+  faults_.NoteSubmit();
+  if (faults_.DrawReject()) {  // rejected before any engine bookkeeping is created
+    std::fprintf(stderr, "kairos-sim-hub: fault reject id=%s\n", m.id.c_str());
+    std::lock_guard<std::mutex> wire(wire_mu_);
+    if (on_ack_) on_ack_(m.id, false, "fault: injected reject");
+    return;
+  }
   FlushPendingBookLocked();  // queue init needs the latest post-trade depth
   SimOrder o;
   o.id = m.id;
@@ -100,5 +117,7 @@ void SimOrderBackend::Finalize() {
   FlushPendingBookLocked();
   engine_.Finalize();
 }
+
+void SimOrderBackend::Shutdown() { faults_.Stop(); }
 
 }  // namespace kairos::exec

@@ -26,6 +26,11 @@ class OrderHubServer {
   bool Start();  // connect the backend, then bind/listen/accept
   void Stop();
 
+  // Shut down every live client connection while staying bound and accepting, so a
+  // reconnect is served. Sim-only fault hook (kairos_sim_hubd's disconnect drills);
+  // the live hub never calls it.
+  void DisconnectAllClients();
+
  private:
   void AcceptLoop();
   void ClientLoop(int fd);
