@@ -111,8 +111,11 @@ int main() {
   CHECK(sent[3].second.kind == OrderMsgKind::kCancelResult);
   CHECK(sent[3].second.cancel_result.ok);
 
-  // events for an unknown id are dropped (no route)
+  // events for an unknown id are dropped (no route), and every unroutable callback
+  // path is exercised (the hub logs them; nothing is sent, nothing crashes).
   backend.FireAck("ghost", true, "");
+  backend.FireFill("ghost", Fill{1, 1});
+  backend.FireCancel("ghost", true);
   CHECK(sent.size() == 4);
 
   // after a client disconnects, its routes are gone

@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 
 #include "order_backend.h"
 #include "scenario.h"
@@ -14,7 +15,10 @@ namespace kairos::exec {
 
 // Real order backend over the concords StockClient. Every SDK call is serialized
 // through a 1 req/s gate (concords rate limit). Order ids are the engine's
-// correlation ids (concords user_defined_id); cancel/update target the same id.
+// correlation ids (concords user_defined_id); submit/ack/fill all key on it.
+// CancelOrder's target_id IS the submit's user_defined_id (confirmed with the
+// broker 2026-07-10), so cancelling by our correlation id is correct; we still
+// flag any cancel ack whose id does not echo one we cancelled.
 // Holds only creds: the full order spec arrives per Submit, so one backend can
 // serve any symbol (used directly by a scenario, or shared by the order hub).
 class ConcordsOrderBackend : public OrderBackend {
@@ -34,6 +38,8 @@ class ConcordsOrderBackend : public OrderBackend {
   std::unique_ptr<concords_sdk::stock::StockClient> stock_;
   std::mutex gate_mu_;
   std::chrono::steady_clock::time_point last_req_{};
+  std::mutex cancel_mu_;
+  std::unordered_set<std::string> pending_cancels_;  // user_defined_ids we asked to cancel
 };
 
 }  // namespace kairos::exec

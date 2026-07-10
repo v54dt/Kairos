@@ -4,11 +4,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <ctime>
 #include <utility>
 
 #include "order_codec.h"
+#include "tw_market.h"  // CentsToString
 
 namespace kairos::exec {
 
@@ -115,6 +117,8 @@ void OrderHub::SetMonoMsForTest(long ms) {
 }
 
 void OrderHub::RejectSubmit(int client, const std::string& id, const std::string& reason) {
+  std::fprintf(stderr, "kairos-order-hub: reject client=%d id=%s reason=%s\n", client, id.c_str(),
+               reason.c_str());
   send_(client, EncodeOrderAck({id, false, reason}));
 }
 
@@ -211,8 +215,13 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       RejectSubmit(client, o.id, reject);  // ack ok=false, off the lock; no backend forward
       return;
     }
+    std::fprintf(stderr, "kairos-order-hub: submit client=%d id=%s %s %s %ld @ %s\n", client,
+                 o.id.c_str(), o.symbol.c_str(), o.side == Side::kBuy ? "Buy" : "Sell", o.shares,
+                 CentsToString(o.price).c_str());
     backend_->Submit(o);  // gated inside the backend; never hold mu_ across it
   } else if (msg.kind == OrderMsgKind::kCancel) {
+    std::fprintf(stderr, "kairos-order-hub: cancel-request client=%d id=%s\n", client,
+                 msg.cancel.id.c_str());
     backend_->Cancel(msg.cancel.id);  // cancels are never gated: always allow flattening
   }
 }
@@ -267,7 +276,14 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
     }
   }
-  if (client >= 0) send_(client, EncodeOrderAck({id, ok, err}));
+  if (client >= 0) {
+    std::fprintf(stderr, "kairos-order-hub: ack id=%s ok=%d err=%s -> client=%d\n", id.c_str(),
+                 ok ? 1 : 0, err.c_str(), client);
+    send_(client, EncodeOrderAck({id, ok, err}));
+  } else {
+    std::fprintf(stderr, "kairos-order-hub: UNROUTABLE ack id=%s ok=%d err=%s (no client route)\n",
+                 id.c_str(), ok ? 1 : 0, err.c_str());
+  }
 }
 
 void OrderHub::OnFill(const std::string& id, const Fill& f) {
@@ -300,7 +316,14 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
       }
     }
   }
-  if (client >= 0) send_(client, EncodeOrderFill({id, f.shares, f.price}));
+  if (client >= 0) {
+    std::fprintf(stderr, "kairos-order-hub: fill id=%s %ld @ %s -> client=%d\n", id.c_str(),
+                 f.shares, CentsToString(f.price).c_str(), client);
+    send_(client, EncodeOrderFill({id, f.shares, f.price}));
+  } else {
+    std::fprintf(stderr, "kairos-order-hub: UNROUTABLE fill id=%s %ld @ %s (no client route)\n",
+                 id.c_str(), f.shares, CentsToString(f.price).c_str());
+  }
 }
 
 void OrderHub::OnCancel(const std::string& id, bool ok) {
@@ -320,7 +343,14 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
     }
   }
-  if (client >= 0) send_(client, EncodeOrderCancelResult({id, ok}));
+  if (client >= 0) {
+    std::fprintf(stderr, "kairos-order-hub: cancel id=%s ok=%d -> client=%d\n", id.c_str(),
+                 ok ? 1 : 0, client);
+    send_(client, EncodeOrderCancelResult({id, ok}));
+  } else {
+    std::fprintf(stderr, "kairos-order-hub: UNROUTABLE cancel id=%s ok=%d (no client route)\n",
+                 id.c_str(), ok ? 1 : 0);
+  }
 }
 
 HubStatus OrderHub::CaptureStatus() const {

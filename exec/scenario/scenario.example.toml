@@ -48,8 +48,9 @@ weekdays_only = true
 
 [journal]
 # Run-state journal dir: on restart, same-day fills are replayed so accounting is
-# restored and the budget isn't re-bought. Empty = off. Use an absolute path
-# (e.g. /home/you/Kairos/data/journal) so it lands under the gitignored data/.
+# restored and the budget isn't re-bought. Empty = off in paper; a live run with an
+# empty dir defaults to <data-dir>/journal (~/Kairos/data/journal). Use an absolute
+# path (e.g. /home/you/Kairos/data/journal) so it lands under the gitignored data/.
 dir = ""
 
 [risk]

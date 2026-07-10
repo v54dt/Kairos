@@ -227,6 +227,5 @@ int main(int argc, char** argv) {
   if (ignore_window) engine.set_ignore_window(true);
   if (dashboard) engine.set_dashboard(dashboard.get());
   g_engine = &engine;
-  engine.Run();
-  return 0;
+  return engine.Run();
 }

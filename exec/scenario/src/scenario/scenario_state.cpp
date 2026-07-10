@@ -83,6 +83,8 @@ ScenarioState ApplyStdoutLine(ScenarioState cur, const std::string& line,
 }
 
 std::string ExtractFailureReason(const std::string& line) {
+  constexpr const char* kFatal = "kairos-exec: FATAL ";
+  if (StartsWith(line, kFatal)) return line.substr(std::string(kFatal).size());
   if (line.find("order backend connect failed") != std::string::npos)
     return "order backend connect failed";
   if (line.find("order backend disconnected") != std::string::npos)

@@ -40,7 +40,10 @@ class ScenarioEngine {
   ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink, QuoteSource* quotes,
                  EngineClock clock = {});
 
-  void Run();
+  // 0 = normal (complete/shutdown/incomplete). Non-zero = fail-closed exit the
+  // supervisor classifies as crashed (halt on consecutive failures, or a live run
+  // refused for lack of a journal).
+  int Run();
   void RequestStop();
   void set_ignore_window(bool v) { ignore_window_ = v; }
   void set_dashboard(DashboardMetrics* d) { dashboard_ = d; }
@@ -51,6 +54,9 @@ class ScenarioEngine {
   void OnCancel(const std::string& id, bool ok);
   void OnDisconnect();
   void ClearResting();  // call under mu_
+  // Count one order failure (submit-reject or ack-timeout); halt the run once the
+  // consecutive count reaches the configured cap. Call under mu_.
+  void RegisterFailure(const std::string& reason);
   void SdkGate();
   std::string NextOrderId();
 
@@ -75,7 +81,11 @@ class ScenarioEngine {
   std::chrono::steady_clock::time_point resting_t_start_;   // before Submit (post-gate)
   std::chrono::steady_clock::time_point resting_t_submit_;  // after Submit returns
   bool complete_ = false;
-  bool quote_stalled_ = false;  // quote-stall alert armed/fired (main-thread only)
+  int consecutive_failures_ = 0;  // reset by a successful ack; halts the run at the cap
+  bool halted_ = false;           // fail-closed: stop placing orders and exit non-zero
+  std::string halt_reason_;       // terminal event / crash reason (never empty when halted_)
+  bool journal_ok_ = false;       // a usable run-state journal is open
+  bool quote_stalled_ = false;    // quote-stall alert armed/fired (main-thread only)
   std::atomic<bool> stop_{false};
   bool ignore_window_ = false;
   int schedule_start_min_ =
