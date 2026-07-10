@@ -118,6 +118,17 @@ void OrderHubServer::Send(int client, const std::vector<std::uint8_t>& bytes) {
   ::close(dupfd);
 }
 
+void OrderHubServer::DisconnectAllClients() {
+  std::vector<int> fds;
+  {
+    std::lock_guard<std::mutex> lock(clients_mu_);
+    fds.assign(live_.begin(), live_.end());
+  }
+  // Unblock each client reader; its ClientLoop sees EOF, runs OnClientDisconnect,
+  // and closes the fd. The listen socket stays open, so a reconnect is accepted.
+  for (int fd : fds) ::shutdown(fd, SHUT_RDWR);
+}
+
 void OrderHubServer::Stop() {
   if (stop_.exchange(true)) return;  // idempotent
   if (listen_fd_ >= 0) {
