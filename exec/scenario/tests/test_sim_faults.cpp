@@ -219,6 +219,22 @@ void TestSeedDeterminism() {
   CHECK(a.first != c.first || a.second != c.second);
 }
 
+void TestStopDropsPendingAck() {
+  // A delayed ack still queued when Stop() runs must never be delivered (the
+  // worker's wait_until can wake by timeout on a past-due deadline right as Stop
+  // sets stop_). Honors the header contract "Stop drops any still-pending acks".
+  FaultConfig cfg;
+  cfg.seed = 11;
+  cfg.ack_delay_ms = 100000;  // far in the future so it stays queued
+  std::atomic<int> acks{0};
+  {
+    FaultInjector inj(cfg);
+    inj.OnAck("k-1", true, "", [&acks](const std::string&, bool, const std::string&) { ++acks; });
+    inj.Stop();  // drops the queued ack
+  }
+  CHECK(acks.load() == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -228,6 +244,7 @@ int main() {
   TestDelayAck();
   TestPartialFill();
   TestSeedDeterminism();
+  TestStopDropsPendingAck();
 
   if (g_failures == 0) {
     std::printf("test_sim_faults: OK\n");

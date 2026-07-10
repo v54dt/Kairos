@@ -99,6 +99,7 @@ void FaultInjector::Worker() {
     }
     auto next = queue_.begin()->first;
     if (q_cv_.wait_until(lock, next) == std::cv_status::timeout) {
+      if (stop_) break;  // Stop() raced the deadline: drop the pending ack, never fire it
       auto it = queue_.begin();
       if (it == queue_.end() || it->first > std::chrono::steady_clock::now()) continue;
       std::function<void()> fn = std::move(it->second);
