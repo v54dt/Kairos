@@ -60,6 +60,8 @@ bool ConcordsOrderBackend::Connect() {
       shares = std::stol(r.quantity);
       price = std::stod(r.price);
     } catch (...) {
+      std::fprintf(stderr, "kairos-exec: fill callback parse failed id=%s qty=%s px=%s (dropped)\n",
+                   r.user_defined_id.c_str(), r.quantity.c_str(), r.price.c_str());
       return;
     }
     if (shares > 0 && price > 0.0 && on_fill_)

@@ -108,8 +108,13 @@ void OrderHubServer::Send(int client, const std::vector<std::uint8_t>& bytes) {
     if (live_.count(client))
       dupfd = ::dup(client);  // keep the socket alive past a concurrent close
   }
-  if (dupfd < 0) return;
-  WriteFrame(dupfd, bytes);  // outside the lock: a slow client can't stall accept/disconnect/Stop
+  if (dupfd < 0) {
+    std::fprintf(stderr, "kairos-order-hub: drop reply to client=%d (connection gone)\n", client);
+    return;
+  }
+  // Outside the lock: a slow client can't stall accept/disconnect/Stop.
+  if (!WriteFrame(dupfd, bytes))
+    std::fprintf(stderr, "kairos-order-hub: reply write to client=%d failed\n", client);
   ::close(dupfd);
 }
 
