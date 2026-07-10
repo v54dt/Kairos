@@ -215,9 +215,28 @@ int main() {
     CHECK(fills4.size() == 1);
     CHECK(fills4[0].shares == 500);
 
+    // A fill that crosses a cancel-ack in flight, then arrives after the trader
+    // has exited, must still be journaled: the cancel-ack keeps the id's meta so
+    // the residual fill stays nameable (not silently dropped -> re-buy on restart).
+    const std::string name5 = std::string("2412-Buy-") + JournalDayUtc8();
+    const std::string path5 = JournalPath(dir, name5);
+    std::remove(path5.c_str());
+    OrderSubmitMsg os5{"k9-5", "2412", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",  10000,  1000};
+    Feed(h2, 10, EncodeOrderSubmit(os5));
+    b2.FireFill("k9-5", Fill{700, 10000});  // 700 routed to the live trader
+    Feed(h2, 10, EncodeOrderCancel({"k9-5"}));
+    b2.FireCancel("k9-5", true);            // cancel-acked with 300 still working
+    h2.OnClientDisconnect(10);              // trader exits before the crossing fill lands
+    b2.FireFill("k9-5", Fill{300, 10000});  // residual post-cancel fill
+    auto fills5 = ReadJournalFills(path5);
+    CHECK(fills5.size() == 1);
+    CHECK(fills5[0].shares == 300);
+
     h2.Stop();
     std::remove(path3.c_str());
     std::remove(path4.c_str());
+    std::remove(path5.c_str());
     std::remove(path.c_str());
     std::remove(path2.c_str());
     ::rmdir(dir.c_str());

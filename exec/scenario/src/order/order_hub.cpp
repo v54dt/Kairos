@@ -407,8 +407,9 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
       if (ok) {
         ReleaseOpen(it->second);  // successful cancel: free reserved notional
         open_ids_.erase(it->first);
-        RemoveDupEntry(id);  // terminal: a re-peg at the same price must not read as a dup
-        ForgetOrder(id);     // cancel-acked: no post-death fill expected for this id
+        RemoveDupEntry(id);  // terminal for the gate: a re-peg at the same price is not a dup
+        // Meta is kept: a fill can cross the cancel at the exchange, and that
+        // post-cancel fill must stay nameable for the journal if the trader exits.
         if (cs != clients_.end()) ++cs->second.cancelled;
       }
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
