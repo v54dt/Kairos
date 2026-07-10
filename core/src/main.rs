@@ -16,7 +16,14 @@ use kairos_core::metrics::Metrics;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::path::quote_socket_path;
 use kairos_core::uds::server::run_server;
+use kairos_core::watchdog::{
+    DRIVER_DEAD_GRACE, DriverLivenessWatchdog, PollErrorWatchdog, driver_timeout_ms_from_env,
+    max_poll_errors_from_env,
+};
 use tokio::sync::broadcast;
+
+/// How often the poll loop probes the media driver's CnC heartbeat.
+const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Re-publish the desired set at least this often (also the upstream heartbeat
 /// that recovers a sidecar restart/reconnect).
@@ -83,7 +90,20 @@ fn aeron_poll_loop(
     };
     let mut idle: u32 = 0;
     let mut last_err: Option<Instant> = None;
+    let mut poll_wd = PollErrorWatchdog::new(max_poll_errors_from_env());
+    let mut live_wd = DriverLivenessWatchdog::new(DRIVER_DEAD_GRACE);
+    let driver_timeout_ms = driver_timeout_ms_from_env();
+    let mut last_liveness = Instant::now();
     loop {
+        if last_liveness.elapsed() >= LIVENESS_CHECK_INTERVAL {
+            last_liveness = Instant::now();
+            if live_wd.observe(sub.driver_active(driver_timeout_ms), Instant::now()) {
+                eprintln!(
+                    "kairos-core: FATAL media driver inactive (no CnC heartbeat for >{driver_timeout_ms}ms); exiting for restart"
+                );
+                std::process::exit(1);
+            }
+        }
         match sub.poll(
             |data| match decode_feed_event(data) {
                 Ok(FeedEvent::Quote(q)) => {
@@ -99,9 +119,22 @@ fn aeron_poll_loop(
             },
             64,
         ) {
-            Ok(n) if n > 0 => idle = 0,
-            Ok(_) => idle_backoff(&mut idle),
+            Ok(n) if n > 0 => {
+                idle = 0;
+                poll_wd.on_ok();
+            }
+            Ok(_) => {
+                poll_wd.on_ok();
+                idle_backoff(&mut idle);
+            }
             Err(e) => {
+                if poll_wd.on_err() {
+                    eprintln!(
+                        "kairos-core: FATAL aeron poll errored {} times consecutively ({e:?}); exiting for restart",
+                        poll_wd.threshold()
+                    );
+                    std::process::exit(1);
+                }
                 if last_err.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
                     eprintln!("kairos-core: aeron poll error: {e:?}");
                     last_err = Some(Instant::now());
