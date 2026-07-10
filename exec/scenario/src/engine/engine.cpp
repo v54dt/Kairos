@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -78,6 +79,14 @@ ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSi
     quotes_->SetTradeCallback([this, sym](const std::string& s, const Trade& t) {
       if (s == sym) backend_->OnMarketTrade(s, t, t.trade_ts_us);
     });
+  }
+  // A live run with no configured journal defaults to the TUI's <data-dir>/journal
+  // so it always has a fill record; paper never inherits this path, so simulated
+  // fills can't contaminate the journal a live run replays from.
+  if (s_.journal_dir.empty() && s_.live) {
+    const char* home = std::getenv("HOME");
+    if (home != nullptr && home[0] != '\0')
+      s_.journal_dir = std::string(home) + "/Kairos/data/journal";
   }
   // Restart-safe accounting: replay today's fills so the budget isn't re-bought,
   // then append to the same journal.

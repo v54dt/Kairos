@@ -526,15 +526,24 @@ void TestLiveRequiresJournal() {
   }
 }
 
-// FIX B real proof: a toml with no [journal] defaults to $HOME/Kairos/data/journal,
-// and a paper run that fills once writes a journal file there.
+// Counts .jsonl files under a directory (0 if the directory does not exist).
+static int CountJournalFiles(const std::string& dir) {
+  int n = 0;
+  std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator(dir, ec)) {
+    if (e.path().extension() == ".jsonl") ++n;
+  }
+  return n;
+}
+
+// FIX B real proof, contamination-guarded: a LIVE run with no [journal] defaults to
+// $HOME/Kairos/data/journal and writes a fill record there, but a PAPER run with the
+// same (empty) config writes NOTHING to that dir, so simulated fills can never land
+// in the journal a live run replays from.
 void TestJournalDefaultDirWritten() {
   std::string home = "/tmp/kairos-home-" + std::to_string(::getpid());
-  std::filesystem::remove_all(home);
-  std::filesystem::create_directories(home);
-  ::setenv("HOME", home.c_str(), 1);
-  std::string toml = home + "/s.toml";
-  std::ofstream(toml) << R"(
+  const std::string journal_dir = home + "/Kairos/data/journal";
+  const char* toml_body = R"(
 [scenario]
 symbol = "2330"
 board = "OddLot"
@@ -548,25 +557,45 @@ reference_price = 100.0
 [risk]
 quote_max_age_ms = 0
 )";
-  Scenario s = LoadScenario(toml);
-  CHECK(s.journal_dir == home + "/Kairos/data/journal");
 
-  RecordingPaperBackend backend;
-  NullEventSink sink;
-  FakeQuoteSource quotes;
-  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes);
-  engine.set_ignore_window(true);
-  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
-  CHECK(engine.Run() == 0);
-
-  bool found = false;
-  std::error_code ec;
-  for (const auto& e : std::filesystem::directory_iterator(home + "/Kairos/data/journal", ec)) {
-    if (e.path().extension() == ".jsonl") found = true;
+  // Paper first: no [journal] must leave the default dir untouched.
+  std::filesystem::remove_all(home);
+  std::filesystem::create_directories(home);
+  ::setenv("HOME", home.c_str(), 1);
+  std::string toml = home + "/s.toml";
+  std::ofstream(toml) << toml_body;
+  {
+    Scenario s = LoadScenario(toml);
+    CHECK(s.journal_dir.empty());  // parser no longer defaults
+    s.live = false;
+    RecordingPaperBackend backend;
+    NullEventSink sink;
+    FakeQuoteSource quotes;
+    ScenarioEngine engine(std::move(s), &backend, &sink, &quotes);
+    engine.set_ignore_window(true);
+    quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+    CHECK(engine.Run() == 0);
+    CHECK(backend.submit_count.load() > 0);      // paper really filled
+    CHECK(CountJournalFiles(journal_dir) == 0);  // yet wrote no journal
   }
-  CHECK(found);
-  std::printf("journal default: %s -> file %s\n", (home + "/Kairos/data/journal").c_str(),
-              found ? "written" : "MISSING");
+  std::printf("paper no-contamination: %s -> %d journal files\n", journal_dir.c_str(),
+              CountJournalFiles(journal_dir));
+
+  // Live: the same empty config now defaults the dir and writes a fill record.
+  {
+    Scenario s = LoadScenario(toml);
+    s.live = true;
+    RecordingPaperBackend backend;
+    NullEventSink sink;
+    FakeQuoteSource quotes;
+    ScenarioEngine engine(std::move(s), &backend, &sink, &quotes);
+    engine.set_ignore_window(true);
+    quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+    CHECK(engine.Run() == 0);
+    CHECK(CountJournalFiles(journal_dir) == 1);
+  }
+  std::printf("journal default (live): %s -> %d journal files\n", journal_dir.c_str(),
+              CountJournalFiles(journal_dir));
   std::filesystem::remove_all(home);
 }
 

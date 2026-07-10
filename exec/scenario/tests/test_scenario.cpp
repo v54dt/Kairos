@@ -85,8 +85,8 @@ peg_level = 3
   std::filesystem::remove_all(dir);
 }
 
-// [journal].dir defaults to $HOME/Kairos/data/journal (HOME expanded at load);
-// an explicit dir wins.
+// The parser leaves [journal].dir empty when unset (the live-only default lives in
+// the engine, so paper never inherits the live journal path); an explicit dir wins.
 static void TestJournalDefault() {
   const std::string body = R"(
 [scenario]
@@ -96,7 +96,7 @@ budget_twd = 1000
   ::setenv("HOME", "/tmp/kairos-home-xyz", 1);
   std::string path = WriteTemp(body);
   Scenario s = LoadScenario(path);
-  CHECK(s.journal_dir == "/tmp/kairos-home-xyz/Kairos/data/journal");
+  CHECK(s.journal_dir.empty());
 
   const std::string explicit_body = R"(
 [scenario]
