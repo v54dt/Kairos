@@ -227,6 +227,43 @@ std::string DescribeEntry(const BlacklistEntry& e) {
   }
   return std::format("{} ({}){}: {}", e.symbol, BlacklistCategoryName(e.category), dates, e.note);
 }
+
+// Strict YYYY-MM-DD; rejects slashes, ROC dates, leading space and short/long widths.
+bool ParseIsoDate(const std::string& s) {
+  if (s.size() != 10 || s[4] != '-' || s[7] != '-') return false;
+  for (int i : {0, 1, 2, 3, 5, 6, 8, 9}) {
+    if (s[i] < '0' || s[i] > '9') return false;
+  }
+  int month = (s[5] - '0') * 10 + (s[6] - '0');
+  int day = (s[8] - '0') * 10 + (s[9] - '0');
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+}
+
+// Asia/Taipei is UTC+8 year-round (no DST); the trading day is its local date.
+// Mirrors sim/session_schedule.h HhmmFromUs: shift by +8h, never read localtime.
+std::string TaipeiToday(std::time_t now) {
+  std::time_t shifted = now + 8 * 3600;
+  struct tm tm_utc;
+  gmtime_r(&shifted, &tm_utc);
+  return std::format("{:04}-{:02}-{:02}", tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday);
+}
+
+enum class EntryActivity { kActive, kFuture, kExpired, kMalformed };
+
+// Active iff (start empty OR start<=today) AND (end empty OR today<=end); an empty
+// side is open-ended. Mirrors the lab fetcher covers() for populated sides, while
+// treating a both-empty window as always active. Unparseable or inverted dates are
+// malformed => the caller must fail closed (a garbled window may not open the gate).
+EntryActivity ClassifyActivity(const BlacklistEntry& e, const std::string& today) {
+  bool has_start = !e.start_date.empty();
+  bool has_end = !e.end_date.empty();
+  if (has_start && !ParseIsoDate(e.start_date)) return EntryActivity::kMalformed;
+  if (has_end && !ParseIsoDate(e.end_date)) return EntryActivity::kMalformed;
+  if (has_start && has_end && e.start_date > e.end_date) return EntryActivity::kMalformed;
+  if (has_start && today < e.start_date) return EntryActivity::kFuture;
+  if (has_end && today > e.end_date) return EntryActivity::kExpired;
+  return EntryActivity::kActive;
+}
 }  // namespace
 
 BlacklistGateOutcome EvaluateBlacklistGate(const std::string& path, const BlacklistConfig& cfg,
@@ -276,26 +313,39 @@ BlacklistGateOutcome EvaluateBlacklistGate(const std::string& path, const Blackl
             std::format("blacklist parse failed ({}): {}", path, e.what()), false};
   }
 
-  std::vector<BlacklistEntry> entries = bl.Lookup(symbol);
-  std::vector<BlacklistEntry> blocking;
-  std::vector<BlacklistEntry> warn;
-  for (const auto& e : entries) {
-    if (BlacklistCategoryBlocks(cfg, e.category)) {
-      blocking.push_back(e);
-    } else {
-      warn.push_back(e);
+  const std::string today = TaipeiToday(now);
+  std::vector<std::string> refuse_lines;
+  std::vector<std::string> warn_lines;
+  for (const auto& e : bl.Lookup(symbol)) {
+    if (!BlacklistCategoryBlocks(cfg, e.category)) {
+      warn_lines.push_back(DescribeEntry(e));
+      continue;
+    }
+    switch (ClassifyActivity(e, today)) {
+      case EntryActivity::kActive:
+        refuse_lines.push_back(DescribeEntry(e));
+        break;
+      case EntryActivity::kMalformed:
+        refuse_lines.push_back(DescribeEntry(e) + " [malformed date window; refusing fail-closed]");
+        break;
+      case EntryActivity::kFuture:
+        warn_lines.push_back(std::format("{} restriction starts {} ({}) - not yet active", e.symbol,
+                                         e.start_date, BlacklistCategoryName(e.category)));
+        break;
+      case EntryActivity::kExpired:
+        break;
     }
   }
 
-  if (!blocking.empty()) {
+  if (!refuse_lines.empty()) {
     std::string msg = std::format("symbol {} is blacklisted:", NormalizeSymbol(symbol));
-    for (const auto& e : blocking) msg += "\n  - " + DescribeEntry(e);
+    for (const auto& l : refuse_lines) msg += "\n  - " + l;
     return {BlacklistGateResult::kRefuse, msg, false};
   }
-  if (!warn.empty()) {
+  if (!warn_lines.empty()) {
     std::string msg = std::format("symbol {} has non-blocking restrictions (proceeding):",
                                   NormalizeSymbol(symbol));
-    for (const auto& e : warn) msg += "\n  - " + DescribeEntry(e);
+    for (const auto& l : warn_lines) msg += "\n  - " + l;
     return {BlacklistGateResult::kAllow, msg, true};
   }
   return {BlacklistGateResult::kAllow,
