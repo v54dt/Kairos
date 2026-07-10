@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -30,6 +31,23 @@ void MakeDirs(const std::string& dir) {
 
 std::string JournalPath(const std::string& dir, const std::string& name) {
   return dir + "/" + name + ".jsonl";
+}
+
+std::string JournalDayUtc8() {
+  auto utc8 = std::chrono::system_clock::now() + std::chrono::hours(8);
+  std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(utc8)};
+  char buf[16];
+  std::snprintf(buf, sizeof(buf), "%04d%02u%02u", static_cast<int>(ymd.year()),
+                static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+  return buf;
+}
+
+bool OrderJournal::AppendFill(const std::string& dir, const std::string& name,
+                              const std::string& id, long shares, Cents price) {
+  OrderJournal j;
+  if (!j.Open(dir, name)) return false;
+  j.LogFill(id, shares, price);  // dtor fcloses
+  return true;
 }
 
 OrderJournal::~OrderJournal() {

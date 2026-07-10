@@ -33,12 +33,22 @@ class OrderJournal {
   void LogAck(const std::string& id, bool ok);
   void LogCancel(const std::string& id, bool ok);
 
+  // Open <dir>/<name>.jsonl, append one fill line (fsynced), close. For a writer
+  // that keeps no open handle (the hub journaling a rare orphan fill). O_APPEND
+  // per line makes it safe to interleave with a trader appending the same file.
+  static bool AppendFill(const std::string& dir, const std::string& name, const std::string& id,
+                         long shares, Cents price);
+
  private:
   void Write(const std::string& line);  // append + flush + fsync
   std::FILE* f_ = nullptr;
 };
 
 std::string JournalPath(const std::string& dir, const std::string& name);
+
+// Today's YYYYMMDD in fixed UTC+8, matching the engine's journal-file day so the
+// hub and the trader name the same per-(symbol,side,day) file.
+std::string JournalDayUtc8();
 
 // Replay: fills from a journal file (missing file => empty; bad lines skipped).
 std::vector<JournalFill> ReadJournalFills(const std::string& path);

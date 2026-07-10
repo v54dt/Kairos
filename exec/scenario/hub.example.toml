@@ -14,6 +14,12 @@ pfx_password = ""
 # socket_path = ""   # order UDS path. Omit to auto-resolve (same as scenarios):
 #                    #   $KAIROS_ORDER_SOCK, else $XDG_RUNTIME_DIR, else
 #                    #   /run/user/<uid>/kairos-orders.sock.  Never /tmp.
+# journal_dir = ""   # run-state journal dir SHARED with the scenario traders. A
+#                    # fill that arrives after the trader that placed it has exited
+#                    # is unroutable; the hub appends it here (same JSONL as the
+#                    # trader) so a restart replays it and does not re-buy. Omit to
+#                    # resolve $KAIROS_HUB_JOURNAL_DIR, else $HOME/Kairos/data/journal
+#                    # (the trader's live default). Set the SAME path both sides use.
 
 # [risk]
 # Account risk gate. It sits in the hub and enforces ACROSS all scenario clients

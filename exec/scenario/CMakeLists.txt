@@ -70,7 +70,8 @@ target_include_directories(kairos_hub_status PUBLIC ${KAIROS_INC})
 # Order hub routing core (socket-agnostic): routes client orders <-> one backend.
 add_library(kairos_order_hub src/order/order_hub.cpp)
 target_include_directories(kairos_order_hub PUBLIC ${KAIROS_INC})
-target_link_libraries(kairos_order_hub PUBLIC kairos_order_codec kairos_hub_status)
+target_link_libraries(kairos_order_hub PUBLIC kairos_order_codec kairos_hub_status
+                                              kairos_order_journal kairos_scenario)
 
 # UDS front end for the order hub: listen socket + per-client reader threads.
 add_library(kairos_order_hub_server src/order/order_hub_server.cpp)
@@ -219,7 +220,7 @@ target_include_directories(test_pricing PRIVATE ${KAIROS_INC})
 add_test(NAME test_pricing COMMAND test_pricing)
 
 add_executable(test_order_journal tests/test_order_journal.cpp)
-target_link_libraries(test_order_journal PRIVATE kairos_order_journal kairos_scenario)
+target_link_libraries(test_order_journal PRIVATE kairos_order_journal kairos_scenario pthread)
 add_test(NAME test_order_journal COMMAND test_order_journal)
 
 add_executable(test_scenario tests/test_scenario.cpp)
@@ -283,6 +284,11 @@ add_test(NAME test_hub_risk_gate COMMAND test_hub_risk_gate)
 add_executable(test_order_hub_server tests/test_order_hub_server.cpp)
 target_link_libraries(test_order_hub_server PRIVATE kairos_order_hub_server)
 add_test(NAME test_order_hub_server COMMAND test_order_hub_server)
+
+add_executable(test_hub_unroutable_e2e tests/test_hub_unroutable_e2e.cpp)
+target_link_libraries(test_hub_unroutable_e2e PRIVATE kairos_order_hub_server kairos_order_journal
+                                                      kairos_order_codec pthread)
+add_test(NAME test_hub_unroutable_e2e COMMAND test_hub_unroutable_e2e)
 
 add_executable(test_hub_shutdown_snapshot tests/test_hub_shutdown_snapshot.cpp)
 target_link_libraries(test_hub_shutdown_snapshot PRIVATE kairos_order_hub_server)

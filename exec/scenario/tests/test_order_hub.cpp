@@ -1,6 +1,8 @@
 // Self-test for OrderHub routing: client submit/cancel -> backend, and backend
 // ack/fill/cancel -> the owning client. Stub backend + fake send; no sockets.
 
+#include <unistd.h>
+
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -8,6 +10,7 @@
 
 #include "order_codec.h"
 #include "order_hub.h"
+#include "order_journal.h"
 
 using namespace kairos::exec;
 
@@ -130,6 +133,171 @@ int main() {
 
   hub.Stop();
   CHECK(!backend.IsConnected());
+
+  // --- Unroutable-fill journaling: a fill on a departed client's still-open id
+  // --- must land in the SAME per-(symbol,side,day) journal a restart replays. ---
+  {
+    const std::string dir = "/tmp/kairos-hub-journal-" + std::to_string(::getpid());
+    StubBackend b2;
+    std::vector<std::pair<int, OrderMessage>> sent2;
+    auto send2 = [&](int c, const std::vector<std::uint8_t>& bytes) {
+      OrderMessage m;
+      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sent2.push_back({c, m});
+    };
+    OrderHub::RiskConfig risk;
+    risk.journal_dir = dir;
+    OrderHub h2(&b2, send2, risk);
+    CHECK(h2.Start());
+
+    const std::string name = std::string("2330-Buy-") + JournalDayUtc8();
+    const std::string path = JournalPath(dir, name);
+    std::remove(path.c_str());
+
+    OrderSubmitMsg os{"k9-1", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                      "ROD",  92500,  1000};
+    Feed(h2, 5, EncodeOrderSubmit(os));
+
+    // Routable fill (client 5 still connected): the hub writes NOTHING; the fill
+    // is the trader's own to journal.
+    b2.FireFill("k9-1", Fill{400, 92500});
+    CHECK(ReadJournalFills(path).empty());
+
+    // Client 5 goes away with 600 shares still open. A residual fill on that id is
+    // now unroutable -> the hub journals exactly one line.
+    h2.OnClientDisconnect(5);
+    b2.FireFill("k9-1", Fill{600, 92500});
+    auto fills = ReadJournalFills(path);
+    CHECK(fills.size() == 1);
+    CHECK(fills[0].shares == 600);
+    CHECK(fills[0].price == 92500);
+
+    // A fully-filled id is forgotten on its terminal fill; a later stray fill on
+    // it (after disconnect) cannot be named and is NOT journaled.
+    const std::string name2 = std::string("0050-Sell-") + JournalDayUtc8();
+    const std::string path2 = JournalPath(dir, name2);
+    std::remove(path2.c_str());
+    OrderSubmitMsg os2{"k9-2", "0050", Market::kTse, Board::kRoundLot, Side::kSell, "Cash",
+                       "ROD",  10000,  2000};
+    Feed(h2, 6, EncodeOrderSubmit(os2));
+    b2.FireFill("k9-2", Fill{2000, 10000});  // full fill -> terminal -> forgotten
+    h2.OnClientDisconnect(6);
+    b2.FireFill("k9-2", Fill{1, 10000});  // stray, meta gone
+    CHECK(ReadJournalFills(path2).empty());
+
+    // A broker that RE-DELIVERS the same fill on an orphaned id (standby/resync
+    // feed replay) must not double-journal: the unroutable path caps at the order
+    // size and forgets the id once fully accounted, so a restart replays it once.
+    const std::string name3 = std::string("2454-Buy-") + JournalDayUtc8();
+    const std::string path3 = JournalPath(dir, name3);
+    std::remove(path3.c_str());
+    OrderSubmitMsg os3{"k9-3", "2454", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",  50000,  1000};
+    Feed(h2, 8, EncodeOrderSubmit(os3));
+    h2.OnClientDisconnect(8);
+    b2.FireFill("k9-3", Fill{1000, 50000});  // first delivery -> journaled
+    b2.FireFill("k9-3", Fill{1000, 50000});  // redelivery -> dropped (fully accounted)
+    b2.FireFill("k9-3", Fill{1000, 50000});  // redelivery -> dropped
+    auto fills3 = ReadJournalFills(path3);
+    CHECK(fills3.size() == 1);
+    CHECK(fills3[0].shares == 1000);
+
+    // An unroutable fill larger than the order's unaccounted quantity is capped
+    // at that quantity, never over-counting past the order size.
+    const std::string name4 = std::string("2603-Buy-") + JournalDayUtc8();
+    const std::string path4 = JournalPath(dir, name4);
+    std::remove(path4.c_str());
+    OrderSubmitMsg os4{"k9-4", "2603", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",  30000,  500};
+    Feed(h2, 9, EncodeOrderSubmit(os4));
+    h2.OnClientDisconnect(9);
+    b2.FireFill("k9-4", Fill{800, 30000});  // over-delivery -> capped at 500
+    auto fills4 = ReadJournalFills(path4);
+    CHECK(fills4.size() == 1);
+    CHECK(fills4[0].shares == 500);
+
+    // A fill that crosses a cancel-ack in flight, then arrives after the trader
+    // has exited, must still be journaled: the cancel-ack keeps the id's meta so
+    // the residual fill stays nameable (not silently dropped -> re-buy on restart).
+    const std::string name5 = std::string("2412-Buy-") + JournalDayUtc8();
+    const std::string path5 = JournalPath(dir, name5);
+    std::remove(path5.c_str());
+    OrderSubmitMsg os5{"k9-5", "2412", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",  10000,  1000};
+    Feed(h2, 10, EncodeOrderSubmit(os5));
+    b2.FireFill("k9-5", Fill{700, 10000});  // 700 routed to the live trader
+    Feed(h2, 10, EncodeOrderCancel({"k9-5"}));
+    b2.FireCancel("k9-5", true);            // cancel-acked with 300 still working
+    h2.OnClientDisconnect(10);              // trader exits before the crossing fill lands
+    b2.FireFill("k9-5", Fill{300, 10000});  // residual post-cancel fill
+    auto fills5 = ReadJournalFills(path5);
+    CHECK(fills5.size() == 1);
+    CHECK(fills5[0].shares == 300);
+
+    h2.Stop();
+    std::remove(path3.c_str());
+    std::remove(path4.c_str());
+    std::remove(path5.c_str());
+    std::remove(path.c_str());
+    std::remove(path2.c_str());
+    ::rmdir(dir.c_str());
+  }
+
+  // --- An unopenable journal dir must not stall or crash the hub: the write
+  // --- fails loudly and a following live order still routes. ---
+  {
+    StubBackend b3;
+    std::vector<std::pair<int, OrderMessage>> sent3;
+    auto send3 = [&](int c, const std::vector<std::uint8_t>& bytes) {
+      OrderMessage m;
+      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sent3.push_back({c, m});
+    };
+    OrderHub::RiskConfig risk;
+    risk.journal_dir = "/proc/nonexistent/cannot-create";  // unwritable
+    OrderHub h3(&b3, send3, risk);
+    CHECK(h3.Start());
+
+    OrderSubmitMsg os{"k8-1", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                      "ROD",  92500,  1000};
+    Feed(h3, 3, EncodeOrderSubmit(os));
+    h3.OnClientDisconnect(3);
+    b3.FireFill("k8-1", Fill{1000, 92500});  // unroutable + unwritable: loud log, no crash
+
+    // The hub keeps serving: a fresh order still routes and its fill comes back.
+    OrderSubmitMsg os2{"k8-2", "0050", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",  10000,  2000};
+    Feed(h3, 4, EncodeOrderSubmit(os2));
+    CHECK(b3.submits.size() == 2);
+    b3.FireFill("k8-2", Fill{2000, 10000});
+    CHECK(!sent3.empty());
+    CHECK(sent3.back().first == 4);
+    h3.Stop();
+  }
+
+  // --- The id->{symbol,side} map is hard-bounded: driving more never-terminal
+  // --- submits than the cap leaves it capped (no unbounded day-long growth). ---
+  {
+    StubBackend b4;
+    auto send4 = [&](int, const std::vector<std::uint8_t>&) {};
+    OrderHub::RiskConfig risk;
+    risk.self_match_protection = false;  // all same-side, keep the scan cheap under load
+    OrderHub h4(&b4, send4, risk);
+    CHECK(h4.Start());
+    const long n = static_cast<long>(OrderHub::kOrderMetaCap) + 1000;
+    for (long i = 0; i < n; ++i) {
+      OrderSubmitMsg os{"kcap-" + std::to_string(i),
+                        "2330",
+                        Market::kTse,
+                        Board::kRoundLot,
+                        Side::kBuy,
+                        "Cash",
+                        "ROD",
+                        92500,
+                        1000};
+      Feed(h4, 2, EncodeOrderSubmit(os));
+    }
+    CHECK(h4.OrderMetaCountForTest() == OrderHub::kOrderMetaCap);
+    h4.Stop();
+  }
 
   if (g_failures == 0) {
     std::printf("test_order_hub: OK\n");

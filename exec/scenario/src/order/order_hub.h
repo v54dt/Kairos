@@ -40,6 +40,9 @@ class OrderHub {
     long dup_order_window_ms = 0;  // reject an identical resubmit within this window; 0 = disabled
     long price_collar_pct = 0;     // reject a price this far from the last fill; 0 = disabled
     std::string halt_file_path;
+    // Journal dir shared with the traders; a fill the hub cannot route (client
+    // gone) is appended here so a restarted trader replays it. Empty = disabled.
+    std::string journal_dir;
   };
 
   OrderHub(OrderBackend* backend, SendFn send);
@@ -69,6 +72,12 @@ class OrderHub {
   void SetTradingDayForTest(long day);
   // Force the monotonic clock the duplicate-order window compares against (tests only).
   void SetMonoMsForTest(long ms);
+  // Size of the surviving id->{symbol,side} map (tests only).
+  std::size_t OrderMetaCountForTest() const;
+
+  // Hard bound on the id->{symbol,side} map so it cannot grow unbounded across a
+  // trading day; the oldest entry is FIFO-evicted once this many are tracked.
+  static constexpr std::size_t kOrderMetaCap = 8192;
 
  private:
   // Lifecycle of one live order, derived from the routing the hub already does.
@@ -93,6 +102,19 @@ class OrderHub {
     long shares = 0;
     Cents price = 0;
     long mono_ms = 0;
+  };
+
+  // The (symbol, side) of one order, kept past its route so a fill that arrives
+  // after the owning client is gone can still be named for the journal.
+  // shares_accounted tracks how many of shares_total already reached the journal
+  // (routed to the live trader, which journals its own, plus any the hub wrote),
+  // so an unroutable fill is capped at the order size and a redelivery on a
+  // fully-accounted id is not journaled twice.
+  struct OrderMeta {
+    std::string symbol;
+    Side side = Side::kBuy;
+    long shares_total = 0;
+    long shares_accounted = 0;
   };
 
   // Lifetime aggregate for one connected client (fd), for the status snapshot.
@@ -122,6 +144,11 @@ class OrderHub {
   bool DuplicateSubmit(const OrderSubmitMsg& o, long now_ms);
   // Drop the dup-ring entry for a now-terminal order id, if present. Caller holds mu_.
   void RemoveDupEntry(const std::string& id);
+  // Track/untrack an order's (symbol, side) for post-death fill journaling. Kept
+  // past OnClientDisconnect on purpose; dropped only on a hub-observed terminal.
+  // Caller holds mu_.
+  void RememberOrder(const std::string& id, const std::string& symbol, Side side, long shares);
+  void ForgetOrder(const std::string& id);
   // The account's last fill price for `symbol` if one exists (the collar
   // reference); false at cold start (no fill yet). Caller holds mu_.
   bool CollarReference(const std::string& symbol, Cents* ref) const;
@@ -144,6 +171,10 @@ class OrderHub {
   long forced_trading_day_ = -1;                  // test override; <0 uses wall clock
   std::deque<DupEntry> dup_ring_;                 // admitted submits within the dup window
   long forced_mono_ms_ = -1;                      // test override; <0 uses steady clock
+  // Surviving id->{symbol,side}; outlives routes_ so an orphan fill on a
+  // disconnected client's id can still be named for the journal.
+  std::unordered_map<std::string, OrderMeta> order_meta_;
+  std::deque<std::string> meta_fifo_;  // insertion order, for the kOrderMetaCap bound
   // Per-symbol reference price for the collar: this account's own last fill.
   // The hub has no quote feed, so fills are the only price it observes.
   std::unordered_map<std::string, Cents> last_fill_price_cents_;

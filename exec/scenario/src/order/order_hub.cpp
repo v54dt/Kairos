@@ -10,7 +10,9 @@
 #include <utility>
 
 #include "order_codec.h"
-#include "tw_market.h"  // CentsToString
+#include "order_journal.h"  // AppendFill + JournalDayUtc8 (shared journal format)
+#include "scenario.h"       // SideName
+#include "tw_market.h"      // CentsToString
 
 namespace kairos::exec {
 
@@ -84,6 +86,18 @@ void OrderHub::RemoveDupEntry(const std::string& id) {
   }
 }
 
+void OrderHub::RememberOrder(const std::string& id, const std::string& symbol, Side side,
+                             long shares) {
+  order_meta_[id] = OrderMeta{symbol, side, shares, 0};
+  meta_fifo_.push_back(id);
+  while (meta_fifo_.size() > kOrderMetaCap) {
+    order_meta_.erase(meta_fifo_.front());
+    meta_fifo_.pop_front();
+  }
+}
+
+void OrderHub::ForgetOrder(const std::string& id) { order_meta_.erase(id); }
+
 bool OrderHub::CollarReference(const std::string& symbol, Cents* ref) const {
   auto it = last_fill_price_cents_.find(symbol);
   if (it == last_fill_price_cents_.end()) return false;
@@ -114,6 +128,11 @@ void OrderHub::SetTradingDayForTest(long day) {
 void OrderHub::SetMonoMsForTest(long ms) {
   std::lock_guard<std::mutex> lock(mu_);
   forced_mono_ms_ = ms;
+}
+
+std::size_t OrderHub::OrderMetaCountForTest() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return order_meta_.size();
 }
 
 void OrderHub::RejectSubmit(int client, const std::string& id, const std::string& reason) {
@@ -162,6 +181,8 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         current_trading_day_ = today;
         account_day_realized_cents_ = 0;
         last_fill_price_cents_.clear();  // yesterday's fill is not a valid collar reference today
+        order_meta_.clear();             // yesterday's ids are not journaled under today's file
+        meta_fifo_.clear();
       }
       long now_ms = risk_.dup_order_window_ms > 0 ? NowMonoMs() : 0;
       // Fail-closed field validation: a doubtful submit is rejected, never forwarded.
@@ -199,6 +220,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         ClientStats& cs = clients_[client];
         routes_[o.id] = Route{client, o.shares, false, false, o.symbol, o.side, o.price};
         open_ids_.insert(o.id);
+        RememberOrder(o.id, o.symbol, o.side, o.shares);
         account_open_notional_cents_ += n;
         cs.open_notional += n;
         ++cs.open_orders;
@@ -271,6 +293,7 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
         ReleaseOpen(it->second);  // backend rejected: free its reserved notional
         open_ids_.erase(it->first);
         RemoveDupEntry(id);  // terminal: a legitimate retry must not read as a dup
+        ForgetOrder(id);     // rejected: it will never fill, no journaling needed
       }
       auto cs = clients_.find(client);
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
@@ -288,6 +311,10 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
 
 void OrderHub::OnFill(const std::string& id, const Fill& f) {
   int client = -1;
+  bool named = false;       // the id is still in order_meta_ (needed only when unroutable)
+  long journal_shares = 0;  // unroutable shares to persist, capped by the order size
+  std::string symbol;
+  Side side = Side::kBuy;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = routes_.find(id);
@@ -295,6 +322,12 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
       client = it->second.client;
       auto cs = clients_.find(client);
       if (risk_.price_collar_pct > 0) last_fill_price_cents_[it->second.symbol] = f.price;
+      // A routed fill is journaled by the owning trader; record it against the
+      // order size so a redelivery after that trader is gone is not journaled again.
+      if (auto m = order_meta_.find(id); m != order_meta_.end()) {
+        m->second.shares_accounted =
+            std::min<long>(m->second.shares_total, m->second.shares_accounted + f.shares);
+      }
       if (!it->second.closed) {
         long before = it->second.shares_remaining;
         long acct_sh = std::min<long>(f.shares, before > 0 ? before : 0);
@@ -307,6 +340,7 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
           it->second.closed = true;
           open_ids_.erase(it->first);
           RemoveDupEntry(id);  // terminal: a legitimate re-order must not read as a dup
+          ForgetOrder(id);     // fully filled: no further fill to journal
           if (cs != clients_.end()) --cs->second.open_orders;
         }
       }
@@ -314,15 +348,51 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
         ++cs->second.filled;
         cs->second.last_activity_us = NowUs();
       }
+    } else {
+      auto m = order_meta_.find(id);
+      if (m != order_meta_.end()) {
+        long room = m->second.shares_total - m->second.shares_accounted;
+        journal_shares = std::min<long>(f.shares, room > 0 ? room : 0);
+        if (journal_shares > 0) {
+          named = true;
+          symbol = m->second.symbol;
+          side = m->second.side;
+          m->second.shares_accounted += journal_shares;
+          if (m->second.shares_accounted >= m->second.shares_total) ForgetOrder(id);
+        }
+      }
     }
   }
   if (client >= 0) {
     std::fprintf(stderr, "kairos-order-hub: fill id=%s %ld @ %s -> client=%d\n", id.c_str(),
                  f.shares, CentsToString(f.price).c_str(), client);
     send_(client, EncodeOrderFill({id, f.shares, f.price}));
+    return;
+  }
+  // No client route: the trader that placed this order has exited. Persist the
+  // fill into the SAME per-(symbol,side,day) journal it replays, so a restart
+  // accounts it and does not re-buy the budget. Only unroutable fills are
+  // journaled here; a routed fill is the trader's own to record. journal_shares
+  // is capped at the order's still-unaccounted quantity, so a redelivered fill
+  // on a fully-accounted id (named=false, journal_shares=0) is not written twice.
+  std::fprintf(stderr, "kairos-order-hub: UNROUTABLE fill id=%s %ld @ %s (no client route)\n",
+               id.c_str(), f.shares, CentsToString(f.price).c_str());
+  if (risk_.journal_dir.empty()) return;
+  if (!named) {
+    std::fprintf(
+        stderr,
+        "kairos-order-hub: cannot journal unroutable fill id=%s (untracked or already accounted)\n",
+        id.c_str());
+    return;
+  }
+  std::string name = symbol + "-" + SideName(side) + "-" + JournalDayUtc8();
+  std::string path = JournalPath(risk_.journal_dir, name);
+  if (OrderJournal::AppendFill(risk_.journal_dir, name, id, journal_shares, f.price)) {
+    std::fprintf(stderr, "kairos-order-hub: journaled unroutable fill id=%s %ld @ %s -> %s\n",
+                 id.c_str(), journal_shares, CentsToString(f.price).c_str(), path.c_str());
   } else {
-    std::fprintf(stderr, "kairos-order-hub: UNROUTABLE fill id=%s %ld @ %s (no client route)\n",
-                 id.c_str(), f.shares, CentsToString(f.price).c_str());
+    std::fprintf(stderr, "kairos-order-hub: FAILED to journal unroutable fill id=%s to %s\n",
+                 id.c_str(), path.c_str());
   }
 }
 
@@ -337,7 +407,9 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
       if (ok) {
         ReleaseOpen(it->second);  // successful cancel: free reserved notional
         open_ids_.erase(it->first);
-        RemoveDupEntry(id);  // terminal: a re-peg at the same price must not read as a dup
+        RemoveDupEntry(id);  // terminal for the gate: a re-peg at the same price is not a dup
+        // Meta is kept: a fill can cross the cancel at the exchange, and that
+        // post-cancel fill must stay nameable for the journal if the trader exits.
         if (cs != clients_.end()) ++cs->second.cancelled;
       }
       if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
