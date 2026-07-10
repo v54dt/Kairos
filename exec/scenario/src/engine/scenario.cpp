@@ -195,6 +195,7 @@ Scenario LoadScenario(const std::string& path) {
   s.quote_max_age_ms = t["risk"]["quote_max_age_ms"].value_or<long>(5000);
   s.quote_stall_alert_ms = t["risk"]["quote_stall_alert_ms"].value_or<long>(30000);
   s.ack_timeout_ms = t["risk"]["ack_timeout_ms"].value_or<long>(3000);
+  s.max_consecutive_order_failures = t["risk"]["max_consecutive_order_failures"].value_or<long>(3);
   s.stop_on_disconnect = t["risk"]["stop_on_disconnect"].value_or<bool>(true);
 
   // [journal]

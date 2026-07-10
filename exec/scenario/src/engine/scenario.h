@@ -61,6 +61,8 @@ struct Scenario {
   long quote_max_age_ms = 5000;
   long quote_stall_alert_ms = 30000;
   long ack_timeout_ms = 3000;  // un-acked order past this => local reject + re-place
+  // Consecutive submit-reject / ack-timeout failures that halt the run (fail-closed).
+  long max_consecutive_order_failures = 3;  // <= 0 disables the halt
   bool stop_on_disconnect = true;
 
   // Run-state journal dir (restart-safe fill accounting). Empty => disabled.

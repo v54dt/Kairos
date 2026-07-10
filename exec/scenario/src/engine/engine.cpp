@@ -47,6 +47,11 @@ int HhmmToMin(int hhmm) { return (hhmm / 100) * 60 + hhmm % 100; }
 
 constexpr int kMarketCloseHhmm = 1330;  // TWSE regular session close; hard stop
 
+// Distinct non-zero exits so the supervisor classifies the run crashed (and its
+// restart-on-crash backoff/cap applies); the stderr fatal line names the reason.
+constexpr int kConnectFailExit = 3;
+constexpr int kHaltExit = 17;
+
 }  // namespace
 
 ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSink* sink,
@@ -112,12 +117,23 @@ void ScenarioEngine::ClearResting() {
   cancelling_ = false;
 }
 
+void ScenarioEngine::RegisterFailure(const std::string& reason) {
+  ++consecutive_failures_;
+  if (s_.max_consecutive_order_failures > 0 &&
+      consecutive_failures_ >= s_.max_consecutive_order_failures) {
+    halted_ = true;
+    halt_reason_ = "halted: " + std::to_string(consecutive_failures_) +
+                   " consecutive order failures (" + reason + ")";
+  }
+}
+
 void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& err) {
   std::lock_guard<std::mutex> lock(mu_);
   journal_.LogAck(id, ok);
   if (id != resting_id_) return;
   if (ok) {
     resting_acked_ = true;
+    consecutive_failures_ = 0;  // a good ack clears the fail-closed streak
     if (dashboard_ && s_.live) {
       auto now = clock_.mono();
       dashboard_->ReportOrder(resting_seq_, "success", "", Millis(now - resting_t_start_),
@@ -132,7 +148,8 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
       dashboard_->ReportOrder(resting_seq_, "submit_error", err, std::nullopt,
                               Millis(resting_t_submit_ - resting_t_start_), std::nullopt);
     }
-    ClearResting();  // rejected -> free the working slot, retry next tick
+    ClearResting();               // rejected -> free the working slot
+    RegisterFailure("rejected");  // a reject storm halts fail-closed, not re-tries forever
     cv_.notify_all();
   }
 }
@@ -191,7 +208,7 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
   cv_.notify_all();
 }
 
-void ScenarioEngine::Run() {
+int ScenarioEngine::Run() {
   // Wire callbacks before Connect: a backend may start its reader thread inside
   // Connect (HubOrderBackend), so the callbacks must already be in place.
   backend_->SetCallbacks(
@@ -200,7 +217,7 @@ void ScenarioEngine::Run() {
       [this](const std::string& id, bool ok) { OnCancel(id, ok); }, [this] { OnDisconnect(); });
   if (!backend_->Connect()) {
     std::fprintf(stderr, "kairos-exec: order backend connect failed\n");
-    return;
+    return kConnectFailExit;
   }
   quotes_->Start();
   std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
@@ -262,31 +279,43 @@ void ScenarioEngine::Run() {
     long remaining;
     RestingOrder resting;
     std::string rid;
-    bool acked, cancelling;
+    bool acked, cancelling, halted_now = false;
+    std::string timed_out_id;  // possibly-live order to cancel outside the lock
     {
       std::lock_guard<std::mutex> lock(mu_);
-      if (complete_) break;
+      if (complete_ || halted_) break;
       // ack-timeout watchdog: an un-acked order that never got a response is dead
-      // (hub dropped it / silent write failure) — free the slot to re-place.
+      // to us — but it may be LIVE at the broker (7/6 proved every timed-out order
+      // was accepted), so cancel it before forgetting and count the failure.
       long since_submit =
           std::chrono::duration_cast<std::chrono::milliseconds>(clock_.mono() - resting_t_submit_)
               .count();
       if (AckTimedOut(resting_.active, resting_acked_, since_submit, s_.ack_timeout_ms)) {
+        timed_out_id = resting_id_;
         std::fprintf(stderr, "kairos-exec: order %s ack timeout (%ldms); local reject\n",
                      resting_id_.c_str(), since_submit);
         sink_->Emit({EventCategory::kError,
                      Severity::kWarning,
                      s_.symbol,
                      "ack_timeout:" + resting_id_,
-                     {}});
+                     {{"reason", "ack timeout after " + std::to_string(since_submit) +
+                                     "ms (order may be live at broker)"}}});
         ClearResting();
+        RegisterFailure("ack timeout");
       }
       remaining = acct_.RemainingTwd(s_);
       resting = resting_;
       rid = resting_id_;
       acked = resting_acked_;
       cancelling = cancelling_;
+      halted_now = halted_;
     }
+    // Best-effort cancel of the timed-out (possibly-live) order before re-placing.
+    if (!timed_out_id.empty()) {
+      SdkGate();
+      backend_->Cancel(timed_out_id);
+    }
+    if (halted_now) break;
     if (remaining <= 0) break;
 
     if (!stale) {
@@ -334,7 +363,7 @@ void ScenarioEngine::Run() {
 
     std::unique_lock<std::mutex> lock(mu_);
     cv_.wait_for(lock, std::chrono::milliseconds(200),
-                 [this] { return stop_.load() || complete_; });
+                 [this] { return stop_.load() || complete_ || halted_; });
   }
 
   // Wind down: cancel the working order only if the broker acked it.
@@ -354,6 +383,21 @@ void ScenarioEngine::Run() {
   std::printf("kairos-exec: end - filled %ld sh / NT$ %ld of %ld, fee NT$ %ld\n",
               acct_.filled_shares, acct_.FilledTwd(), s_.budget_twd, acct_.total_fee_twd);
   std::fflush(stdout);
+  // Fail-closed halt: emit a terminal alert with a real reason (never an empty-field
+  // event that ntfy renders as a bare "triggered") and exit non-zero so the
+  // supervisor treats it as a crash and its restart backoff/cap takes over.
+  if (halted_) {
+    std::fprintf(stderr, "kairos-exec: FATAL %s\n", halt_reason_.c_str());
+    sink_->Emit({EventCategory::kError,
+                 Severity::kError,
+                 s_.symbol,
+                 "halt:" + s_.symbol,
+                 {{"reason", halt_reason_},
+                  {"filled_sh", std::to_string(acct_.filled_shares)},
+                  {"filled_twd", std::to_string(acct_.FilledTwd())},
+                  {"budget", std::to_string(s_.budget_twd)}}});
+    return kHaltExit;
+  }
   // Outcome: Ctrl+C -> shutdown; budget filled -> complete; reached market close with
   // budget unfilled -> incomplete (don't silently "complete" an unfinished run).
   bool interrupted = stop_.load();
@@ -370,6 +414,7 @@ void ScenarioEngine::Run() {
                 {"filled_twd", std::to_string(acct_.FilledTwd())},
                 {"budget", std::to_string(s_.budget_twd)},
                 {"fee", std::to_string(acct_.total_fee_twd)}}});
+  return 0;
 }
 
 void ScenarioEngine::RequestStop() {

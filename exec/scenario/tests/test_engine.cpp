@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -71,6 +72,95 @@ class RecordingPaperBackend : public PaperOrderBackend {
   }
   std::atomic<int> submit_count{0};
 };
+
+// Records submits/cancels and NEVER acks: every order ack-times-out, like 7/6.
+class NoAckBackend : public OrderBackend {
+ public:
+  bool Connect() override {
+    connected_ = true;
+    return true;
+  }
+  void Disconnect() override { connected_ = false; }
+  bool IsConnected() const override { return connected_; }
+  void Submit(const OrderSubmitMsg& o) override {
+    std::lock_guard<std::mutex> lock(mu_);
+    submits.push_back(o.id);
+  }
+  void Cancel(const std::string& id) override {
+    std::lock_guard<std::mutex> lock(mu_);
+    cancels.push_back(id);
+  }
+  std::vector<std::string> Submits() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return submits;
+  }
+  std::vector<std::string> Cancels() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return cancels;
+  }
+
+ private:
+  mutable std::mutex mu_;
+  std::vector<std::string> submits;
+  std::vector<std::string> cancels;
+  bool connected_ = false;
+};
+
+// Rejects every submit synchronously (a submit-reject storm).
+class RejectingBackend : public OrderBackend {
+ public:
+  bool Connect() override {
+    connected_ = true;
+    return true;
+  }
+  void Disconnect() override { connected_ = false; }
+  bool IsConnected() const override { return connected_; }
+  void Submit(const OrderSubmitMsg& o) override {
+    ++submit_count;
+    if (on_ack_) on_ack_(o.id, false, "rejected");
+  }
+  void Cancel(const std::string&) override {}
+  std::atomic<int> submit_count{0};
+
+ private:
+  bool connected_ = false;
+};
+
+// Ack-times-out the first `fail_first` submits (no callback), then acks+fully
+// fills — proves a transient timeout does not halt once acks resume.
+class FlakyThenOkBackend : public OrderBackend {
+ public:
+  explicit FlakyThenOkBackend(int fail_first) : fail_first_(fail_first) {}
+  bool Connect() override {
+    connected_ = true;
+    return true;
+  }
+  void Disconnect() override { connected_ = false; }
+  bool IsConnected() const override { return connected_; }
+  void Submit(const OrderSubmitMsg& o) override {
+    if (++submit_count <= fail_first_) return;  // no ack -> ack-timeout
+    if (on_ack_) on_ack_(o.id, true, "");
+    if (on_fill_) on_fill_(o.id, Fill{o.shares, o.price});
+  }
+  void Cancel(const std::string&) override { ++cancel_count; }
+  std::atomic<int> submit_count{0};
+  std::atomic<int> cancel_count{0};
+
+ private:
+  int fail_first_;
+  bool connected_ = false;
+};
+
+// EngineClock whose mono advances 2s per read so SdkGate never sleeps and the
+// ack-timeout watchdog fires immediately (sub-second tests).
+EngineClock SteppedMonoClock(std::shared_ptr<std::atomic<long>> mono_ns) {
+  EngineClock clock;
+  clock.mono = [mono_ns] {
+    long v = mono_ns->fetch_add(2'000'000'000L);
+    return std::chrono::steady_clock::time_point(std::chrono::nanoseconds(v));
+  };
+  return clock;
+}
 
 // A two-sided book that yields a fixed limit price (kCross buy -> best ask).
 TopOfBook ValidBook(Cents price) {
@@ -227,7 +317,14 @@ class RecordingSink : public EventSink {
                ev.category == EventCategory::kIncomplete) {
       for (const auto& [k, v] : ev.fields)
         if (k == "fee") final_fee_ = std::stol(v);
+    } else if (ev.category == EventCategory::kError && ev.dedup_key.rfind("halt:", 0) == 0) {
+      for (const auto& [k, v] : ev.fields)
+        if (k == "reason") halt_reason_ = v;
     }
+  }
+  std::string HaltReason() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return halt_reason_;
   }
   long TotalFilled() const {
     std::lock_guard<std::mutex> lock(mu_);
@@ -250,6 +347,7 @@ class RecordingSink : public EventSink {
   mutable std::mutex mu_;
   std::vector<long> fills_;
   long final_fee_ = 0;
+  std::string halt_reason_;
 };
 
 // Queue-sim backend that counts Submit so the test can wait for the engine to
@@ -319,6 +417,80 @@ void TestQueueSimEngineFills() {
               sink.FinalFee());
 }
 
+// A scenario tuned for the fail-closed halt tests: no window gating, no journal
+// requirement (paper), a tiny ack-timeout, and a 3-failure halt cap.
+Scenario HaltScenario() {
+  Scenario s = BaseScenario();
+  s.pacing = Pacing::kAsap;
+  s.budget_twd = 1000000;  // large: keeps re-placing until the cap halts it
+  s.ack_timeout_ms = 1;    // any un-acked order times out on the next stepped read
+  s.max_consecutive_order_failures = 3;
+  return s;
+}
+
+// Ack-timeout: the timed-out (possibly-live) order is cancelled before re-placing,
+// and N consecutive timeouts halt the run with a non-empty terminal reason.
+void TestAckTimeoutCancelsThenHalts() {
+  Scenario s = HaltScenario();
+  NoAckBackend backend;
+  RecordingSink sink;
+  FakeQuoteSource quotes;
+  auto mono = std::make_shared<std::atomic<long>>(0);
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes, SteppedMonoClock(mono));
+  engine.set_ignore_window(true);
+  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+
+  int rc = engine.Run();
+
+  CHECK(rc != 0);  // fail-closed exit -> supervisor classifies crashed
+  auto submits = backend.Submits();
+  auto cancels = backend.Cancels();
+  CHECK(submits.size() == 3);  // 3 failures then halt: no 4th submit
+  CHECK(cancels.size() == 3);  // each timed-out order was cancelled before forgetting
+  for (std::size_t i = 0; i < cancels.size() && i < submits.size(); ++i)
+    CHECK(cancels[i] == submits[i]);  // cancel targets the exact timed-out id
+  CHECK(!sink.HaltReason().empty());  // ntfy shows a real message, never a bare "triggered"
+  std::printf("halt(ack-timeout): submits=%zu cancels=%zu reason=\"%s\" rc=%d\n", submits.size(),
+              cancels.size(), sink.HaltReason().c_str(), rc);
+}
+
+// A submit-reject storm halts the same way (shared consecutive-failure counter).
+void TestRejectStormHalts() {
+  Scenario s = HaltScenario();
+  RejectingBackend backend;
+  RecordingSink sink;
+  FakeQuoteSource quotes;
+  auto mono = std::make_shared<std::atomic<long>>(0);
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes, SteppedMonoClock(mono));
+  engine.set_ignore_window(true);
+  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+
+  int rc = engine.Run();
+
+  CHECK(rc != 0);
+  CHECK(backend.submit_count.load() == 3);  // halted after 3 rejects, no further submits
+  CHECK(!sink.HaltReason().empty());
+}
+
+// One transient ack-timeout then acks resume: the counter resets, no halt.
+void TestTransientTimeoutDoesNotHalt() {
+  Scenario s = HaltScenario();
+  s.budget_twd = 1000;  // one slice: completes as soon as an ack+fill lands
+  FlakyThenOkBackend backend(/*fail_first=*/1);
+  RecordingSink sink;
+  FakeQuoteSource quotes;
+  auto mono = std::make_shared<std::atomic<long>>(0);
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes, SteppedMonoClock(mono));
+  engine.set_ignore_window(true);
+  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+
+  int rc = engine.Run();
+
+  CHECK(rc == 0);  // no halt: the good ack cleared the streak
+  CHECK(sink.HaltReason().empty());
+  CHECK(backend.cancel_count.load() == 1);  // the one timed-out order was cancelled
+}
+
 }  // namespace
 
 int main() {
@@ -326,6 +498,9 @@ int main() {
   TestHardStopAtClose();
   TestTwapPacingSteppedClock();
   TestQueueSimEngineFills();
+  TestAckTimeoutCancelsThenHalts();
+  TestRejectStormHalts();
+  TestTransientTimeoutDoesNotHalt();
   if (g_failures == 0) {
     std::printf("test_engine: OK\n");
     return 0;
