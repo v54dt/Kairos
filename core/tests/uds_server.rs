@@ -310,3 +310,62 @@ async fn shutdown_delivers_whole_frames_then_eof_to_a_slow_reader() {
 
     let _ = std::fs::remove_file(&socket);
 }
+
+// A client that subscribes and then never reads wedges its writer inside write_frame
+// once the kernel send buffer fills — past the shutdown-watch select point. Shutdown
+// must still return in bounded time by aborting that straggler, or the whole process
+// hangs until systemd SIGKILLs it. This proves run_server returns without external help.
+#[tokio::test]
+async fn shutdown_is_bounded_even_with_a_wedged_non_reading_client() {
+    let socket = format!("/tmp/kairos-uds-wedged-test-{}.sock", std::process::id());
+    let book = Arc::new(RwLock::new(Book::new()));
+    let (tx, _rx) = broadcast::channel::<FeedEvent>(8192);
+    let registry = Arc::new(Mutex::new(SubRegistry::new()));
+    let (change_tx, _change_rx) = std::sync::mpsc::channel::<()>();
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    let srv_book = book.clone();
+    let srv_tx = tx.clone();
+    let srv_socket = socket.clone();
+    let server = tokio::spawn(async move {
+        let _ = run_server(
+            &srv_socket,
+            srv_book,
+            srv_tx,
+            registry,
+            change_tx,
+            std::sync::Arc::new(Metrics::default()),
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    wait_for_socket(&socket).await;
+
+    // Subscribe, then deliberately never read: hold the client so the socket stays open.
+    let mut client = UnixStream::connect(&socket).await.unwrap();
+    write_frame(&mut client, &encode_subscribe(&["2330"]))
+        .await
+        .unwrap();
+
+    // Flood subscribed frames until the kernel send buffer fills and the server's writer
+    // parks inside write_frame (past its shutdown select).
+    for i in 0..20_000 {
+        if tx.send(FeedEvent::Quote(quote("2330", 58000 + i))).is_err() {
+            break;
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    shutdown_tx.send(true).unwrap();
+
+    // Bounded exit: the drain grace is 3s, so allow a margin. Before the fix this hung
+    // until the non-reading client drained (i.e. indefinitely).
+    tokio::time::timeout(Duration::from_secs(6), server)
+        .await
+        .expect("run_server did not return within the bounded shutdown grace")
+        .unwrap();
+
+    drop(client);
+    let _ = std::fs::remove_file(&socket);
+}

@@ -16,6 +16,7 @@ use crate::subreg::SubRegistry;
 use crate::uds::frame::{read_frame, write_frame};
 
 const SNAPSHOT_CHANNEL: usize = 256;
+const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 pub async fn run_server(
     socket_path: &str,
@@ -50,9 +51,14 @@ pub async fn run_server(
             }
         }
     }
-    // Stop accepting and let every client finish its in-flight frame, then EOF. A
-    // client only breaks BETWEEN frames, so no length-prefixed frame is ever cut.
-    while clients.join_next().await.is_some() {}
+    // Drain whole frames, but bound the wait and abort clients wedged mid-write.
+    let drain = async { while clients.join_next().await.is_some() {} };
+    if tokio::time::timeout(SHUTDOWN_DRAIN_GRACE, drain)
+        .await
+        .is_err()
+    {
+        clients.shutdown().await;
+    }
     let _ = std::fs::remove_file(socket_path);
     Ok(())
 }
