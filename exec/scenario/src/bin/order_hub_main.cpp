@@ -10,6 +10,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <thread>
@@ -55,6 +56,7 @@ int main(int argc, char** argv) {
   UserCreds creds;
   std::string sock = OrderSocketPath();
   OrderHub::RiskConfig risk;
+  std::string journal_cfg;  // [hub].journal_dir if set; resolved after the parse
   try {
     auto t = toml::parse_file(path);
     auto user = [&](const char* k) { return t["user"][k].value<std::string>().value_or(""); };
@@ -64,6 +66,7 @@ int main(int argc, char** argv) {
     creds.pfx_filepath = user("pfx_filepath");
     creds.pfx_password = user("pfx_password");
     if (auto s = t["hub"]["socket_path"].value<std::string>()) sock = *s;
+    if (auto s = t["hub"]["journal_dir"].value<std::string>()) journal_cfg = *s;
     // [risk]: TWD notional caps are stored as Cents; 0/absent = disabled.
     risk.max_account_notional_cents =
         t["risk"]["max_account_notional_twd"].value<long>().value_or(0) * 100;
@@ -81,6 +84,17 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "kairos-order-hub: bad config %s: %s\n", path.c_str(),
                  std::string(e.description()).c_str());
     return 1;
+  }
+
+  // Journal dir precedence: [hub].journal_dir, else $KAIROS_HUB_JOURNAL_DIR, else
+  // the same $HOME/Kairos/data/journal default the live trader uses (PR #112), so
+  // both sides append to one file. Resolved outside the parse so it never throws.
+  if (!journal_cfg.empty()) {
+    risk.journal_dir = journal_cfg;
+  } else if (const char* env = std::getenv("KAIROS_HUB_JOURNAL_DIR"); env != nullptr && env[0]) {
+    risk.journal_dir = env;
+  } else if (const char* home = std::getenv("HOME"); home != nullptr && home[0]) {
+    risk.journal_dir = std::string(home) + "/Kairos/data/journal";
   }
 
   std::unique_ptr<OrderBackend> backend;

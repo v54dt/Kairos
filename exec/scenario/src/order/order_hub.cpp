@@ -10,7 +10,9 @@
 #include <utility>
 
 #include "order_codec.h"
-#include "tw_market.h"  // CentsToString
+#include "order_journal.h"  // AppendFill + JournalDayUtc8 (shared journal format)
+#include "scenario.h"       // SideName
+#include "tw_market.h"      // CentsToString
 
 namespace kairos::exec {
 
@@ -308,6 +310,9 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
 
 void OrderHub::OnFill(const std::string& id, const Fill& f) {
   int client = -1;
+  bool named = false;  // the id is still in order_meta_ (needed only when unroutable)
+  std::string symbol;
+  Side side = Side::kBuy;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = routes_.find(id);
@@ -335,15 +340,42 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
         ++cs->second.filled;
         cs->second.last_activity_us = NowUs();
       }
+    } else {
+      auto m = order_meta_.find(id);
+      if (m != order_meta_.end()) {
+        named = true;
+        symbol = m->second.symbol;
+        side = m->second.side;
+      }
     }
   }
   if (client >= 0) {
     std::fprintf(stderr, "kairos-order-hub: fill id=%s %ld @ %s -> client=%d\n", id.c_str(),
                  f.shares, CentsToString(f.price).c_str(), client);
     send_(client, EncodeOrderFill({id, f.shares, f.price}));
+    return;
+  }
+  // No client route: the trader that placed this order has exited. Persist the
+  // fill into the SAME per-(symbol,side,day) journal it replays, so a restart
+  // accounts it and does not re-buy the budget. Only unroutable fills are
+  // journaled here; a routed fill is the trader's own to record.
+  std::fprintf(stderr, "kairos-order-hub: UNROUTABLE fill id=%s %ld @ %s (no client route)\n",
+               id.c_str(), f.shares, CentsToString(f.price).c_str());
+  if (risk_.journal_dir.empty()) return;
+  if (!named) {
+    std::fprintf(stderr,
+                 "kairos-order-hub: cannot journal unroutable fill id=%s (order id not tracked)\n",
+                 id.c_str());
+    return;
+  }
+  std::string name = symbol + "-" + SideName(side) + "-" + JournalDayUtc8();
+  std::string path = JournalPath(risk_.journal_dir, name);
+  if (OrderJournal::AppendFill(risk_.journal_dir, name, id, f.shares, f.price)) {
+    std::fprintf(stderr, "kairos-order-hub: journaled unroutable fill id=%s %ld @ %s -> %s\n",
+                 id.c_str(), f.shares, CentsToString(f.price).c_str(), path.c_str());
   } else {
-    std::fprintf(stderr, "kairos-order-hub: UNROUTABLE fill id=%s %ld @ %s (no client route)\n",
-                 id.c_str(), f.shares, CentsToString(f.price).c_str());
+    std::fprintf(stderr, "kairos-order-hub: FAILED to journal unroutable fill id=%s to %s\n",
+                 id.c_str(), path.c_str());
   }
 }
 

@@ -40,6 +40,9 @@ class OrderHub {
     long dup_order_window_ms = 0;  // reject an identical resubmit within this window; 0 = disabled
     long price_collar_pct = 0;     // reject a price this far from the last fill; 0 = disabled
     std::string halt_file_path;
+    // Journal dir shared with the traders; a fill the hub cannot route (client
+    // gone) is appended here so a restarted trader replays it. Empty = disabled.
+    std::string journal_dir;
   };
 
   OrderHub(OrderBackend* backend, SendFn send);
