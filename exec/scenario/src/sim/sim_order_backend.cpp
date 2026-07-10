@@ -118,4 +118,6 @@ void SimOrderBackend::Finalize() {
   engine_.Finalize();
 }
 
+void SimOrderBackend::Shutdown() { faults_.Stop(); }
+
 }  // namespace kairos::exec

@@ -171,6 +171,7 @@ int main(int argc, char** argv) {
   std::printf("kairos-sim-hub: shutting down\n");
   quotes.Stop();
   backend.Finalize();  // resolve any pending closing-auction orders (end of tape)
+  backend.Shutdown();  // join the delayed-ack worker before ~server frees the hub it delivers into
   server.Stop();
   return 0;
 }

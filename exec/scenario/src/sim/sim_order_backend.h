@@ -50,6 +50,11 @@ class SimOrderBackend : public OrderBackend {
   // FillEngine::Finalize). Safe to call once the market-event stream has ended.
   void Finalize();
 
+  // Stop the fault injector's delayed-ack worker, dropping any still-pending
+  // acks. The daemon must call this while the OrderHub the acks deliver into is
+  // still alive, so a late ack cannot fire into freed hub memory at teardown.
+  void Shutdown();
+
   // Fault-drill hooks for the sim hub daemon (no-ops when faults are off). The
   // after-n edge is consumed once; the every-ms cadence is driven by the caller.
   bool FaultDisconnectAfterN() { return faults_.ConsumeDisconnectAfterN(); }
