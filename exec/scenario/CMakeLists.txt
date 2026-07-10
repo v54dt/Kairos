@@ -265,6 +265,10 @@ target_link_libraries(test_sim_hub_server PRIVATE kairos_sim_backend kairos_orde
                                                   kairos_order_codec)
 add_test(NAME test_sim_hub_server COMMAND test_sim_hub_server)
 
+add_executable(test_sim_faults tests/test_sim_faults.cpp)
+target_link_libraries(test_sim_faults PRIVATE kairos_sim_backend)
+add_test(NAME test_sim_faults COMMAND test_sim_faults)
+
 add_executable(test_order_codec tests/test_order_codec.cpp)
 target_link_libraries(test_order_codec PRIVATE kairos_order_codec)
 add_test(NAME test_order_codec COMMAND test_order_codec)
