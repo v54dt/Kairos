@@ -68,6 +68,14 @@ bool ConcordsOrderBackend::Connect() {
       on_fill_(r.user_defined_id, Fill{shares, FloatToCents(price)});
   });
   stock_->SetOrderCancelCallback([this](const concords_sdk::stock::OrderCancelResult& r) {
+    {
+      std::lock_guard<std::mutex> lock(cancel_mu_);
+      if (pending_cancels_.erase(r.target_id) == 0)
+        std::fprintf(stderr,
+                     "kairos-exec: unmatched cancel ack target_id=%s ok=%d (does not echo a "
+                     "user_defined_id we cancelled; the order may still be live at the broker)\n",
+                     r.target_id.c_str(), r.success ? 1 : 0);
+    }
     if (on_cancel_) on_cancel_(r.target_id, r.success);
   });
   Gate();
@@ -96,6 +104,10 @@ void ConcordsOrderBackend::Submit(const OrderSubmitMsg& o) {
 }
 
 void ConcordsOrderBackend::Cancel(const std::string& id) {
+  {
+    std::lock_guard<std::mutex> lock(cancel_mu_);
+    pending_cancels_.insert(id);
+  }
   Gate();
   stock_->CancelOrder(id);
 }
