@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "fault_config.h"
+#include "fault_injector.h"
 #include "fill_engine.h"
 #include "order_backend.h"
 #include "quote_book.h"
@@ -24,7 +26,7 @@ namespace kairos::exec {
 // replayed tape.
 class SimOrderBackend : public OrderBackend {
  public:
-  SimOrderBackend(FillMode mode, const std::vector<std::string>& symbols);
+  SimOrderBackend(FillMode mode, const std::vector<std::string>& symbols, FaultConfig faults = {});
 
   bool Connect() override;
   void Disconnect() override;
@@ -48,12 +50,18 @@ class SimOrderBackend : public OrderBackend {
   // FillEngine::Finalize). Safe to call once the market-event stream has ended.
   void Finalize();
 
+  // Fault-drill hooks for the sim hub daemon (no-ops when faults are off). The
+  // after-n edge is consumed once; the every-ms cadence is driven by the caller.
+  bool FaultDisconnectAfterN() { return faults_.ConsumeDisconnectAfterN(); }
+  long FaultDisconnectEveryMs() const { return faults_.DisconnectEveryMs(); }
+
  private:
   void ApplyBookLocked(const std::string& symbol, const TopOfBook& book);
   void ApplyTradeLocked(const std::string& symbol, const Trade& trade);
   void FlushPendingBookLocked();
 
   std::mutex mu_;
+  FaultInjector faults_;
   FillEngine engine_;
   std::int64_t last_ts_us_ = 0;
   bool connected_ = false;

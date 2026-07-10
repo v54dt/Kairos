@@ -92,10 +92,11 @@ target_link_libraries(kairos_uds PUBLIC kairos_quote_codec pthread)
 add_library(kairos_sim src/sim/fill_model.cpp src/sim/fill_engine.cpp src/sim/auction.cpp)
 target_include_directories(kairos_sim PUBLIC ${KAIROS_INC})
 
-# Mock-hub OrderBackend over the fill-model library (no SDK, no real-order path).
-add_library(kairos_sim_backend src/sim/sim_order_backend.cpp)
+# Mock-hub OrderBackend over the fill-model library (no SDK, no real-order path). The seeded fault
+# injector is sim-only and links in here so faults are impossible to reach from the live hub.
+add_library(kairos_sim_backend src/sim/sim_order_backend.cpp src/sim/fault_injector.cpp)
 target_include_directories(kairos_sim_backend PUBLIC ${KAIROS_INC})
-target_link_libraries(kairos_sim_backend PUBLIC kairos_sim)
+target_link_libraries(kairos_sim_backend PUBLIC kairos_sim pthread)
 
 add_library(kairos_blacklist src/blacklist/blacklist.cpp)
 target_include_directories(kairos_blacklist PUBLIC ${KAIROS_INC})
