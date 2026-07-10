@@ -3,6 +3,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -84,6 +85,32 @@ peg_level = 3
   std::filesystem::remove_all(dir);
 }
 
+// [journal].dir defaults to $HOME/Kairos/data/journal (HOME expanded at load);
+// an explicit dir wins.
+static void TestJournalDefault() {
+  const std::string body = R"(
+[scenario]
+symbol = "0050"
+budget_twd = 1000
+)";
+  ::setenv("HOME", "/tmp/kairos-home-xyz", 1);
+  std::string path = WriteTemp(body);
+  Scenario s = LoadScenario(path);
+  CHECK(s.journal_dir == "/tmp/kairos-home-xyz/Kairos/data/journal");
+
+  const std::string explicit_body = R"(
+[scenario]
+symbol = "0050"
+budget_twd = 1000
+[journal]
+dir = "/var/lib/kairos/journal"
+)";
+  std::ofstream(path) << explicit_body;
+  Scenario s2 = LoadScenario(path);
+  CHECK(s2.journal_dir == "/var/lib/kairos/journal");  // explicit value wins over the default
+  std::remove(path.c_str());
+}
+
 int main() {
   const std::string body = R"(
 [scenario]
@@ -139,6 +166,7 @@ quote_max_age_ms = 70000
   CHECK(SummarizeScenario(s).find("0050") != std::string::npos);
 
   TestBaseMerge();
+  TestJournalDefault();
 
   if (g_failures == 0) {
     std::printf("test_scenario: OK\n");

@@ -8,6 +8,9 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -491,6 +494,82 @@ void TestTransientTimeoutDoesNotHalt() {
   CHECK(backend.cancel_count.load() == 1);  // the one timed-out order was cancelled
 }
 
+// FIX B: a live run with an un-openable journal refuses to start (non-zero); the
+// same un-openable journal in paper only warns and runs to completion.
+void TestLiveRequiresJournal() {
+  {
+    Scenario s = BaseScenario();
+    s.pacing = Pacing::kAsap;
+    s.budget_twd = 1000;
+    s.live = true;
+    s.journal_dir = "/dev/null/nope";  // un-openable (not a directory)
+    PaperOrderBackend backend;
+    NullEventSink sink;
+    FakeQuoteSource quotes;
+    ScenarioEngine engine(std::move(s), &backend, &sink, &quotes);
+    engine.set_ignore_window(true);
+    CHECK(engine.Run() != 0);  // fail-closed: no journal, no live trading
+  }
+  {
+    Scenario s = BaseScenario();
+    s.pacing = Pacing::kAsap;
+    s.budget_twd = 1000;
+    s.live = false;
+    s.journal_dir = "/dev/null/nope";
+    PaperOrderBackend backend;
+    NullEventSink sink;
+    FakeQuoteSource quotes;
+    ScenarioEngine engine(std::move(s), &backend, &sink, &quotes);
+    engine.set_ignore_window(true);
+    quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+    CHECK(engine.Run() == 0);  // paper: warn and continue
+  }
+}
+
+// FIX B real proof: a toml with no [journal] defaults to $HOME/Kairos/data/journal,
+// and a paper run that fills once writes a journal file there.
+void TestJournalDefaultDirWritten() {
+  std::string home = "/tmp/kairos-home-" + std::to_string(::getpid());
+  std::filesystem::remove_all(home);
+  std::filesystem::create_directories(home);
+  ::setenv("HOME", home.c_str(), 1);
+  std::string toml = home + "/s.toml";
+  std::ofstream(toml) << R"(
+[scenario]
+symbol = "2330"
+board = "OddLot"
+side = "Buy"
+budget_twd = 1000
+shares_per_order = 10
+pacing = "asap"
+[pricing]
+policy = "cross"
+reference_price = 100.0
+[risk]
+quote_max_age_ms = 0
+)";
+  Scenario s = LoadScenario(toml);
+  CHECK(s.journal_dir == home + "/Kairos/data/journal");
+
+  RecordingPaperBackend backend;
+  NullEventSink sink;
+  FakeQuoteSource quotes;
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes);
+  engine.set_ignore_window(true);
+  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+  CHECK(engine.Run() == 0);
+
+  bool found = false;
+  std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator(home + "/Kairos/data/journal", ec)) {
+    if (e.path().extension() == ".jsonl") found = true;
+  }
+  CHECK(found);
+  std::printf("journal default: %s -> file %s\n", (home + "/Kairos/data/journal").c_str(),
+              found ? "written" : "MISSING");
+  std::filesystem::remove_all(home);
+}
+
 }  // namespace
 
 int main() {
@@ -501,6 +580,8 @@ int main() {
   TestAckTimeoutCancelsThenHalts();
   TestRejectStormHalts();
   TestTransientTimeoutDoesNotHalt();
+  TestLiveRequiresJournal();
+  TestJournalDefaultDirWritten();
   if (g_failures == 0) {
     std::printf("test_engine: OK\n");
     return 0;

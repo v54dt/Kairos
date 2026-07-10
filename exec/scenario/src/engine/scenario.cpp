@@ -3,6 +3,7 @@
 #include <toml++/toml.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <stdexcept>
@@ -198,8 +199,14 @@ Scenario LoadScenario(const std::string& path) {
   s.max_consecutive_order_failures = t["risk"]["max_consecutive_order_failures"].value_or<long>(3);
   s.stop_on_disconnect = t["risk"]["stop_on_disconnect"].value_or<bool>(true);
 
-  // [journal]
+  // [journal] — default to the TUI's <data-dir>/journal (~/Kairos/data/journal)
+  // so a live trader always has a fill record; an explicit dir wins.
   s.journal_dir = t["journal"]["dir"].value_or<std::string>("");
+  if (s.journal_dir.empty()) {
+    const char* home = std::getenv("HOME");
+    if (home != nullptr && home[0] != '\0')
+      s.journal_dir = std::string(home) + "/Kairos/data/journal";
+  }
 
   // [blacklist]
   s.blacklist_path = t["blacklist"]["path"].value_or<std::string>("");

@@ -84,6 +84,7 @@ class ScenarioEngine {
   int consecutive_failures_ = 0;  // reset by a successful ack; halts the run at the cap
   bool halted_ = false;           // fail-closed: stop placing orders and exit non-zero
   std::string halt_reason_;       // terminal event / crash reason (never empty when halted_)
+  bool journal_ok_ = false;       // a usable run-state journal is open
   bool quote_stalled_ = false;    // quote-stall alert armed/fired (main-thread only)
   std::atomic<bool> stop_{false};
   bool ignore_window_ = false;

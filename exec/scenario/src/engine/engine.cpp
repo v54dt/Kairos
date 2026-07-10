@@ -49,6 +49,7 @@ constexpr int kMarketCloseHhmm = 1330;  // TWSE regular session close; hard stop
 
 // Distinct non-zero exits so the supervisor classifies the run crashed (and its
 // restart-on-crash backoff/cap applies); the stderr fatal line names the reason.
+constexpr int kNoJournalExit = 2;
 constexpr int kConnectFailExit = 3;
 constexpr int kHaltExit = 17;
 
@@ -90,7 +91,7 @@ ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSi
     if (restored > 0)
       std::fprintf(stderr, "kairos-exec: journal replay restored %ld sh (NT$ %ld)\n", restored,
                    acct_.FilledTwd());
-    journal_.Open(s_.journal_dir, name);
+    journal_ok_ = journal_.Open(s_.journal_dir, name);
   }
 }
 
@@ -209,6 +210,19 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
 }
 
 int ScenarioEngine::Run() {
+  // Fail-closed: a live trader with no run-state journal has no fill record and no
+  // restart no-double-buy protection (7/6 ran 39 scenarios this way). Refuse.
+  if (!journal_ok_) {
+    if (s_.live) {
+      std::fprintf(stderr,
+                   "kairos-exec: FATAL live run requires a journal but '%s' could not be opened "
+                   "for append\n",
+                   s_.journal_dir.empty() ? "<unset>" : s_.journal_dir.c_str());
+      return kNoJournalExit;
+    }
+    std::fprintf(stderr, "kairos-exec: WARNING no journal (%s); no restart-safe fill record\n",
+                 s_.journal_dir.empty() ? "<unset>" : s_.journal_dir.c_str());
+  }
   // Wire callbacks before Connect: a backend may start its reader thread inside
   // Connect (HubOrderBackend), so the callbacks must already be in place.
   backend_->SetCallbacks(
