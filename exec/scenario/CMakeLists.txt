@@ -269,6 +269,12 @@ add_executable(test_sim_faults tests/test_sim_faults.cpp)
 target_link_libraries(test_sim_faults PRIVATE kairos_sim_backend)
 add_test(NAME test_sim_faults COMMAND test_sim_faults)
 
+# Opt-in fault regression drills against the real sim pipeline + trader: self-skips (exit 0) unless
+# KAIROS_FAULT_DRILLS=1, so default CI stays green.
+add_executable(test_sim_fault_drills tests/test_sim_fault_drills.cpp)
+add_dependencies(test_sim_fault_drills kairos_sim_hubd kairos_scenario_trader)
+add_test(NAME test_sim_fault_drills COMMAND test_sim_fault_drills)
+
 add_executable(test_order_codec tests/test_order_codec.cpp)
 target_link_libraries(test_order_codec PRIVATE kairos_order_codec)
 add_test(NAME test_order_codec COMMAND test_order_codec)
