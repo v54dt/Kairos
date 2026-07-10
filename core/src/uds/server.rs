@@ -34,6 +34,8 @@ pub async fn run_server(
             biased;
             // A shutdown signal (or a dropped sender) stops new intake immediately.
             _ = shutdown.changed() => break,
+            // Reap completed clients so the JoinSet does not retain finished tasks.
+            Some(_) = clients.join_next() => {}
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
                 clients.spawn(handle_client(
