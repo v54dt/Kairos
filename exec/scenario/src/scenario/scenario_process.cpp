@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <string>
@@ -136,6 +137,11 @@ void ProcessManager::MonitorLoop(Child* c) {
           std::string reason = ExtractFailureReason(buf);
           if (!reason.empty()) c->last_fail_reason = reason;
           if (buf.rfind("kairos-exec: end - ", 0) == 0) c->saw_end_line = true;
+          // Forward the child's line to our own stdout so systemd/journald keeps the
+          // full trader output (7/6 had trader stderr routed to /dev/null). Bounded
+          // by the same line cap as parsing; serialized under mu_ across children.
+          std::printf("[%s] %s\n", c->name.c_str(), buf.c_str());
+          std::fflush(stdout);
         }
         buf.clear();
         dropping = false;

@@ -182,6 +182,36 @@ int main() {
     CHECK(::waitpid(-1, nullptr, WNOHANG) == -1 && errno == ECHILD);  // no leaked child
   }
 
+  // 7) The monitor forwards each child stdout line to the manager's OWN stdout,
+  //    prefixed with the scenario name, so journald keeps the full trader output.
+  {
+    int pipefd[2];
+    CHECK(::pipe(pipefd) == 0);
+    ::fflush(stdout);
+    int saved = ::dup(STDOUT_FILENO);
+    ::dup2(pipefd[1], STDOUT_FILENO);
+    {
+      ProcessManager pm;
+      pm.Spawn("fwd", Sh("printf 'kairos-exec: hello world\\n'; exit 0"), false);
+      WaitState(
+          pm, "fwd",
+          [](const ProcessManager::ChildStatus& s) {
+            return s.state == ScenarioState::kClosedExited;
+          },
+          4000);
+    }  // pm destroyed here: monitor joined, all forwarding flushed
+    ::fflush(stdout);
+    ::dup2(saved, STDOUT_FILENO);  // restore the real stdout
+    ::close(saved);
+    ::close(pipefd[1]);
+    std::string out;
+    char b[512];
+    ssize_t n;
+    while ((n = ::read(pipefd[0], b, sizeof(b))) > 0) out.append(b, static_cast<std::size_t>(n));
+    ::close(pipefd[0]);
+    CHECK(out.find("[fwd] kairos-exec: hello world") != std::string::npos);
+  }
+
   if (g_failures == 0) {
     std::printf("test_scenario_process: OK\n");
     return 0;
