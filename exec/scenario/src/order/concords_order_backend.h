@@ -16,9 +16,9 @@ namespace kairos::exec {
 // Real order backend over the concords StockClient. Every SDK call is serialized
 // through a 1 req/s gate (concords rate limit). Order ids are the engine's
 // correlation ids (concords user_defined_id); submit/ack/fill all key on it.
-// CancelOrder's parameter is the SDK's broker target_id and OrderSubmitResult
-// never returns one, so we pass the user_defined_id and flag any cancel ack whose
-// id does not echo it (whether the broker cancels by user_defined_id is unverified).
+// CancelOrder's target_id IS the submit's user_defined_id (confirmed with the
+// broker 2026-07-10), so cancelling by our correlation id is correct; we still
+// flag any cancel ack whose id does not echo one we cancelled.
 // Holds only creds: the full order spec arrives per Submit, so one backend can
 // serve any symbol (used directly by a scenario, or shared by the order hub).
 class ConcordsOrderBackend : public OrderBackend {
