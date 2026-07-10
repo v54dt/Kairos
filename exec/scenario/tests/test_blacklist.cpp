@@ -302,8 +302,9 @@ static void TestGateDateWindow() {
   RefuseAt(blank, cfg, "2330", TaipeiMidday(2030, 1, 1));
 
   // Malformed dates on a blocking category => fail-closed refuse at any date.
-  for (const char* d : {"2026/07/15,2026-07-20", "garbage,2026-07-20", " 2026-07-15,2026-07-20",
-                        "2026-13-01,2026-07-20", "2026-07-15,2026-07-40"}) {
+  for (const char* d :
+       {"2026/07/15,2026-07-20", "garbage,2026-07-20", " 2026-07-15,2026-07-20",
+        "2026-13-01,2026-07-20", "2026-07-15,2026-07-40", "0115-07-01,0115-07-20"}) {
     std::string body = std::string(kHeader) + "2330,disposal,d," + d + "\n";
     std::string mal = WriteTemp("mal", body);
     RefuseAt(mal, cfg, "2330", TaipeiMidday(2026, 7, 5));

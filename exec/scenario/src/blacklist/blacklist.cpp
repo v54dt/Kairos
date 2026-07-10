@@ -234,9 +234,11 @@ bool ParseIsoDate(const std::string& s) {
   for (int i : {0, 1, 2, 3, 5, 6, 8, 9}) {
     if (s[i] < '0' || s[i] > '9') return false;
   }
+  int year = (s[0] - '0') * 1000 + (s[1] - '0') * 100 + (s[2] - '0') * 10 + (s[3] - '0');
   int month = (s[5] - '0') * 10 + (s[6] - '0');
   int day = (s[8] - '0') * 10 + (s[9] - '0');
-  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
+  // year >= 2000 rejects a zero-padded ROC year (0115-..) that would sort as expired
+  return year >= 2000 && month >= 1 && month <= 12 && day >= 1 && day <= 31;
 }
 
 // Asia/Taipei is UTC+8 year-round (no DST); the trading day is its local date.
