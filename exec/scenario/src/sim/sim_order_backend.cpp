@@ -12,15 +12,18 @@ SimOrderBackend::SimOrderBackend(FillMode mode, const std::vector<std::string>& 
           mode,
           [this](const std::string& id, bool ok, const std::string& e) {
             faults_.OnAck(id, ok, e, [this](const std::string& i, bool o, const std::string& err) {
+              std::lock_guard<std::mutex> wire(wire_mu_);
               if (on_ack_) on_ack_(i, o, err);
             });
           },
           [this](const std::string& id, const Fill& f) {
             faults_.OnFill(id, f, [this](const std::string& i, const Fill& fill) {
+              std::lock_guard<std::mutex> wire(wire_mu_);
               if (on_fill_) on_fill_(i, fill);
             });
           },
           [this](const std::string& id, bool ok) {
+            std::lock_guard<std::mutex> wire(wire_mu_);
             if (on_cancel_) on_cancel_(id, ok);
           }) {
   for (const auto& s : symbols) engine_.AddSymbol(s);
@@ -60,6 +63,7 @@ void SimOrderBackend::Submit(const OrderSubmitMsg& m) {
   faults_.NoteSubmit();
   if (faults_.DrawReject()) {  // rejected before any engine bookkeeping is created
     std::fprintf(stderr, "kairos-sim-hub: fault reject id=%s\n", m.id.c_str());
+    std::lock_guard<std::mutex> wire(wire_mu_);
     if (on_ack_) on_ack_(m.id, false, "fault: injected reject");
     return;
   }

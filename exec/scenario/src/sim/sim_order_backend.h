@@ -61,6 +61,10 @@ class SimOrderBackend : public OrderBackend {
   void FlushPendingBookLocked();
 
   std::mutex mu_;
+  // Serializes every outbound callback (ack/fill/cancel): a delayed ack fires on
+  // the injector's worker thread, off mu_, and must not interleave one reply
+  // frame's writes with a concurrent mu_-held fill to the same client.
+  std::mutex wire_mu_;
   FaultInjector faults_;
   FillEngine engine_;
   std::int64_t last_ts_us_ = 0;
