@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use tokio::net::UnixListener;
 use tokio::net::UnixStream;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
+use tokio::task::JoinSet;
 
 use crate::book::Book;
 use crate::decode::{FeedEvent, Message, decode_message_bytes};
@@ -23,20 +24,35 @@ pub async fn run_server(
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
     metrics: Arc<Metrics>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let _ = std::fs::remove_file(socket_path);
     let listener = UnixListener::bind(socket_path)?;
+    let mut clients = JoinSet::new();
     loop {
-        let (stream, _) = listener.accept().await?;
-        tokio::spawn(handle_client(
-            stream,
-            book.clone(),
-            quotes.clone(),
-            registry.clone(),
-            change_tx.clone(),
-            metrics.clone(),
-        ));
+        tokio::select! {
+            biased;
+            // A shutdown signal (or a dropped sender) stops new intake immediately.
+            _ = shutdown.changed() => break,
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                clients.spawn(handle_client(
+                    stream,
+                    book.clone(),
+                    quotes.clone(),
+                    registry.clone(),
+                    change_tx.clone(),
+                    metrics.clone(),
+                    shutdown.clone(),
+                ));
+            }
+        }
     }
+    // Stop accepting and let every client finish its in-flight frame, then EOF. A
+    // client only breaks BETWEEN frames, so no length-prefixed frame is ever cut.
+    while clients.join_next().await.is_some() {}
+    let _ = std::fs::remove_file(socket_path);
+    Ok(())
 }
 
 async fn handle_client(
@@ -46,6 +62,7 @@ async fn handle_client(
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
     metrics: Arc<Metrics>,
+    shutdown: watch::Receiver<bool>,
 ) {
     metrics
         .clients
@@ -59,9 +76,15 @@ async fn handle_client(
         subs.clone(),
         snap_rx,
         metrics.clone(),
+        shutdown.clone(),
     ));
-    reader_loop(read_half, book, subs, snap_tx, registry, change_tx).await;
-    writer.abort();
+    reader_loop(
+        read_half, book, subs, snap_tx, registry, change_tx, shutdown,
+    )
+    .await;
+    // Await the writer instead of aborting it: it stops between frames, so the client
+    // sees whole frames then a clean EOF when the write half drops here.
+    let _ = writer.await;
     metrics
         .clients
         .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -74,8 +97,17 @@ async fn reader_loop(
     snap_tx: mpsc::Sender<Vec<u8>>,
     registry: Arc<Mutex<SubRegistry>>,
     change_tx: std::sync::mpsc::Sender<()>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
-    while let Ok(Some(frame)) = read_frame(&mut read_half).await {
+    loop {
+        let frame = tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            r = read_frame(&mut read_half) => match r {
+                Ok(Some(frame)) => frame,
+                _ => break,
+            },
+        };
         match decode_message_bytes(&frame) {
             Ok(Message::Subscribe(syms)) => {
                 let mut changed = false;
@@ -142,9 +174,14 @@ async fn writer_loop(
     subs: Arc<Mutex<HashSet<String>>>,
     mut snap_rx: mpsc::Receiver<Vec<u8>>,
     metrics: Arc<Metrics>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
+        // Once a data branch is chosen, its write_frame runs to completion before the
+        // next select — the shutdown branch can only interrupt between frames.
         tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
             live = quotes.recv() => match live {
                 Ok(event) => {
                     let want = subs.lock().unwrap().contains(event.symbol());
@@ -177,4 +214,6 @@ async fn writer_loop(
             },
         }
     }
+    // Flush any buffered bytes so the final whole frame reaches the client before EOF.
+    let _ = tokio::io::AsyncWriteExt::shutdown(&mut write_half).await;
 }
