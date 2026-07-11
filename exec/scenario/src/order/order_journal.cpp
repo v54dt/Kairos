@@ -28,13 +28,45 @@ void MakeDirs(const std::string& dir) {
   ::mkdir(dir.c_str(), 0755);
 }
 
-// Escape the few characters that would break a JSON string literal.
+// Escape every character that would break a JSON string literal, including the
+// C0 control chars (broker reject text is untrusted and may carry newlines/tabs).
 std::string JsonEscape(const std::string& s) {
+  static const char* kHex = "0123456789abcdef";
   std::string out;
   out.reserve(s.size());
   for (char c : s) {
-    if (c == '"' || c == '\\') out += '\\';
-    out += c;
+    unsigned char u = static_cast<unsigned char>(c);
+    switch (c) {
+      case '"':
+        out += "\\\"";
+        break;
+      case '\\':
+        out += "\\\\";
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      case '\f':
+        out += "\\f";
+        break;
+      case '\n':
+        out += "\\n";
+        break;
+      case '\r':
+        out += "\\r";
+        break;
+      case '\t':
+        out += "\\t";
+        break;
+      default:
+        if (u < 0x20) {
+          out += "\\u00";
+          out += kHex[u >> 4];
+          out += kHex[u & 0xF];
+        } else {
+          out += c;
+        }
+    }
   }
   return out;
 }

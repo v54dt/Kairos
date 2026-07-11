@@ -224,6 +224,10 @@ add_executable(test_order_journal tests/test_order_journal.cpp)
 target_link_libraries(test_order_journal PRIVATE kairos_order_journal kairos_scenario pthread)
 add_test(NAME test_order_journal COMMAND test_order_journal)
 
+add_executable(test_order_flow_escape tests/test_order_flow_escape.cpp)
+target_link_libraries(test_order_flow_escape PRIVATE kairos_order_journal kairos_scenario)
+add_test(NAME test_order_flow_escape COMMAND test_order_flow_escape)
+
 add_executable(test_scenario tests/test_scenario.cpp)
 target_link_libraries(test_scenario PRIVATE kairos_scenario)
 add_test(NAME test_scenario COMMAND test_scenario)
