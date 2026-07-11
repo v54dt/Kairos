@@ -10,6 +10,7 @@ use tokio::task::JoinSet;
 use crate::book::Book;
 use crate::decode::{FeedEvent, Message, decode_message_bytes};
 use crate::encode::{encode_error, encode_quote, encode_sub_ack, encode_trade};
+use crate::failover::Selector;
 use crate::metrics::Metrics;
 use crate::model::Quote;
 use crate::subreg::SubRegistry;
@@ -18,13 +19,20 @@ use crate::uds::frame::{read_frame, write_frame};
 const SNAPSHOT_CHANNEL: usize = 256;
 const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// Shared handles a client task needs; grouped so the per-client fns stay small.
+#[derive(Clone)]
+pub struct ServerHandles {
+    pub book: Arc<RwLock<Book>>,
+    pub quotes: broadcast::Sender<FeedEvent>,
+    pub registry: Arc<Mutex<SubRegistry>>,
+    pub change_tx: std::sync::mpsc::Sender<()>,
+    pub metrics: Arc<Metrics>,
+    pub selector: Arc<Selector>,
+}
+
 pub async fn run_server(
     socket_path: &str,
-    book: Arc<RwLock<Book>>,
-    quotes: broadcast::Sender<FeedEvent>,
-    registry: Arc<Mutex<SubRegistry>>,
-    change_tx: std::sync::mpsc::Sender<()>,
-    metrics: Arc<Metrics>,
+    handles: ServerHandles,
     mut shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let _ = std::fs::remove_file(socket_path);
@@ -39,15 +47,7 @@ pub async fn run_server(
             Some(_) = clients.join_next() => {}
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                clients.spawn(handle_client(
-                    stream,
-                    book.clone(),
-                    quotes.clone(),
-                    registry.clone(),
-                    change_tx.clone(),
-                    metrics.clone(),
-                    shutdown.clone(),
-                ));
+                clients.spawn(handle_client(stream, handles.clone(), shutdown.clone()));
             }
         }
     }
@@ -65,14 +65,11 @@ pub async fn run_server(
 
 async fn handle_client(
     stream: UnixStream,
-    book: Arc<RwLock<Book>>,
-    quotes: broadcast::Sender<FeedEvent>,
-    registry: Arc<Mutex<SubRegistry>>,
-    change_tx: std::sync::mpsc::Sender<()>,
-    metrics: Arc<Metrics>,
+    handles: ServerHandles,
     shutdown: watch::Receiver<bool>,
 ) {
-    metrics
+    handles
+        .metrics
         .clients
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let (read_half, write_half) = stream.into_split();
@@ -80,33 +77,36 @@ async fn handle_client(
     let (snap_tx, snap_rx) = mpsc::channel::<Vec<u8>>(SNAPSHOT_CHANNEL);
     let writer = tokio::spawn(writer_loop(
         write_half,
-        quotes.subscribe(),
+        handles.quotes.subscribe(),
         subs.clone(),
         snap_rx,
-        metrics.clone(),
+        handles.metrics.clone(),
         shutdown.clone(),
     ));
-    reader_loop(
-        read_half, book, subs, snap_tx, registry, change_tx, shutdown,
-    )
-    .await;
+    reader_loop(read_half, subs, snap_tx, handles.clone(), shutdown).await;
     // Await the writer instead of aborting it: it stops between frames, so the client
     // sees whole frames then a clean EOF when the write half drops here.
     let _ = writer.await;
-    metrics
+    handles
+        .metrics
         .clients
         .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 async fn reader_loop(
     mut read_half: OwnedReadHalf,
-    book: Arc<RwLock<Book>>,
     subs: Arc<Mutex<HashSet<String>>>,
     snap_tx: mpsc::Sender<Vec<u8>>,
-    registry: Arc<Mutex<SubRegistry>>,
-    change_tx: std::sync::mpsc::Sender<()>,
+    handles: ServerHandles,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let ServerHandles {
+        book,
+        registry,
+        change_tx,
+        selector,
+        ..
+    } = &handles;
     loop {
         let frame = tokio::select! {
             biased;
@@ -133,10 +133,11 @@ async fn reader_loop(
                 }
                 // Ack the subscription, then push the current snapshot per symbol.
                 let _ = snap_tx.try_send(encode_sub_ack(&syms, true));
+                let order = selector.serve_order();
                 let snapshots: Vec<Quote> = {
                     let b = book.read().unwrap();
                     syms.iter()
-                        .filter_map(|sym| b.get(0, sym).cloned())
+                        .filter_map(|sym| b.get_preferred(&order, sym).cloned())
                         .collect()
                 };
                 // try_send (not await): drop the frame if the channel is full rather

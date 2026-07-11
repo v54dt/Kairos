@@ -12,12 +12,13 @@ use std::time::{Duration, Instant};
 use kairos_core::book::{Admit, Book};
 use kairos_core::decode::{DecodeError, FeedEvent, decode_feed_event};
 use kairos_core::encode::encode_subscribe;
+use kairos_core::failover::Selector;
 use kairos_core::ipc::aeron::{AeronPub, AeronSub};
 use kairos_core::metrics::Metrics;
 use kairos_core::streams::StreamTable;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::path::quote_socket_path;
-use kairos_core::uds::server::run_server;
+use kairos_core::uds::server::{ServerHandles, run_server};
 use kairos_core::watchdog::{
     DRIVER_DEAD_GRACE, DriverLivenessWatchdog, PollErrorWatchdog, driver_timeout_ms_from_env,
     max_poll_errors_from_env,
@@ -31,6 +32,9 @@ const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// Re-publish the desired set at least this often (also the upstream heartbeat
 /// that recovers a sidecar restart/reconnect).
 const CONTROL_HEARTBEAT: Duration = Duration::from_secs(10);
+
+/// How often the failover selector re-evaluates the active source (multi-source only).
+const FAILOVER_EVAL_INTERVAL: Duration = Duration::from_millis(250);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -64,11 +68,22 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     });
 
+    let priority = source_priority(&table);
+    let selector = Arc::new(Selector::from_env(priority.clone()));
+    if selector.is_multi() {
+        eprintln!("kairos-core: multi-source failover active, priority {priority:?}");
+        let eval_selector = selector.clone();
+        let eval_metrics = metrics.clone();
+        let eval_shutdown = shutting_down.clone();
+        thread::spawn(move || failover_eval_loop(eval_selector, eval_metrics, eval_shutdown));
+    }
+
     for entry in table.quotes() {
         let stream_id = entry.stream_id;
         let aeron_book = book.clone();
         let aeron_tx = tx.clone();
         let aeron_metrics = metrics.clone();
+        let aeron_selector = selector.clone();
         let aeron_shutdown = shutting_down.clone();
         thread::spawn(move || {
             aeron_poll_loop(
@@ -76,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
                 aeron_book,
                 aeron_tx,
                 aeron_metrics,
+                aeron_selector,
                 aeron_shutdown,
             )
         });
@@ -87,17 +103,55 @@ async fn main() -> anyhow::Result<()> {
 
     let socket_path = quote_socket_path();
     eprintln!("kairos-core: UDS quote server on {socket_path}");
-    run_server(
-        &socket_path,
+    let handles = ServerHandles {
         book,
-        tx,
+        quotes: tx,
         registry,
         change_tx,
         metrics,
-        shutdown_rx,
-    )
-    .await?;
+        selector,
+    };
+    run_server(&socket_path, handles, shutdown_rx).await?;
     Ok(())
+}
+
+/// Source priority (primary first): an explicit `KAIROS_SOURCE_PRIORITY` wins,
+/// else the quotes streams in declared order. One source => inert selector.
+fn source_priority(table: &StreamTable) -> Vec<u16> {
+    if let Ok(v) = std::env::var("KAIROS_SOURCE_PRIORITY") {
+        let list: Vec<u16> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        if !list.is_empty() {
+            return list;
+        }
+    }
+    table.quotes().map(|e| e.source).collect()
+}
+
+/// Periodically recompute the active source and loudly log every switch.
+fn failover_eval_loop(
+    selector: Arc<Selector>,
+    metrics: Arc<Metrics>,
+    shutting_down: Arc<AtomicBool>,
+) {
+    let primary = selector.active_source();
+    loop {
+        if shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        thread::sleep(FAILOVER_EVAL_INTERVAL);
+        if let Some(sw) = selector.eval(selector.now_us()) {
+            Metrics::inc(&metrics.failover_switches);
+            let kind = if sw.to == primary {
+                "FAILBACK"
+            } else {
+                "FAILOVER"
+            };
+            eprintln!(
+                "kairos-core: {kind} active quote source {} -> {} (primary {primary})",
+                sw.from, sw.to
+            );
+        }
+    }
 }
 
 /// Publishes the desired subscription set to the sidecar on the control stream:
@@ -133,6 +187,7 @@ fn aeron_poll_loop(
     book: Arc<RwLock<Book>>,
     tx: broadcast::Sender<FeedEvent>,
     metrics: Arc<Metrics>,
+    selector: Arc<Selector>,
     shutting_down: Arc<AtomicBool>,
 ) {
     let sub = match AeronSub::connect(None, stream_id) {
@@ -163,21 +218,31 @@ fn aeron_poll_loop(
                 std::process::exit(1);
             }
         }
+        let now_us = if selector.is_multi() {
+            selector.now_us()
+        } else {
+            0
+        };
         match sub.poll(
             |data| match decode_feed_event(data) {
                 Ok(FeedEvent::Quote(q)) => {
                     Metrics::inc(&metrics.quotes_decoded);
                     metrics.observe_latency(q.source, q.quote_ts_us, q.recv_ts_us);
+                    selector.note(q.source, now_us);
                     match book.write().unwrap().update(q.clone()) {
-                        Admit::Admitted => {
+                        Admit::Admitted if selector.serves(q.source) => {
                             let _ = tx.send(FeedEvent::Quote(q));
                         }
+                        Admit::Admitted => {}
                         Admit::Dropped => Metrics::inc(&metrics.ordering_drops),
                     }
                 }
                 Ok(FeedEvent::Trade(t)) => {
                     metrics.observe_latency(t.source, t.trade_ts_us, t.recv_ts_us);
-                    let _ = tx.send(FeedEvent::Trade(t));
+                    selector.note(t.source, now_us);
+                    if selector.serves(t.source) {
+                        let _ = tx.send(FeedEvent::Trade(t));
+                    }
                 }
                 Err(DecodeError::UnknownVariant) => Metrics::inc(&metrics.unknown_variants),
                 Err(_) => Metrics::inc(&metrics.decode_errors),

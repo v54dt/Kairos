@@ -40,6 +40,13 @@ impl Book {
         self.quotes.get(&(source, symbol.to_owned()))
     }
 
+    /// Resolve a symbol against a preference-ordered list of sources, returning the
+    /// first source that holds it. Used by the snapshot path to serve the active
+    /// (failover-selected) source, falling back to a source that has the symbol.
+    pub fn get_preferred(&self, sources: &[u16], symbol: &str) -> Option<&Quote> {
+        sources.iter().find_map(|&source| self.get(source, symbol))
+    }
+
     pub fn len(&self) -> usize {
         self.quotes.len()
     }
