@@ -88,10 +88,12 @@ fn header_line() -> Line<'static> {
 }
 
 fn fill_age(now: i64, last_fill_ts: i64) -> String {
-    if last_fill_ts <= 0 || now <= last_fill_ts {
+    // last_fill_ts is Unix seconds from the daemon; now is micros.
+    let last_us = last_fill_ts.saturating_mul(1_000_000);
+    if last_fill_ts <= 0 || now <= last_us {
         return String::new();
     }
-    format_fill_age(Duration::from_micros((now - last_fill_ts) as u64))
+    format_fill_age(Duration::from_micros((now - last_us) as u64))
 }
 
 fn row_line(row: &SupervisorRow, selected: bool, now: i64) -> Line<'static> {
@@ -509,15 +511,16 @@ mod tests {
     #[test]
     fn fill_age_empty_for_zero_or_future() {
         let now = 2_000_000_000_000i64;
+        let now_s = now / 1_000_000;
         assert_eq!(fill_age(now, 0), "");
-        assert_eq!(fill_age(now, now + 1_000_000), "");
-        assert_eq!(fill_age(now, now - 90_000_000), "1m");
+        assert_eq!(fill_age(now, now_s + 1), "");
+        assert_eq!(fill_age(now, now_s - 90), "1m");
     }
 
     #[test]
     fn running_row_shows_shares_and_last_fill_age() {
         let mut r = row("2330", ScenarioState::InWindow, 4242, 3, "", true);
-        r.last_fill_ts = now_us() - 90_000_000;
+        r.last_fill_ts = now_us() / 1_000_000 - 90;
         let sup = connected(vec![r]);
         let text = buffer_text(
             130,
