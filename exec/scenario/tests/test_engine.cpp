@@ -178,6 +178,39 @@ class InstantFillBackend : public OrderBackend {
   bool connected_ = false;
 };
 
+// Models the documented 7/6 hazard: the hub drops an order's ack but the order is
+// LIVE at the broker. The submit gets no ack (the watchdog times it out); when the
+// engine best-effort cancels it, it fills late instead of cancelling.
+class AckDroppedLiveFillBackend : public OrderBackend {
+ public:
+  bool Connect() override {
+    connected_ = true;
+    return true;
+  }
+  void Disconnect() override { connected_ = false; }
+  bool IsConnected() const override { return connected_; }
+  void Submit(const OrderSubmitMsg& o) override {
+    ++submit_count;
+    total_shares += o.shares;
+    id_ = o.id;
+    price_ = o.price;
+    shares_ = o.shares;  // never ack -> ack-timeout watchdog fires
+  }
+  void Cancel(const std::string& id) override {
+    ++cancel_count;
+    if (id == id_ && on_fill_) on_fill_(id_, Fill{shares_, price_});  // was live: fills late
+  }
+  std::atomic<int> submit_count{0};
+  std::atomic<int> cancel_count{0};
+  std::atomic<long> total_shares{0};
+
+ private:
+  std::string id_;
+  Cents price_ = 0;
+  long shares_ = 0;
+  bool connected_ = false;
+};
+
 // EngineClock whose mono advances 2s per read so SdkGate never sleeps and the
 // ack-timeout watchdog fires immediately (sub-second tests).
 EngineClock SteppedMonoClock(std::shared_ptr<std::atomic<long>> mono_ns) {
@@ -659,6 +692,37 @@ void TestSellPositionCap() {
               backend.total_shares.load(), sink.FinalTax());
 }
 
+// A SELL never oversells the position even when an order's ack is dropped while
+// the order is live at the broker: the timed-out order stays counted against the
+// cap, so no fresh order is placed and its late fill can't push past the position.
+void TestSellCapAckTimeoutNoOversell() {
+  Scenario s = BaseScenario();
+  s.side = Side::kSell;
+  s.pacing = Pacing::kAsap;
+  s.reference_price = 100.0;
+  s.shares_per_order = 30;               // one slice == the whole position
+  s.position_shares = 30;                // hard cap
+  s.budget_twd = 100000000;              // never binds; only the cap should
+  s.ack_timeout_ms = 1;                  // watchdog fires on the next stepped read
+  s.max_consecutive_order_failures = 3;  // default: one timeout does not halt
+
+  AckDroppedLiveFillBackend backend;
+  RecordingSink sink;
+  FakeQuoteSource quotes;
+  auto mono = std::make_shared<std::atomic<long>>(0);
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes, SteppedMonoClock(mono));
+  engine.set_ignore_window(true);
+  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+
+  engine.Run();
+
+  CHECK(backend.submit_count.load() == 1);   // the timed-out order still counts: no re-submit
+  CHECK(backend.total_shares.load() == 30);  // never routed more than the position to market
+  CHECK(sink.TotalFilled() == 30);           // its late fill lands but stays within the cap
+  std::printf("sell cap ack-timeout: submits=%d cancels=%d filled=%ld\n",
+              backend.submit_count.load(), backend.cancel_count.load(), sink.TotalFilled());
+}
+
 // budget_shares completes at exactly the share goal (buy side), the last slice
 // clamps to the remainder, and a buy accrues no tax.
 void TestBuyBudgetShares() {
@@ -739,6 +803,7 @@ void TestSellCapReplayResume() {
 int main() {
   TestQuoteDrivenComplete();
   TestSellPositionCap();
+  TestSellCapAckTimeoutNoOversell();
   TestBuyBudgetShares();
   TestSellCapReplayResume();
   TestHardStopAtClose();

@@ -127,6 +127,12 @@ void ScenarioEngine::ClearResting() {
   cancelling_ = false;
 }
 
+void ScenarioEngine::AbandonResting() {
+  if (s_.side != Side::kSell) return;  // the ledger only feeds the sell position cap
+  long unfilled = resting_.active ? resting_.shares - resting_filled_ : 0;
+  if (unfilled > 0 && !resting_id_.empty()) inflight_lost_[resting_id_] += unfilled;
+}
+
 void ScenarioEngine::RegisterFailure(const std::string& reason) {
   ++consecutive_failures_;
   if (s_.max_consecutive_order_failures > 0 &&
@@ -167,8 +173,14 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
 void ScenarioEngine::OnCancel(const std::string& id, bool ok) {
   std::lock_guard<std::mutex> lock(mu_);
   journal_.LogCancel(id, ok);
+  if (ok) {
+    // A confirmed cancel means the order can no longer fill: release any shares
+    // it was still holding against the sell cap.
+    if (inflight_lost_.erase(id) > 0) cv_.notify_all();
+  }
   if (id != resting_id_) return;
-  ClearResting();  // working order gone; next tick re-places at the current peg
+  if (!ok) AbandonResting();  // cancel rejected -> the order may still be live at broker
+  ClearResting();             // stop tracking it; next tick re-places at the current peg
   cv_.notify_all();
 }
 
@@ -191,6 +203,12 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
   if (id == resting_id_) {
     resting_filled_ += f.shares;
     if (resting_filled_ >= resting_.shares) ClearResting();
+  } else {
+    auto it = inflight_lost_.find(id);  // late fill of an abandoned (possibly-live) order
+    if (it != inflight_lost_.end()) {
+      it->second -= f.shares;
+      if (it->second <= 0) inflight_lost_.erase(it);
+    }
   }
   std::printf("kairos-exec: fill %s %ld @ %s  (cum %ld sh / NT$ %ld, fee %ld, tax %ld)\n",
               id.c_str(), f.shares, CentsToString(f.price).c_str(), acct_.filled_shares,
@@ -337,14 +355,17 @@ int ScenarioEngine::Run() {
                      "ack_timeout:" + resting_id_,
                      {{"reason", "ack timeout after " + std::to_string(since_submit) +
                                      "ms (order may be live at broker)"}}});
+        AbandonResting();  // keep the possibly-live order counted against the sell cap
         ClearResting();
         RegisterFailure("ack timeout");
       }
       remaining = acct_.Remaining(s_);
       if (s_.side == Side::kSell) {
-        // Count in-flight (resting minus its partial fills) as already committed so a
-        // resting order plus a new one can never oversell the held position.
+        // Count in-flight (resting minus its partial fills) plus any abandoned
+        // orders still live at the broker as already committed, so a resting order
+        // plus a new one can never oversell the held position.
         long inflight = resting_.active ? resting_.shares - resting_filled_ : 0;
+        for (const auto& entry : inflight_lost_) inflight += entry.second;
         long committed = acct_.filled_shares + inflight;
         sell_cap_remaining = s_.position_shares - committed;
         if (sell_cap_remaining < 0) sell_cap_remaining = 0;
