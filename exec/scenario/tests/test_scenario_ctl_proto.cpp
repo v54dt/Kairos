@@ -202,8 +202,7 @@ int main() {
   // parse in the C++ ctl-server request parser and recover the original name.
   {
     ScenarioRequest req;
-    const char* tui_line =
-        "{\"cmd\":\"stop\",\"name\":\"a\\nb\\tc\\\"d\\\\e\\u0001f 台積電\"}";
+    const char* tui_line = "{\"cmd\":\"stop\",\"name\":\"a\\nb\\tc\\\"d\\\\e\\u0001f 台積電\"}";
     CHECK(Accepts(tui_line, &req));
     CHECK(req.cmd == ScenarioCmd::kStop);
     CHECK(req.name == std::string("a\nb\tc\"d\\e\x01") + "f 台積電");
