@@ -224,6 +224,10 @@ add_executable(test_order_journal tests/test_order_journal.cpp)
 target_link_libraries(test_order_journal PRIVATE kairos_order_journal kairos_scenario pthread)
 add_test(NAME test_order_journal COMMAND test_order_journal)
 
+add_executable(test_order_flow_escape tests/test_order_flow_escape.cpp)
+target_link_libraries(test_order_flow_escape PRIVATE kairos_order_journal kairos_scenario)
+add_test(NAME test_order_flow_escape COMMAND test_order_flow_escape)
+
 add_executable(test_scenario tests/test_scenario.cpp)
 target_link_libraries(test_scenario PRIVATE kairos_scenario)
 add_test(NAME test_scenario COMMAND test_scenario)
@@ -282,6 +286,10 @@ add_test(NAME test_order_codec COMMAND test_order_codec)
 add_executable(test_order_hub tests/test_order_hub.cpp)
 target_link_libraries(test_order_hub PRIVATE kairos_order_hub)
 add_test(NAME test_order_hub COMMAND test_order_hub)
+
+add_executable(test_order_hub_flow_ordering tests/test_order_hub_flow_ordering.cpp)
+target_link_libraries(test_order_hub_flow_ordering PRIVATE kairos_order_hub)
+add_test(NAME test_order_hub_flow_ordering COMMAND test_order_hub_flow_ordering)
 
 add_executable(test_hub_status tests/test_hub_status.cpp)
 target_link_libraries(test_hub_status PRIVATE kairos_hub_status kairos_order_hub)

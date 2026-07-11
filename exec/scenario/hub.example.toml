@@ -20,6 +20,13 @@ pfx_password = ""
 #                    # trader) so a restart replays it and does not re-buy. Omit to
 #                    # resolve $KAIROS_HUB_JOURNAL_DIR, else $HOME/Kairos/data/journal
 #                    # (the trader's live default). Set the SAME path both sides use.
+# order_flow_journal = true  # write a machine-readable audit stream of EVERY order
+#                    # event the hub processes (submit/ack/fill/cancel) to a SEPARATE
+#                    # per-day file hub-orders-<YYYYMMDD>.jsonl in journal_dir — for
+#                    # full-day replay and broker-statement reconciliation. On by
+#                    # default once journal_dir resolves; best-effort (its failures
+#                    # never block order processing) and NOT the replayed run-state
+#                    # journal. Set false to disable.
 
 # [risk]
 # Account risk gate. It sits in the hub and enforces ACROSS all scenario clients

@@ -174,6 +174,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       return;
     }
     std::string reject;
+    std::string submit_prefix;  // captured under mu_ for the off-lock audit line
     {
       std::lock_guard<std::mutex> lock(mu_);
       long today = CurrentTradingDay();
@@ -225,6 +226,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         cs.open_notional += n;
         ++cs.open_orders;
         if (cs.prefix.empty()) ParseId(o.id, &cs.prefix, &cs.pid);
+        submit_prefix = cs.prefix;
         ++cs.submitted;
         cs.last_activity_us = NowUs();
         if (risk_.dup_order_window_ms > 0) {
@@ -240,10 +242,21 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
     std::fprintf(stderr, "kairos-order-hub: submit client=%d id=%s %s %s %ld @ %s\n", client,
                  o.id.c_str(), o.symbol.c_str(), o.side == Side::kBuy ? "Buy" : "Sell", o.shares,
                  CentsToString(o.price).c_str());
+    if (FlowJournalOn() &&
+        !OrderFlowJournal::AppendSubmit(risk_.journal_dir, o.id, submit_prefix, o.symbol,
+                                        SideName(o.side), BoardName(o.board), MarketName(o.market),
+                                        o.funding_type, o.time_in_force, o.shares, o.price)) {
+      std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow submit id=%s\n",
+                   o.id.c_str());
+    }
     backend_->Submit(o);  // gated inside the backend; never hold mu_ across it
   } else if (msg.kind == OrderMsgKind::kCancel) {
     std::fprintf(stderr, "kairos-order-hub: cancel-request client=%d id=%s\n", client,
                  msg.cancel.id.c_str());
+    if (FlowJournalOn() && !OrderFlowJournal::AppendCancelReq(risk_.journal_dir, msg.cancel.id)) {
+      std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow cancel_req id=%s\n",
+                   msg.cancel.id.c_str());
+    }
     backend_->Cancel(msg.cancel.id);  // cancels are never gated: always allow flattening
   }
 }
@@ -307,6 +320,9 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
     std::fprintf(stderr, "kairos-order-hub: UNROUTABLE ack id=%s ok=%d err=%s (no client route)\n",
                  id.c_str(), ok ? 1 : 0, err.c_str());
   }
+  if (FlowJournalOn() && !OrderFlowJournal::AppendAck(risk_.journal_dir, id, ok, err)) {
+    std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow ack id=%s\n", id.c_str());
+  }
 }
 
 void OrderHub::OnFill(const std::string& id, const Fill& f) {
@@ -367,6 +383,11 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
     std::fprintf(stderr, "kairos-order-hub: fill id=%s %ld @ %s -> client=%d\n", id.c_str(),
                  f.shares, CentsToString(f.price).c_str(), client);
     send_(client, EncodeOrderFill({id, f.shares, f.price}));
+    if (FlowJournalOn() &&
+        !OrderFlowJournal::AppendFill(risk_.journal_dir, id, f.shares, f.price, false)) {
+      std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow fill id=%s\n",
+                   id.c_str());
+    }
     return;
   }
   // No client route: the trader that placed this order has exited. Persist the
@@ -377,6 +398,11 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
   // on a fully-accounted id (named=false, journal_shares=0) is not written twice.
   std::fprintf(stderr, "kairos-order-hub: UNROUTABLE fill id=%s %ld @ %s (no client route)\n",
                id.c_str(), f.shares, CentsToString(f.price).c_str());
+  if (FlowJournalOn() &&
+      !OrderFlowJournal::AppendFill(risk_.journal_dir, id, f.shares, f.price, true)) {
+    std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow unroutable fill id=%s\n",
+                 id.c_str());
+  }
   if (risk_.journal_dir.empty()) return;
   if (!named) {
     std::fprintf(
@@ -422,6 +448,10 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
   } else {
     std::fprintf(stderr, "kairos-order-hub: UNROUTABLE cancel id=%s ok=%d (no client route)\n",
                  id.c_str(), ok ? 1 : 0);
+  }
+  if (FlowJournalOn() && !OrderFlowJournal::AppendCancelAck(risk_.journal_dir, id, ok)) {
+    std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow cancel_ack id=%s\n",
+                 id.c_str());
   }
 }
 

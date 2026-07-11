@@ -43,6 +43,10 @@ class OrderHub {
     // Journal dir shared with the traders; a fill the hub cannot route (client
     // gone) is appended here so a restarted trader replays it. Empty = disabled.
     std::string journal_dir;
+    // Also write the per-day hub-orders-<day>.jsonl audit stream (every submit/
+    // ack/fill/cancel the hub processes) into journal_dir. On when journal_dir
+    // resolves; a best-effort stream separate from the replayed run-state journal.
+    bool order_flow_journal = true;
   };
 
   OrderHub(OrderBackend* backend, SendFn send);
@@ -128,6 +132,9 @@ class OrderHub {
     std::int64_t open_notional = 0;  // sum of reserved notional of this client's live orders
     int open_orders = 0;             // this client's admitted-not-closed orders
   };
+
+  // True when the best-effort per-day hub order-flow audit stream is enabled.
+  bool FlowJournalOn() const { return risk_.order_flow_journal && !risk_.journal_dir.empty(); }
 
   void OnAck(const std::string& id, bool ok, const std::string& err);
   void OnFill(const std::string& id, const Fill& f);

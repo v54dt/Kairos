@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +16,14 @@
 using namespace kairos::exec;
 
 static int g_failures = 0;
+
+static std::vector<std::string> ReadLines(const std::string& path) {
+  std::vector<std::string> out;
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line)) out.push_back(line);
+  return out;
+}
 
 #define CHECK(cond)                                                \
   do {                                                             \
@@ -239,6 +248,101 @@ int main() {
     std::remove(path5.c_str());
     std::remove(path.c_str());
     std::remove(path2.c_str());
+    ::rmdir(dir.c_str());
+  }
+
+  // --- Order-flow audit stream: every hub event lands as exactly one well-formed
+  // --- line in hub-orders-<day>.jsonl, distinct from the run-state fill journal. ---
+  {
+    const std::string dir = "/tmp/kairos-hub-flow-" + std::to_string(::getpid());
+    StubBackend bf;
+    std::vector<std::pair<int, OrderMessage>> sentf;
+    auto sendf = [&](int c, const std::vector<std::uint8_t>& bytes) {
+      OrderMessage m;
+      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sentf.push_back({c, m});
+    };
+    OrderHub::RiskConfig risk;
+    risk.journal_dir = dir;  // order_flow_journal defaults on
+    OrderHub hf(&bf, sendf, risk);
+    CHECK(hf.Start());
+
+    const std::string fpath = JournalPath(dir, "hub-orders-" + JournalDayUtc8());
+    const std::string rpath = JournalPath(dir, std::string("2330-Buy-") + JournalDayUtc8());
+    std::remove(fpath.c_str());
+    std::remove(rpath.c_str());
+
+    OrderSubmitMsg os{"kf-1", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                      "ROD",  92500,  1000};
+    Feed(hf, 11, EncodeOrderSubmit(os));
+    bf.FireAck("kf-1", true, "");
+    bf.FireFill("kf-1", Fill{1000, 92500});  // routed fill: unroutable=0
+    Feed(hf, 11, EncodeOrderCancel({"kf-1"}));
+    bf.FireCancel("kf-1", true);
+
+    auto lines = ReadLines(fpath);
+    CHECK(lines.size() == 5);
+    CHECK(JournalJsonStr(lines[0], "type", "") == "submit");
+    CHECK(JournalJsonStr(lines[0], "id", "") == "kf-1");
+    CHECK(JournalJsonStr(lines[0], "prefix", "") == "kf");
+    CHECK(JournalJsonStr(lines[0], "symbol", "") == "2330");
+    CHECK(JournalJsonStr(lines[0], "side", "") == "Buy");
+    CHECK(JournalJsonStr(lines[1], "type", "") == "ack");
+    CHECK(JournalJsonInt(lines[1], "ok", -1) == 1);
+    CHECK(JournalJsonStr(lines[2], "type", "") == "fill");
+    CHECK(JournalJsonInt(lines[2], "unroutable", -1) == 0);
+    CHECK(JournalJsonStr(lines[3], "type", "") == "cancel_req");
+    CHECK(JournalJsonStr(lines[4], "type", "") == "cancel_ack");
+    long prev = 0;  // timestamps are sane and non-decreasing
+    for (const auto& l : lines) {
+      long t = JournalJsonInt(l, "t", -1);
+      CHECK(t >= prev);
+      prev = t;
+    }
+    // The routed fill was NOT written into the replayed run-state journal.
+    CHECK(ReadJournalFills(rpath).empty());
+
+    // A fill on a departed client is flagged unroutable=1 in the same stream.
+    OrderSubmitMsg os2{"kf-2", "0050", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",  10000,  2000};
+    Feed(hf, 12, EncodeOrderSubmit(os2));
+    hf.OnClientDisconnect(12);
+    bf.FireFill("kf-2", Fill{2000, 10000});
+    auto lines2 = ReadLines(fpath);
+    CHECK(lines2.size() == 7);
+    CHECK(JournalJsonStr(lines2[6], "type", "") == "fill");
+    CHECK(JournalJsonStr(lines2[6], "id", "") == "kf-2");
+    CHECK(JournalJsonInt(lines2[6], "unroutable", -1) == 1);
+
+    hf.Stop();
+    std::remove(fpath.c_str());
+    std::remove(JournalPath(dir, std::string("0050-Buy-") + JournalDayUtc8()).c_str());
+    ::rmdir(dir.c_str());
+  }
+
+  // --- order_flow_journal=false writes NO audit file, yet orders still route. ---
+  {
+    const std::string dir = "/tmp/kairos-hub-flowoff-" + std::to_string(::getpid());
+    StubBackend bo;
+    std::vector<std::pair<int, OrderMessage>> sento;
+    auto sendo = [&](int c, const std::vector<std::uint8_t>& bytes) {
+      OrderMessage m;
+      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sento.push_back({c, m});
+    };
+    OrderHub::RiskConfig risk;
+    risk.journal_dir = dir;
+    risk.order_flow_journal = false;
+    OrderHub ho(&bo, sendo, risk);
+    CHECK(ho.Start());
+    const std::string fpath = JournalPath(dir, "hub-orders-" + JournalDayUtc8());
+    std::remove(fpath.c_str());
+    OrderSubmitMsg os{"kx-1", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                      "ROD",  92500,  1000};
+    Feed(ho, 13, EncodeOrderSubmit(os));
+    bo.FireAck("kx-1", true, "");
+    CHECK(!sento.empty());            // order routed
+    CHECK(ReadLines(fpath).empty());  // but no audit file
+    ho.Stop();
+    std::remove(fpath.c_str());
     ::rmdir(dir.c_str());
   }
 

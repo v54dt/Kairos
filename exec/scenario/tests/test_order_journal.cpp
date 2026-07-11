@@ -4,6 +4,7 @@
 #include <unistd.h>
 
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +16,42 @@
 using namespace kairos::exec;
 
 static int g_failures = 0;
+
+static std::vector<std::string> ReadLines(const std::string& path) {
+  std::vector<std::string> out;
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line)) out.push_back(line);
+  return out;
+}
+
+// Minimal structural JSON-object check: an untorn audit line opens with '{',
+// closes with '}', carries no raw control char, and has balanced braces/quotes
+// with escapes honored. A torn/interleaved line fails at least one of these.
+static bool IsWellFormedJsonObject(const std::string& l) {
+  if (l.size() < 2 || l.front() != '{' || l.back() != '}') return false;
+  bool in_str = false;
+  int depth = 0;
+  for (std::size_t i = 0; i < l.size(); ++i) {
+    char c = l[i];
+    if (in_str) {
+      if (static_cast<unsigned char>(c) < 0x20) return false;  // raw control char
+      if (c == '\\') {
+        if (++i >= l.size()) return false;  // dangling escape
+        continue;
+      }
+      if (c == '"') in_str = false;
+      continue;
+    }
+    if (c == '"')
+      in_str = true;
+    else if (c == '{')
+      ++depth;
+    else if (c == '}' && --depth < 0)
+      return false;
+  }
+  return !in_str && depth == 0;
+}
 
 #define CHECK(cond)                                                \
   do {                                                             \
@@ -104,6 +141,119 @@ int main() {
     for (const auto& f : cf) CHECK(f.shares == 100 && (f.price == 11 || f.price == 22));
     std::remove(apath.c_str());
     ::rmdir(adir.c_str());
+  }
+
+  // OrderFlowJournal: the hub's per-day audit stream. Each event is exactly one
+  // well-formed line in hub-orders-<day>.jsonl, parseable back to its fields.
+  {
+    const std::string fdir = "/tmp/kairos-flow-test-" + std::to_string(::getpid());
+    const std::string fpath = JournalPath(fdir, "hub-orders-" + JournalDayUtc8());
+    std::remove(fpath.c_str());
+
+    CHECK(OrderFlowJournal::AppendSubmit(fdir, "k1-7", "k1", "2330", "Buy", "RoundLot", "TSE",
+                                         "Cash", "ROD", 1000, 92500));
+    CHECK(OrderFlowJournal::AppendAck(fdir, "k1-7", true, ""));
+    CHECK(OrderFlowJournal::AppendFill(fdir, "k1-7", 1000, 92500, false));
+    CHECK(OrderFlowJournal::AppendCancelReq(fdir, "k1-7"));
+    CHECK(OrderFlowJournal::AppendCancelAck(fdir, "k1-7", false));
+    CHECK(OrderFlowJournal::AppendFill(fdir, "k9-9", 300, 58000, true));
+
+    auto lines = ReadLines(fpath);
+    CHECK(lines.size() == 6);
+    // submit line: every carried field round-trips
+    CHECK(JournalJsonStr(lines[0], "type", "") == "submit");
+    CHECK(JournalJsonStr(lines[0], "id", "") == "k1-7");
+    CHECK(JournalJsonStr(lines[0], "prefix", "") == "k1");
+    CHECK(JournalJsonStr(lines[0], "symbol", "") == "2330");
+    CHECK(JournalJsonStr(lines[0], "side", "") == "Buy");
+    CHECK(JournalJsonStr(lines[0], "board", "") == "RoundLot");
+    CHECK(JournalJsonStr(lines[0], "market", "") == "TSE");
+    CHECK(JournalJsonStr(lines[0], "fund", "") == "Cash");
+    CHECK(JournalJsonStr(lines[0], "tif", "") == "ROD");
+    CHECK(JournalJsonInt(lines[0], "shares", -1) == 1000);
+    CHECK(JournalJsonInt(lines[0], "price", -1) == 92500);
+    CHECK(JournalJsonInt(lines[0], "t", -1) > 0);
+    // ack line
+    CHECK(JournalJsonStr(lines[1], "type", "") == "ack");
+    CHECK(JournalJsonInt(lines[1], "ok", -1) == 1);
+    CHECK(JournalJsonStr(lines[1], "err", "x") == "");
+    // routed fill: unroutable flag is 0
+    CHECK(JournalJsonStr(lines[2], "type", "") == "fill");
+    CHECK(JournalJsonInt(lines[2], "shares", -1) == 1000);
+    CHECK(JournalJsonInt(lines[2], "unroutable", -1) == 0);
+    // cancel request + cancel ack
+    CHECK(JournalJsonStr(lines[3], "type", "") == "cancel_req");
+    CHECK(JournalJsonStr(lines[3], "id", "") == "k1-7");
+    CHECK(JournalJsonStr(lines[4], "type", "") == "cancel_ack");
+    CHECK(JournalJsonInt(lines[4], "ok", -1) == 0);
+    // unroutable fill is flagged 1
+    CHECK(JournalJsonStr(lines[5], "type", "") == "fill");
+    CHECK(JournalJsonInt(lines[5], "unroutable", -1) == 1);
+    CHECK(JournalJsonInt(lines[5], "shares", -1) == 300);
+
+    // These audit lines are NOT the run-state fill journal: they coexist under a
+    // DIFFERENT file name, so a trader's ReadJournalFills never sees them.
+    CHECK(fpath.find("hub-orders-") != std::string::npos);
+
+    // Concurrent appends from two callback threads: O_APPEND + one fwrite per line
+    // must yield exactly 2N whole, parseable lines with no torn/interleaved line.
+    std::remove(fpath.c_str());
+    constexpr int kN = 500;
+    auto writer = [&](bool unroutable) {
+      for (int i = 0; i < kN; ++i) OrderFlowJournal::AppendFill(fdir, "kc", 100, 11, unroutable);
+    };
+    std::thread t1(writer, false);
+    std::thread t2(writer, true);
+    t1.join();
+    t2.join();
+    auto cl = ReadLines(fpath);
+    CHECK(cl.size() == static_cast<std::size_t>(2 * kN));
+    for (const auto& l : cl) {
+      CHECK(JournalJsonStr(l, "type", "") == "fill");
+      CHECK(JournalJsonInt(l, "shares", -1) == 100);
+      long u = JournalJsonInt(l, "unroutable", -1);
+      CHECK(u == 0 || u == 1);
+    }
+    std::remove(fpath.c_str());
+    ::rmdir(fdir.c_str());
+  }
+
+  // Oversize-line concurrency: lines longer than the 4096-byte stdio buffer used
+  // to tear because fflush issued several write()s and O_APPEND is only per-write
+  // atomic. A single ::write() per line is atomic at end-of-file for any length.
+  // The ack `err` field is now capped, so drive the oversize length through an
+  // uncapped field (the submit symbol) to stress the writer directly: 16 threads,
+  // >=1000 lines each, every escaped line well past 4096 bytes; ZERO may tear.
+  {
+    const std::string bdir = "/tmp/kairos-flow-big-" + std::to_string(::getpid());
+    const std::string bpath = JournalPath(bdir, "hub-orders-" + JournalDayUtc8());
+    std::remove(bpath.c_str());
+
+    const std::string big_symbol(5000, 'Z');  // escaped line length ~5000 > 4096
+    constexpr int kThreads = 16;
+    constexpr int kLines = 1000;
+    auto writer = [&](int t) {
+      const std::string id = "kb-" + std::to_string(t);
+      for (int i = 0; i < kLines; ++i)
+        OrderFlowJournal::AppendSubmit(bdir, id, "kb", big_symbol, "Buy", "RoundLot", "TSE", "Cash",
+                                       "ROD", 1000, 92500);
+    };
+    std::vector<std::thread> ts;
+    for (int t = 0; t < kThreads; ++t) ts.emplace_back(writer, t);
+    for (auto& th : ts) th.join();
+
+    auto bl = ReadLines(bpath);
+    CHECK(bl.size() == static_cast<std::size_t>(kThreads * kLines));
+    int torn = 0;
+    for (const auto& l : bl) {
+      if (!IsWellFormedJsonObject(l) || JournalJsonStr(l, "symbol", "") != big_symbol ||
+          l.size() <= 4096)
+        ++torn;
+    }
+    CHECK(torn == 0);
+    std::printf("oversize-concurrency: %zu lines, torn=%d\n", bl.size(), torn);
+    std::remove(bpath.c_str());
+    ::rmdir(bdir.c_str());
   }
 
   if (g_failures == 0) {
