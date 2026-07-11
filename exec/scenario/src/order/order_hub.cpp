@@ -6,11 +6,10 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <ctime>
 #include <utility>
 
 #include "order_codec.h"
-#include "order_journal.h"  // AppendFill + JournalDayUtc8 (shared journal format)
+#include "order_journal.h"  // AppendFill + trading-day helpers (shared journal format)
 #include "scenario.h"       // SideName
 #include "tw_market.h"      // CentsToString
 
@@ -24,14 +23,6 @@ long NowUs() {
   return std::chrono::duration_cast<std::chrono::microseconds>(
              std::chrono::system_clock::now().time_since_epoch())
       .count();
-}
-
-// Local calendar date as YYYYMMDD; the day-realized notional resets when it changes.
-long LocalTradingDay() {
-  std::time_t t = std::time(nullptr);
-  std::tm tm{};
-  localtime_r(&t, &tm);
-  return (tm.tm_year + 1900) * 10000L + (tm.tm_mon + 1) * 100L + tm.tm_mday;
 }
 
 // prefix = the "k<pid>" head of a user_defined_id (k<pid>-<seq>); pid its digits.
@@ -51,11 +42,12 @@ OrderHub::OrderHub(OrderBackend* backend, SendFn send, RiskConfig risk)
     : backend_(backend),
       send_(std::move(send)),
       start_epoch_s_(NowUs() / 1000000),
-      current_trading_day_(LocalTradingDay()),
+      current_trading_day_(TradingDayNumUtc8(std::chrono::system_clock::now())),
       risk_(std::move(risk)) {}
 
 long OrderHub::CurrentTradingDay() const {
-  return forced_trading_day_ >= 0 ? forced_trading_day_ : LocalTradingDay();
+  return forced_trading_day_ >= 0 ? forced_trading_day_
+                                  : TradingDayNumUtc8(std::chrono::system_clock::now());
 }
 
 long OrderHub::NowMonoMs() const {

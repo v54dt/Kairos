@@ -18,7 +18,8 @@
 #include "live_backend.h"
 #include "order_backend.h"
 #include "order_hub_server.h"
-#include "scenario.h"  // UserCreds
+#include "order_journal.h"  // ResolveJournalDir
+#include "scenario.h"       // UserCreds
 #include "socket_path.h"
 
 using namespace kairos::exec;
@@ -87,15 +88,16 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // Journal dir precedence: [hub].journal_dir, else $KAIROS_HUB_JOURNAL_DIR, else
+  // Journal dir precedence: [hub].journal_dir, else the shared KAIROS_JOURNAL_DIR
+  // (also honored by the trader), else the deprecated KAIROS_HUB_JOURNAL_DIR, else
   // the same $HOME/Kairos/data/journal default the live trader uses (PR #112), so
   // both sides append to one file. Resolved outside the parse so it never throws.
-  if (!journal_cfg.empty()) {
-    risk.journal_dir = journal_cfg;
-  } else if (const char* env = std::getenv("KAIROS_HUB_JOURNAL_DIR"); env != nullptr && env[0]) {
-    risk.journal_dir = env;
-  } else if (const char* home = std::getenv("HOME"); home != nullptr && home[0]) {
-    risk.journal_dir = std::string(home) + "/Kairos/data/journal";
+  bool used_legacy = false;
+  risk.journal_dir = ResolveJournalDir(journal_cfg, "KAIROS_HUB_JOURNAL_DIR", &used_legacy);
+  if (used_legacy) {
+    std::fprintf(stderr,
+                 "kairos-order-hub: KAIROS_HUB_JOURNAL_DIR is deprecated; set KAIROS_JOURNAL_DIR "
+                 "(shared with the traders) instead\n");
   }
 
   std::unique_ptr<OrderBackend> backend;

@@ -9,6 +9,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -138,6 +139,67 @@ int main() {
   std::remove(path.c_str());
   ::rmdir(dir.c_str());
   ::unlink(sock.c_str());
+
+  // Real proof of the env unification: with ONLY the shared KAIROS_JOURNAL_DIR set,
+  // the engine and the hub resolve the SAME directory, and an engine fill write plus
+  // a hub unroutable fill land in ONE file named for the same trading day.
+  {
+    const std::string shared = "/tmp/kairos-shared-e2e-" + std::to_string(::getpid());
+    ::setenv("KAIROS_JOURNAL_DIR", shared.c_str(), 1);
+    ::unsetenv("KAIROS_HUB_JOURNAL_DIR");
+
+    const std::string engine_dir = ResolveJournalDir("", nullptr);  // trader form
+    bool used_legacy = false;
+    const std::string hub_dir =
+        ResolveJournalDir("", "KAIROS_HUB_JOURNAL_DIR", &used_legacy);  // hub form
+    CHECK(engine_dir == shared);
+    CHECK(hub_dir == shared);
+    CHECK(engine_dir == hub_dir);  // both sides resolve one directory
+    CHECK(!used_legacy);
+
+    const std::string sname = std::string("2454-Buy-") + JournalDayUtc8();
+    const std::string spath = JournalPath(shared, sname);
+    std::remove(spath.c_str());
+
+    // Engine side: a live trader appends a fill to <dir>/<symbol-side-day>.jsonl.
+    {
+      OrderJournal j;
+      CHECK(j.Open(engine_dir, sname));
+      j.LogFill("k-engine-1", 500, 50000);
+    }
+
+    // Hub side: an unroutable fill on the SAME (symbol,side,day) appends to the SAME
+    // file the trader replays, resolved purely from the shared env var.
+    DeferredBackend hb;
+    OrderHub::RiskConfig hrisk;
+    hrisk.journal_dir = hub_dir;
+    const std::string hsock = "/tmp/kairos-e2e-hub2-" + std::to_string(::getpid()) + ".sock";
+    OrderHubServer hserver(&hb, hsock, hrisk);
+    CHECK(hserver.Start());
+    int hfd = ConnectClient(hsock);
+    CHECK(hfd >= 0);
+    OrderSubmitMsg hm{"k888-1", "2454", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                      "ROD",    50000,  500};
+    CHECK(WriteFrame(hfd, EncodeOrderSubmit(hm)));
+    std::vector<std::uint8_t> hframe;
+    CHECK(ReadFrame(hfd, &hframe) == 1);  // ack read: route registered
+    ::close(hfd);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    hb.FireFill("k888-1", Fill{500, 50000});  // now unroutable
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    auto both = ReadJournalFills(spath);
+    CHECK(both.size() == 2);  // engine fill + hub unroutable fill in one day-named file
+    CHECK(sname.find(JournalDayUtc8()) != std::string::npos);
+    std::printf("shared-dir proof: engine_dir=%s hub_dir=%s file=%s holds %zu fills\n",
+                engine_dir.c_str(), hub_dir.c_str(), spath.c_str(), both.size());
+
+    hserver.Stop();
+    std::remove(spath.c_str());
+    ::rmdir(shared.c_str());
+    ::unlink(hsock.c_str());
+    ::unsetenv("KAIROS_JOURNAL_DIR");
+  }
 
   if (g_failures == 0) {
     std::printf("test_hub_unroutable_e2e: OK\n");

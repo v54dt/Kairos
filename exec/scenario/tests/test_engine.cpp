@@ -672,6 +672,41 @@ quote_max_age_ms = 0
   }
   std::printf("journal default (live): %s -> %d journal files\n", journal_dir.c_str(),
               CountJournalFiles(journal_dir));
+
+  // Shared KAIROS_JOURNAL_DIR (the env unified with the hub): a LIVE run with no
+  // [journal] honors it, while a PAPER run still writes nothing there, so the
+  // paper-never-inherits gate holds under the new var too.
+  const std::string shared_dir = "/tmp/kairos-shared-journal-" + std::to_string(::getpid());
+  std::filesystem::remove_all(shared_dir);
+  ::setenv("KAIROS_JOURNAL_DIR", shared_dir.c_str(), 1);
+  {
+    Scenario s = LoadScenario(toml);  // empty [journal]
+    s.live = false;
+    RecordingPaperBackend backend;
+    NullEventSink sink;
+    FakeQuoteSource quotes;
+    ScenarioEngine engine(std::move(s), &backend, &sink, &quotes);
+    engine.set_ignore_window(true);
+    quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+    CHECK(engine.Run() == 0);
+    CHECK(CountJournalFiles(shared_dir) == 0);  // paper never inherits the shared dir
+  }
+  {
+    Scenario s = LoadScenario(toml);
+    s.live = true;
+    RecordingPaperBackend backend;
+    NullEventSink sink;
+    FakeQuoteSource quotes;
+    ScenarioEngine engine(std::move(s), &backend, &sink, &quotes);
+    engine.set_ignore_window(true);
+    quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+    CHECK(engine.Run() == 0);
+    CHECK(CountJournalFiles(shared_dir) == 1);  // live honors KAIROS_JOURNAL_DIR
+  }
+  std::printf("journal shared-env (live): %s -> %d journal files\n", shared_dir.c_str(),
+              CountJournalFiles(shared_dir));
+  ::unsetenv("KAIROS_JOURNAL_DIR");
+  std::filesystem::remove_all(shared_dir);
   std::filesystem::remove_all(home);
 }
 

@@ -403,6 +403,62 @@ int main() {
     h4.Stop();
   }
 
+  // --- Trading-day rollover: crossing the UTC+8 day boundary resets the account
+  // --- day-realized notional, the per-symbol collar reference, and the id->meta
+  // --- map, so yesterday's state never leaks into today. The boundary is the
+  // --- shared UTC+8 helper (host TZ irrelevant); forced here for determinism. ---
+  {
+    StubBackend b;
+    std::vector<std::pair<int, OrderMessage>> sd;
+    auto send = [&](int c, const std::vector<std::uint8_t>& bytes) {
+      OrderMessage m;
+      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sd.push_back({c, m});
+    };
+    OrderHub::RiskConfig risk;
+    risk.price_collar_pct = 10;                    // reject a price >10% from the last fill
+    risk.max_account_notional_cents = 35'000'000;  // realized + open + new, account-wide
+    OrderHub hub(&b, send, risk);
+    CHECK(hub.Start());
+
+    // Day 1: a full fill books day-realized notional and anchors the collar ref.
+    hub.SetTradingDayForTest(20260710);
+    OrderSubmitMsg d1{"k1-1", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                      "ROD",  10000,  1000};  // NT$100.00 x 1000 = NT$100,000 realized
+    Feed(hub, 1, EncodeOrderSubmit(d1));
+    b.FireAck("k1-1", true, "");
+    b.FireFill("k1-1", Fill{1000, 10000});  // route closes: realized 10M, open back to 0
+    // Same-day: a probe whose notional needs day-realized to breach the cap is rejected.
+    OrderSubmitMsg probe{"k1-2", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                         "ROD",  10000,  3000};  // 30M; 10M realized + 30M > 35M cap
+    Feed(hub, 1, EncodeOrderSubmit(probe));
+    CHECK(!sd.empty() && sd.back().second.kind == OrderMsgKind::kAck && !sd.back().second.ack.ok);
+
+    // Day 2: the next submit crosses the boundary; day-realized clears, so the same
+    // probe now fits (0 realized + 30M <= 35M) and is forwarded to the backend.
+    hub.SetTradingDayForTest(20260711);
+    OrderSubmitMsg d2{"k2-1", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                      "ROD",  10000,  3000};
+    Feed(hub, 1, EncodeOrderSubmit(d2));
+    CHECK(b.submits.back().id == "k2-1");     // admitted: day-realized was reset
+    CHECK(hub.OrderMetaCountForTest() == 1);  // yesterday's meta cleared, only k2-1 remains
+    b.FireFill("k2-1", Fill{1000, 10000});    // re-anchor the collar ref at 100.00
+
+    // Same day 2: a wild price is collar-rejected against the fresh reference.
+    OrderSubmitMsg wild{"k2-2", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                        "ROD",  50000,  100};  // 500.00 vs 100.00 ref
+    Feed(hub, 1, EncodeOrderSubmit(wild));
+    CHECK(!sd.back().second.ack.ok);
+
+    // Day 3: rollover clears the collar reference, so the same wild price is admitted.
+    hub.SetTradingDayForTest(20260712);
+    OrderSubmitMsg d3{"k3-1", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                      "ROD",  50000,  100};
+    Feed(hub, 1, EncodeOrderSubmit(d3));
+    CHECK(b.submits.back().id == "k3-1");     // admitted: collar reference was reset
+    CHECK(hub.OrderMetaCountForTest() == 1);  // meta reset again, only k3-1 remains
+    hub.Stop();
+  }
+
   if (g_failures == 0) {
     std::printf("test_order_hub: OK\n");
     return 0;

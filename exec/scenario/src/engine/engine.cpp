@@ -4,7 +4,6 @@
 
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <optional>
 #include <thread>
 #include <utility>
@@ -33,15 +32,6 @@ LocalNow LocalFromUtc(std::chrono::system_clock::time_point tp) {
   int hhmm = static_cast<int>(hms.hours().count()) * 100 + static_cast<int>(hms.minutes().count());
   bool weekday = wd != std::chrono::Saturday && wd != std::chrono::Sunday;
   return {hhmm, weekday};
-}
-
-std::string DateFromUtc(std::chrono::system_clock::time_point tp) {
-  auto utc8 = tp + std::chrono::hours(8);
-  std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(utc8)};
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%04d%02u%02u", static_cast<int>(ymd.year()),
-                static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
-  return buf;
 }
 
 int HhmmToMin(int hhmm) { return (hhmm / 100) * 60 + hhmm % 100; }
@@ -80,18 +70,15 @@ ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSi
       if (s == sym) backend_->OnMarketTrade(s, t, t.trade_ts_us);
     });
   }
-  // A live run with no configured journal defaults to the TUI's <data-dir>/journal
-  // so it always has a fill record; paper never inherits this path, so simulated
-  // fills can't contaminate the journal a live run replays from.
-  if (s_.journal_dir.empty() && s_.live) {
-    const char* home = std::getenv("HOME");
-    if (home != nullptr && home[0] != '\0')
-      s_.journal_dir = std::string(home) + "/Kairos/data/journal";
-  }
+  // A live run with no configured journal resolves the shared journal dir
+  // ($KAIROS_JOURNAL_DIR, else the TUI's <data-dir>/journal) so it always has a
+  // fill record on the same file the hub uses; paper never inherits this path, so
+  // simulated fills can't contaminate the journal a live run replays from.
+  if (s_.live) s_.journal_dir = ResolveJournalDir(s_.journal_dir, nullptr);
   // Restart-safe accounting: replay today's fills so the budget isn't re-bought,
   // then append to the same journal.
   if (!s_.journal_dir.empty()) {
-    std::string name = s_.symbol + "-" + SideName(s_.side) + "-" + DateFromUtc(clock_.wall());
+    std::string name = s_.symbol + "-" + SideName(s_.side) + "-" + TradingDayUtc8(clock_.wall());
     long restored = 0;
     for (const auto& fl : ReadJournalFills(JournalPath(s_.journal_dir, name))) {
       acct_.RecordFill(s_, fl.price, fl.shares);
