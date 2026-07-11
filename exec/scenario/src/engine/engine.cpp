@@ -143,6 +143,13 @@ void ScenarioEngine::RegisterFailure(const std::string& reason) {
   }
 }
 
+void ScenarioEngine::StampCancel(const std::string& id, int seq) {
+  std::lock_guard<std::mutex> lock(mu_);
+  cancel_t_sent_ = clock_.mono();
+  cancel_pending_id_ = id;
+  cancel_seq_ = seq;
+}
+
 void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& err) {
   std::lock_guard<std::mutex> lock(mu_);
   journal_.LogAck(id, ok);
@@ -173,6 +180,13 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
 void ScenarioEngine::OnCancel(const std::string& id, bool ok) {
   std::lock_guard<std::mutex> lock(mu_);
   journal_.LogCancel(id, ok);
+  // Report the cancel round-trip (issue -> OnCancel) against the pending cancel,
+  // which may be an ack-abandoned id no longer equal to resting_id_.
+  if (dashboard_ && s_.live && id == cancel_pending_id_) {
+    dashboard_->ReportOrder(cancel_seq_, ok ? "success" : "cancel_error", "", std::nullopt,
+                            std::nullopt, std::nullopt, Millis(clock_.mono() - cancel_t_sent_));
+    cancel_pending_id_.clear();
+  }
   if (ok) {
     // A confirmed cancel means the order can no longer fill: release any shares
     // it was still holding against the sell cap.
@@ -336,6 +350,8 @@ int ScenarioEngine::Run() {
     std::string rid;
     bool acked, cancelling, halted_now = false;
     std::string timed_out_id;  // possibly-live order to cancel outside the lock
+    int timed_out_seq = 0;
+    int rid_seq = 0;
     {
       std::lock_guard<std::mutex> lock(mu_);
       if (complete_ || halted_) break;
@@ -347,6 +363,7 @@ int ScenarioEngine::Run() {
               .count();
       if (AckTimedOut(resting_.active, resting_acked_, since_submit, s_.ack_timeout_ms)) {
         timed_out_id = resting_id_;
+        timed_out_seq = resting_seq_;
         std::fprintf(stderr, "kairos-exec: order %s ack timeout (%ldms); local reject\n",
                      resting_id_.c_str(), since_submit);
         sink_->Emit({EventCategory::kError,
@@ -355,6 +372,13 @@ int ScenarioEngine::Run() {
                      "ack_timeout:" + resting_id_,
                      {{"reason", "ack timeout after " + std::to_string(since_submit) +
                                      "ms (order may be live at broker)"}}});
+        if (dashboard_ && s_.live) {
+          dashboard_->ReportOrder(resting_seq_, "ack_timeout",
+                                  "ack timeout after " + std::to_string(since_submit) + "ms",
+                                  Millis(clock_.mono() - resting_t_start_),
+                                  Millis(resting_t_submit_ - resting_t_start_),
+                                  static_cast<double>(since_submit));
+        }
         AbandonResting();  // keep the possibly-live order counted against the sell cap
         ClearResting();
         RegisterFailure("ack timeout");
@@ -372,6 +396,7 @@ int ScenarioEngine::Run() {
       }
       resting = resting_;
       rid = resting_id_;
+      rid_seq = resting_seq_;
       acked = resting_acked_;
       cancelling = cancelling_;
       halted_now = halted_;
@@ -379,6 +404,7 @@ int ScenarioEngine::Run() {
     // Best-effort cancel of the timed-out (possibly-live) order before re-placing.
     if (!timed_out_id.empty()) {
       SdkGate();
+      StampCancel(timed_out_id, timed_out_seq);
       backend_->Cancel(timed_out_id);
     }
     if (halted_now) break;
@@ -421,6 +447,7 @@ int ScenarioEngine::Run() {
         // Re-peg = cancel the (acked) working order; next tick re-places at the
         // new peg. Clearing waits for OnCancel/full-fill so racing fills count.
         SdkGate();
+        StampCancel(rid, rid_seq);
         backend_->Cancel(rid);
         std::lock_guard<std::mutex> lock(mu_);
         if (resting_id_ == rid) cancelling_ = true;
@@ -434,12 +461,17 @@ int ScenarioEngine::Run() {
 
   // Wind down: cancel the working order only if the broker acked it.
   std::string rid;
+  int rid_seq = 0;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (resting_.active && resting_acked_) rid = resting_id_;
+    if (resting_.active && resting_acked_) {
+      rid = resting_id_;
+      rid_seq = resting_seq_;
+    }
   }
   if (!rid.empty()) {
     SdkGate();
+    StampCancel(rid, rid_seq);
     backend_->Cancel(rid);
   }
   quotes_->Stop();

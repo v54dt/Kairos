@@ -72,6 +72,44 @@ int main() {
     CHECK(Contains(b, "\"sdk_local_ms\":0.900"));
   }
 
+  // ack timeout -> own outcome, elapsed-at-timeout in ack_rtt_ms, cancel null
+  {
+    RecordingTransport tr;
+    DashboardMetrics d({true, "https://x/api", "scenario-trader"}, &tr);
+    d.ReportOrder(5, "ack_timeout", "ack timeout after 800ms", 812.0, 3.0, 800.0);
+    CHECK(tr.reqs.size() == 1);
+    const std::string& b = tr.reqs[0].body;
+    CHECK(Contains(b, "\"outcome\":\"ack_timeout\""));
+    CHECK(Contains(b, "\"error_message\":\"ack timeout after 800ms\""));
+    CHECK(Contains(b, "\"total_ms\":812.000"));
+    CHECK(Contains(b, "\"ack_rtt_ms\":800.000"));
+    CHECK(Contains(b, "\"cancel_rtt_ms\":null"));
+  }
+
+  // cancel RTT -> only cancel_rtt_ms populated, order timings null
+  {
+    RecordingTransport tr;
+    DashboardMetrics d({true, "https://x/api", "scenario-trader"}, &tr);
+    d.ReportOrder(9, "success", "", std::nullopt, std::nullopt, std::nullopt, 4.250);
+    CHECK(tr.reqs.size() == 1);
+    const std::string& b = tr.reqs[0].body;
+    CHECK(Contains(b, "\"outcome\":\"success\""));
+    CHECK(Contains(b, "\"total_ms\":null"));
+    CHECK(Contains(b, "\"ack_rtt_ms\":null"));
+    CHECK(Contains(b, "\"cancel_rtt_ms\":4.250"));
+  }
+
+  // cancel rejected -> cancel_error with the RTT still reported
+  {
+    RecordingTransport tr;
+    DashboardMetrics d({true, "https://x/api", "scenario-trader"}, &tr);
+    d.ReportOrder(11, "cancel_error", "", std::nullopt, std::nullopt, std::nullopt, 6.000);
+    CHECK(tr.reqs.size() == 1);
+    const std::string& b = tr.reqs[0].body;
+    CHECK(Contains(b, "\"outcome\":\"cancel_error\""));
+    CHECK(Contains(b, "\"cancel_rtt_ms\":6.000"));
+  }
+
   if (g_failures == 0) {
     std::printf("test_dashboard_metrics: OK\n");
     return 0;

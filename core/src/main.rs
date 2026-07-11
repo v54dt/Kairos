@@ -144,10 +144,12 @@ fn aeron_poll_loop(
             |data| match decode_feed_event(data) {
                 Ok(FeedEvent::Quote(q)) => {
                     Metrics::inc(&metrics.quotes_decoded);
+                    metrics.observe_latency(q.source, q.quote_ts_us, q.recv_ts_us);
                     book.write().unwrap().update(q.clone());
                     let _ = tx.send(FeedEvent::Quote(q));
                 }
                 Ok(FeedEvent::Trade(t)) => {
+                    metrics.observe_latency(t.source, t.trade_ts_us, t.recv_ts_us);
                     let _ = tx.send(FeedEvent::Trade(t));
                 }
                 Err(DecodeError::UnknownVariant) => Metrics::inc(&metrics.unknown_variants),

@@ -29,7 +29,8 @@ class DashboardMetrics {
   //   success | ack_timeout | submit_error | cancel_timeout | cancel_error
   void ReportOrder(int iteration_id, const std::string& outcome, const std::string& error_message,
                    std::optional<double> total_ms, std::optional<double> sdk_local_ms,
-                   std::optional<double> ack_rtt_ms);
+                   std::optional<double> ack_rtt_ms,
+                   std::optional<double> cancel_rtt_ms = std::nullopt);
 
  private:
   DashboardConfig cfg_;

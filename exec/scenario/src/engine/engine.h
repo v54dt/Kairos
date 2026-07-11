@@ -62,6 +62,9 @@ class ScenarioEngine {
   // Count one order failure (submit-reject or ack-timeout); halt the run once the
   // consecutive count reaches the configured cap. Call under mu_.
   void RegisterFailure(const std::string& reason);
+  // Stamp the RTT-start for a cancel just issued so OnCancel can report its
+  // round-trip to the dashboard. Call outside mu_ (locks internally).
+  void StampCancel(const std::string& id, int seq);
   void SdkGate();
   std::string NextOrderId();
 
@@ -90,6 +93,9 @@ class ScenarioEngine {
   int resting_seq_ = 0;         // order id's sequence number (dashboard iteration_id)
   std::chrono::steady_clock::time_point resting_t_start_;   // before Submit (post-gate)
   std::chrono::steady_clock::time_point resting_t_submit_;  // after Submit returns
+  std::chrono::steady_clock::time_point cancel_t_sent_;     // RTT start of the pending cancel
+  std::string cancel_pending_id_;  // order whose cancel RTT is outstanding (one at a time)
+  int cancel_seq_ = 0;             // that order's dashboard iteration_id
   bool complete_ = false;
   int consecutive_failures_ = 0;  // reset by a successful ack; halts the run at the cap
   bool halted_ = false;           // fail-closed: stop placing orders and exit non-zero
