@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::sources::age::format_age;
+use crate::sources::age::{format_age, format_fill_age};
 use crate::sources::hub_status::HubReport;
 use crate::sources::order_journal::{ScenarioJournal, ScenariosView};
 use crate::sources::scenario_ctl::{ScenarioPrompt, ScenarioUi};
@@ -71,12 +71,14 @@ fn trunc(s: &str, n: usize) -> String {
 fn header_line() -> Line<'static> {
     Line::from(Span::styled(
         format!(
-            "    {:<n$} {:<st$} {:<5} {:>7} {:>6}  {}",
+            "    {:<n$} {:<st$} {:<5} {:>7} {:>6} {:>8} {:>5}  {}",
             "scenario",
             "state",
             "order",
             "pid",
             "fills",
+            "shares",
+            "last",
             "reason",
             n = NAME_WIDTH,
             st = STATE_WIDTH,
@@ -85,7 +87,14 @@ fn header_line() -> Line<'static> {
     ))
 }
 
-fn row_line(row: &SupervisorRow, selected: bool) -> Line<'static> {
+fn fill_age(now: i64, last_fill_ts: i64) -> String {
+    if last_fill_ts <= 0 || now <= last_fill_ts {
+        return String::new();
+    }
+    format_fill_age(Duration::from_micros((now - last_fill_ts) as u64))
+}
+
+fn row_line(row: &SupervisorRow, selected: bool, now: i64) -> Line<'static> {
     let marker = if selected { "> " } else { "  " };
     let pid = if row.state.is_running() && row.pid > 0 {
         format!("pid {}", row.pid)
@@ -106,7 +115,12 @@ fn row_line(row: &SupervisorRow, selected: bool) -> Line<'static> {
             st = STATE_WIDTH
         )),
         orders_span(row.live),
-        Span::raw(format!(" {pid:>7} {:>6}  ", row.cum_fills)),
+        Span::raw(format!(
+            " {pid:>7} {:>6} {:>8} {:>5}  ",
+            row.cum_fills,
+            row.cum_shares,
+            fill_age(now, row.last_fill_ts),
+        )),
         Span::styled(
             trunc(&row.last_exit_reason, 40),
             Style::default().fg(Color::DarkGray),
@@ -118,7 +132,7 @@ fn row_line(row: &SupervisorRow, selected: bool) -> Line<'static> {
     line
 }
 
-fn data_lines(sup: &SupervisorState, sel: usize) -> Vec<Line<'static>> {
+fn data_lines(sup: &SupervisorState, sel: usize, now: i64) -> Vec<Line<'static>> {
     if !sup.connected {
         return vec![
             Line::from(Span::styled(
@@ -136,7 +150,7 @@ fn data_lines(sup: &SupervisorState, sel: usize) -> Vec<Line<'static>> {
     sup.rows
         .iter()
         .enumerate()
-        .map(|(i, r)| row_line(r, i == sel))
+        .map(|(i, r)| row_line(r, i == sel, now))
         .collect()
 }
 
@@ -334,7 +348,7 @@ pub fn render(
     let view_h = parts[1].height as usize;
     let offset = scroll_offset(view_h, sel);
     frame.render_widget(
-        Paragraph::new(data_lines(sup, sel)).scroll((offset, 0)),
+        Paragraph::new(data_lines(sup, sel, now_us())).scroll((offset, 0)),
         parts[1],
     );
     frame.render_widget(
@@ -490,6 +504,36 @@ mod tests {
             "row must show the state name:\n{text}"
         );
         assert!(text.contains("LIVE"), "orders column shows LIVE:\n{text}");
+    }
+
+    #[test]
+    fn fill_age_empty_for_zero_or_future() {
+        let now = 2_000_000_000_000i64;
+        assert_eq!(fill_age(now, 0), "");
+        assert_eq!(fill_age(now, now + 1_000_000), "");
+        assert_eq!(fill_age(now, now - 90_000_000), "1m");
+    }
+
+    #[test]
+    fn running_row_shows_shares_and_last_fill_age() {
+        let mut r = row("2330", ScenarioState::InWindow, 4242, 3, "", true);
+        r.last_fill_ts = now_us() - 90_000_000;
+        let sup = connected(vec![r]);
+        let text = buffer_text(
+            130,
+            30,
+            &ScenariosView::default(),
+            &sup,
+            &ScenarioUi::default(),
+        );
+        assert!(
+            text.contains("3000"),
+            "cum_shares must render next to fills:\n{text}"
+        );
+        assert!(
+            text.contains("1m"),
+            "last-fill age must render for a filled row:\n{text}"
+        );
     }
 
     #[test]
