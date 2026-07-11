@@ -68,7 +68,12 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     });
 
-    let priority = source_priority(&table);
+    let priority = table
+        .source_priority(std::env::var("KAIROS_SOURCE_PRIORITY").ok().as_deref())
+        .unwrap_or_else(|e| {
+            eprintln!("kairos-core: FATAL invalid KAIROS_SOURCE_PRIORITY: {e:?}");
+            std::process::exit(1);
+        });
     let selector = Arc::new(Selector::from_env(priority.clone()));
     if selector.is_multi() {
         eprintln!("kairos-core: multi-source failover active, priority {priority:?}");
@@ -113,18 +118,6 @@ async fn main() -> anyhow::Result<()> {
     };
     run_server(&socket_path, handles, shutdown_rx).await?;
     Ok(())
-}
-
-/// Source priority (primary first): an explicit `KAIROS_SOURCE_PRIORITY` wins,
-/// else the quotes streams in declared order. One source => inert selector.
-fn source_priority(table: &StreamTable) -> Vec<u16> {
-    if let Ok(v) = std::env::var("KAIROS_SOURCE_PRIORITY") {
-        let list: Vec<u16> = v.split(',').filter_map(|s| s.trim().parse().ok()).collect();
-        if !list.is_empty() {
-            return list;
-        }
-    }
-    table.quotes().map(|e| e.source).collect()
 }
 
 /// Periodically recompute the active source and loudly log every switch.

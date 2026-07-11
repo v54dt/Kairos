@@ -111,6 +111,39 @@ impl StreamTable {
         self.entries.iter().filter(|e| e.role == StreamRole::Quotes)
     }
 
+    /// Resolve the failover source priority (primary first). `spec` is the raw
+    /// `KAIROS_SOURCE_PRIORITY` value; `None`/empty yields the quotes sources in
+    /// declared order. A non-empty spec must list EXACTLY the configured quotes
+    /// sources — each parseable, no duplicates, none unknown, none omitted — so a
+    /// typo cannot silently gate out a live feed or spuriously enable failover.
+    pub fn source_priority(&self, spec: Option<&str>) -> anyhow::Result<Vec<u16>> {
+        let table_sources: Vec<u16> = self.quotes().map(|e| e.source).collect();
+        let spec = spec.map(str::trim).filter(|s| !s.is_empty());
+        let Some(spec) = spec else {
+            return Ok(table_sources);
+        };
+        let mut list: Vec<u16> = Vec::new();
+        for tok in spec.split(',') {
+            let tok = tok.trim();
+            let source: u16 = tok
+                .parse()
+                .map_err(|_| anyhow::anyhow!("bad source '{tok}' in KAIROS_SOURCE_PRIORITY"))?;
+            if list.contains(&source) {
+                anyhow::bail!("duplicate source {source} in KAIROS_SOURCE_PRIORITY");
+            }
+            if !table_sources.contains(&source) {
+                anyhow::bail!(
+                    "KAIROS_SOURCE_PRIORITY source {source} is not a configured quotes source {table_sources:?}"
+                );
+            }
+            list.push(source);
+        }
+        if let Some(missing) = table_sources.iter().find(|s| !list.contains(s)) {
+            anyhow::bail!("KAIROS_SOURCE_PRIORITY omits configured quotes source {missing}");
+        }
+        Ok(list)
+    }
+
     /// The control stream id (first control entry), else the default.
     pub fn control_stream_id(&self) -> i32 {
         self.entries
@@ -165,6 +198,44 @@ mod tests {
     #[test]
     fn rejects_duplicate_quotes_source() {
         assert!(StreamTable::parse("1001:0:quotes,1003:0:quotes").is_err());
+    }
+
+    #[test]
+    fn priority_defaults_to_quotes_declared_order() {
+        let t = StreamTable::parse("1001:0:quotes,1003:1:quotes,1002:0:control").unwrap();
+        assert_eq!(t.source_priority(None).unwrap(), vec![0, 1]);
+        assert_eq!(t.source_priority(Some("  ")).unwrap(), vec![0, 1]);
+    }
+
+    #[test]
+    fn priority_reorders_configured_sources() {
+        let t = StreamTable::parse("1001:0:quotes,1003:1:quotes,1002:0:control").unwrap();
+        assert_eq!(t.source_priority(Some("1,0")).unwrap(), vec![1, 0]);
+    }
+
+    #[test]
+    fn phantom_priority_source_is_rejected() {
+        let t = StreamTable::default(); // only source 0
+        assert!(t.source_priority(Some("5,0")).is_err());
+        assert!(t.source_priority(Some("9,9")).is_err());
+    }
+
+    #[test]
+    fn duplicate_priority_source_is_rejected() {
+        let t = StreamTable::default();
+        assert!(t.source_priority(Some("0,0")).is_err());
+    }
+
+    #[test]
+    fn unparseable_priority_token_is_rejected() {
+        let t = StreamTable::default();
+        assert!(t.source_priority(Some("x,0")).is_err());
+    }
+
+    #[test]
+    fn priority_omitting_a_configured_source_is_rejected() {
+        let t = StreamTable::parse("1001:0:quotes,1003:1:quotes,1002:0:control").unwrap();
+        assert!(t.source_priority(Some("0")).is_err());
     }
 
     #[test]
