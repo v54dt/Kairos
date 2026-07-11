@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use kairos_core::book::{Admit, Book};
 use kairos_core::decode::{DecodeError, FeedEvent, decode_feed_event};
 use kairos_core::encode::encode_subscribe;
-use kairos_core::ipc::aeron::{AeronPub, AeronSub, CONTROL_STREAM_ID, DEFAULT_STREAM_ID};
+use kairos_core::ipc::aeron::{AeronPub, AeronSub};
 use kairos_core::metrics::Metrics;
+use kairos_core::streams::StreamTable;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::path::quote_socket_path;
 use kairos_core::uds::server::run_server;
@@ -58,14 +59,31 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
-    let aeron_book = book.clone();
-    let aeron_tx = tx.clone();
-    let aeron_metrics = metrics.clone();
-    let aeron_shutdown = shutting_down.clone();
-    thread::spawn(move || aeron_poll_loop(aeron_book, aeron_tx, aeron_metrics, aeron_shutdown));
+    let table = StreamTable::from_env().unwrap_or_else(|e| {
+        eprintln!("kairos-core: FATAL invalid KAIROS_STREAMS: {e:?}");
+        std::process::exit(1);
+    });
 
+    for entry in table.quotes() {
+        let stream_id = entry.stream_id;
+        let aeron_book = book.clone();
+        let aeron_tx = tx.clone();
+        let aeron_metrics = metrics.clone();
+        let aeron_shutdown = shutting_down.clone();
+        thread::spawn(move || {
+            aeron_poll_loop(
+                stream_id,
+                aeron_book,
+                aeron_tx,
+                aeron_metrics,
+                aeron_shutdown,
+            )
+        });
+    }
+
+    let control_stream_id = table.control_stream_id();
     let control_registry = registry.clone();
-    thread::spawn(move || control_publish_loop(control_registry, change_rx));
+    thread::spawn(move || control_publish_loop(control_stream_id, control_registry, change_rx));
 
     let socket_path = quote_socket_path();
     eprintln!("kairos-core: UDS quote server on {socket_path}");
@@ -85,15 +103,19 @@ async fn main() -> anyhow::Result<()> {
 /// Publishes the desired subscription set to the sidecar on the control stream:
 /// on every change, plus a periodic heartbeat. Until the sidecar wires stream
 /// 1002 (Phase H2) there is no subscriber, so offers fail harmlessly.
-fn control_publish_loop(registry: Arc<Mutex<SubRegistry>>, change_rx: mpsc::Receiver<()>) {
-    let publisher = match AeronPub::connect(None, CONTROL_STREAM_ID) {
+fn control_publish_loop(
+    control_stream_id: i32,
+    registry: Arc<Mutex<SubRegistry>>,
+    change_rx: mpsc::Receiver<()>,
+) {
+    let publisher = match AeronPub::connect(None, control_stream_id) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("kairos-core: FATAL control aeron connect failed: {e:?}");
             std::process::exit(1);
         }
     };
-    eprintln!("kairos-core: subscription control publisher on stream {CONTROL_STREAM_ID}");
+    eprintln!("kairos-core: subscription control publisher on stream {control_stream_id}");
     loop {
         match change_rx.recv_timeout(CONTROL_HEARTBEAT) {
             Ok(()) => while change_rx.try_recv().is_ok() {}, // coalesce a burst of changes
@@ -107,15 +129,16 @@ fn control_publish_loop(registry: Arc<Mutex<SubRegistry>>, change_rx: mpsc::Rece
 }
 
 fn aeron_poll_loop(
+    stream_id: i32,
     book: Arc<RwLock<Book>>,
     tx: broadcast::Sender<FeedEvent>,
     metrics: Arc<Metrics>,
     shutting_down: Arc<AtomicBool>,
 ) {
-    let sub = match AeronSub::connect(None, DEFAULT_STREAM_ID) {
+    let sub = match AeronSub::connect(None, stream_id) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("kairos-core: FATAL aeron connect failed: {e:?}");
+            eprintln!("kairos-core: FATAL aeron connect failed on stream {stream_id}: {e:?}");
             std::process::exit(1);
         }
     };
