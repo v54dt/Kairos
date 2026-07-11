@@ -43,6 +43,10 @@ class OrderHub {
     // Journal dir shared with the traders; a fill the hub cannot route (client
     // gone) is appended here so a restarted trader replays it. Empty = disabled.
     std::string journal_dir;
+    // Also write the per-day hub-orders-<day>.jsonl audit stream (every submit/
+    // ack/fill/cancel the hub processes) into journal_dir. On when journal_dir
+    // resolves; a best-effort stream separate from the replayed run-state journal.
+    bool order_flow_journal = true;
   };
 
   OrderHub(OrderBackend* backend, SendFn send);

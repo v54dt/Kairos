@@ -67,6 +67,7 @@ int main(int argc, char** argv) {
     creds.pfx_password = user("pfx_password");
     if (auto s = t["hub"]["socket_path"].value<std::string>()) sock = *s;
     if (auto s = t["hub"]["journal_dir"].value<std::string>()) journal_cfg = *s;
+    risk.order_flow_journal = t["hub"]["order_flow_journal"].value<bool>().value_or(true);
     // [risk]: TWD notional caps are stored as Cents; 0/absent = disabled.
     risk.max_account_notional_cents =
         t["risk"]["max_account_notional_twd"].value<long>().value_or(0) * 100;

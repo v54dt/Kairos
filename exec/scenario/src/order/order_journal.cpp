@@ -27,6 +27,31 @@ void MakeDirs(const std::string& dir) {
   }
   ::mkdir(dir.c_str(), 0755);
 }
+
+// Escape the few characters that would break a JSON string literal.
+std::string JsonEscape(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  for (char c : s) {
+    if (c == '"' || c == '\\') out += '\\';
+    out += c;
+  }
+  return out;
+}
+
+// Append one whole line to <dir>/<name>.jsonl, creating <dir>; fsync when asked.
+// One fwrite per line under O_APPEND so interleaved appends never tear.
+bool AppendJsonlLine(const std::string& dir, const std::string& name, const std::string& line,
+                     bool do_fsync) {
+  MakeDirs(dir);
+  std::FILE* f = std::fopen(JournalPath(dir, name).c_str(), "ae");  // append, close-on-exec
+  if (f == nullptr) return false;
+  std::fwrite(line.data(), 1, line.size(), f);
+  std::fflush(f);
+  if (do_fsync) ::fsync(::fileno(f));
+  std::fclose(f);
+  return true;
+}
 }  // namespace
 
 std::string JournalPath(const std::string& dir, const std::string& name) {
@@ -48,6 +73,56 @@ bool OrderJournal::AppendFill(const std::string& dir, const std::string& name,
   if (!j.Open(dir, name)) return false;
   j.LogFill(id, shares, price);  // dtor fcloses
   return true;
+}
+
+bool OrderFlowJournal::Emit(const std::string& dir, const std::string& line, bool do_fsync) {
+  return AppendJsonlLine(dir, "hub-orders-" + JournalDayUtc8(), line, do_fsync);
+}
+
+bool OrderFlowJournal::AppendSubmit(const std::string& dir, const std::string& id,
+                                    const std::string& prefix, const std::string& symbol,
+                                    const char* side, const char* board, const char* market,
+                                    const std::string& funding_type,
+                                    const std::string& time_in_force, long shares, Cents price) {
+  return Emit(dir,
+              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"submit\",\"id\":\"" +
+                  JsonEscape(id) + "\",\"prefix\":\"" + JsonEscape(prefix) + "\",\"symbol\":\"" +
+                  JsonEscape(symbol) + "\",\"side\":\"" + side + "\",\"board\":\"" + board +
+                  "\",\"market\":\"" + market + "\",\"fund\":\"" + JsonEscape(funding_type) +
+                  "\",\"tif\":\"" + JsonEscape(time_in_force) + "\",\"shares\":" +
+                  std::to_string(shares) + ",\"price\":" + std::to_string(price) + "}\n",
+              false);
+}
+
+bool OrderFlowJournal::AppendAck(const std::string& dir, const std::string& id, bool ok,
+                                 const std::string& err) {
+  return Emit(dir,
+              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"ack\",\"id\":\"" + JsonEscape(id) +
+                  "\",\"ok\":" + (ok ? "1" : "0") + ",\"err\":\"" + JsonEscape(err) + "\"}\n",
+              true);
+}
+
+bool OrderFlowJournal::AppendFill(const std::string& dir, const std::string& id, long shares,
+                                  Cents price, bool unroutable) {
+  return Emit(dir,
+              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"fill\",\"id\":\"" +
+                  JsonEscape(id) + "\",\"shares\":" + std::to_string(shares) + ",\"price\":" +
+                  std::to_string(price) + ",\"unroutable\":" + (unroutable ? "1" : "0") + "}\n",
+              true);
+}
+
+bool OrderFlowJournal::AppendCancelReq(const std::string& dir, const std::string& id) {
+  return Emit(dir,
+              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"cancel_req\",\"id\":\"" +
+                  JsonEscape(id) + "\"}\n",
+              false);
+}
+
+bool OrderFlowJournal::AppendCancelAck(const std::string& dir, const std::string& id, bool ok) {
+  return Emit(dir,
+              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"cancel_ack\",\"id\":\"" +
+                  JsonEscape(id) + "\",\"ok\":" + (ok ? "1" : "0") + "}\n",
+              true);
 }
 
 OrderJournal::~OrderJournal() {
@@ -91,6 +166,26 @@ long JournalJsonInt(const std::string& line, const std::string& key, long dflt) 
   char* end = nullptr;
   long v = std::strtol(start, &end, 10);
   return end == start ? dflt : v;
+}
+
+std::string JournalJsonStr(const std::string& line, const std::string& key,
+                           const std::string& dflt) {
+  std::string needle = "\"" + key + "\":\"";
+  auto p = line.find(needle);
+  if (p == std::string::npos) return dflt;
+  p += needle.size();
+  std::string out;
+  for (; p < line.size(); ++p) {
+    char c = line[p];
+    if (c == '\\' && p + 1 < line.size()) {
+      out += line[++p];
+    } else if (c == '"') {
+      return out;
+    } else {
+      out += c;
+    }
+  }
+  return dflt;  // unterminated string literal
 }
 
 std::vector<JournalFill> ReadJournalFills(const std::string& path) {
