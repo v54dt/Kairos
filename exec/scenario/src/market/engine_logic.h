@@ -84,14 +84,16 @@ inline Action DecideAction(const Scenario& s, const TopOfBook& tob, const Restin
   }
   if (!resting.active) {
     if (s.pacing == Pacing::kTwap) {
-      long filled = s.budget_twd - remaining;
-      long scheduled = static_cast<long>(s.budget_twd * window_progress);
+      long goal = s.budget_shares > 0 ? s.budget_shares : s.budget_twd;
+      long filled = goal - remaining;
+      long scheduled = static_cast<long>(goal * window_progress);
       if (filled > scheduled) {
         a.reason = "twap: ahead of schedule";  // wait for the schedule to advance
         return a;
       }
     }
-    long shares = DecideOrderShares(s, target, remaining);
+    long shares = s.budget_shares > 0 ? DecideOrderSharesByCount(s, target, remaining)
+                                      : DecideOrderShares(s, target, remaining);
     if (shares <= 0) {
       a.reason = "remaining below one slice";
       a.done = true;  // dust: can't afford another share at this price
@@ -140,7 +142,16 @@ struct Accounting {
     long r = s.budget_twd - FilledTwd();
     return r > 0 ? r : 0;
   }
-  bool BudgetReached(const Scenario& s) const { return RemainingTwd(s) <= 0; }
+  long RemainingShares(const Scenario& s) const {
+    long r = s.budget_shares - filled_shares;
+    return r > 0 ? r : 0;
+  }
+  // Native goal unit: shares when budget_shares mode, else TWD. Pacing/completion
+  // consume this so a shares goal never round-trips through a drifting TWD estimate.
+  long Remaining(const Scenario& s) const {
+    return s.budget_shares > 0 ? RemainingShares(s) : RemainingTwd(s);
+  }
+  bool BudgetReached(const Scenario& s) const { return Remaining(s) <= 0; }
 };
 
 }  // namespace kairos::exec
