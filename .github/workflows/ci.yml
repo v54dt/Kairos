@@ -77,7 +77,6 @@ jobs:
   tui:
     name: tui fmt + clippy + build + test
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Install build deps
