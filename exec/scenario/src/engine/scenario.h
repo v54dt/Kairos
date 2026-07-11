@@ -39,6 +39,8 @@ struct Scenario {
   std::string time_in_force = "ROD";
 
   long budget_twd = 0;
+  long budget_shares = 0;     // shares-denominated goal; XOR budget_twd (exactly one > 0)
+  long position_shares = 0;   // Sell only: hard cap on cumulative sell exposure (required > 0)
   long shares_per_order = 0;  // 0 => auto fee-optimal
   Pacing pacing = Pacing::kTwap;
 
