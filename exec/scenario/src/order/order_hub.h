@@ -133,6 +133,9 @@ class OrderHub {
     int open_orders = 0;             // this client's admitted-not-closed orders
   };
 
+  // True when the best-effort per-day hub order-flow audit stream is enabled.
+  bool FlowJournalOn() const { return risk_.order_flow_journal && !risk_.journal_dir.empty(); }
+
   void OnAck(const std::string& id, bool ok, const std::string& err);
   void OnFill(const std::string& id, const Fill& f);
   void OnCancel(const std::string& id, bool ok);
