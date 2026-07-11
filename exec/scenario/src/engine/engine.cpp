@@ -473,10 +473,12 @@ int ScenarioEngine::Run() {
           {"tax", std::to_string(acct_.total_tax_twd)}}});
     return kHaltExit;
   }
-  // Outcome: Ctrl+C -> shutdown; budget filled -> complete; reached market close with
-  // budget unfilled -> incomplete (don't silently "complete" an unfinished run).
+  // Outcome: Ctrl+C -> shutdown; done -> complete; reached market close still
+  // running -> incomplete (don't silently "complete" an unfinished run). complete_
+  // also covers a done state the TWD budget can't see, e.g. a SELL whose position
+  // cap fully liquidated before the budget bound.
   bool interrupted = stop_.load();
-  bool filled = acct_.BudgetReached(s_);
+  bool filled = complete_ || acct_.BudgetReached(s_);
   EventCategory cat = interrupted ? EventCategory::kShutdown
                       : filled    ? EventCategory::kComplete
                                   : EventCategory::kIncomplete;

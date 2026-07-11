@@ -375,6 +375,8 @@ class RecordingSink : public EventSink {
         if (k == "shares") fills_.push_back(std::stol(v));
     } else if (ev.category == EventCategory::kComplete || ev.category == EventCategory::kShutdown ||
                ev.category == EventCategory::kIncomplete) {
+      terminal_cat_ = ev.category;
+      terminal_sev_ = ev.severity;
       for (const auto& [k, v] : ev.fields) {
         if (k == "fee") final_fee_ = std::stol(v);
         if (k == "tax") final_tax_ = std::stol(v);
@@ -408,6 +410,14 @@ class RecordingSink : public EventSink {
     std::lock_guard<std::mutex> lock(mu_);
     return final_tax_;
   }
+  EventCategory TerminalCategory() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return terminal_cat_;
+  }
+  Severity TerminalSeverity() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return terminal_sev_;
+  }
 
  private:
   mutable std::mutex mu_;
@@ -415,6 +425,8 @@ class RecordingSink : public EventSink {
   long final_fee_ = 0;
   long final_tax_ = 0;
   std::string halt_reason_;
+  EventCategory terminal_cat_ = EventCategory::kStart;
+  Severity terminal_sev_ = Severity::kInfo;
 };
 
 // Queue-sim backend that counts Submit so the test can wait for the engine to
@@ -723,6 +735,35 @@ void TestSellCapAckTimeoutNoOversell() {
               backend.submit_count.load(), backend.cancel_count.load(), sink.TotalFilled());
 }
 
+// A SELL in budget_twd mode whose position cap fully liquidates the holding before
+// the TWD budget binds is a success: it reports Complete/Info, not a false
+// Incomplete/Warning page that the TWD-only budget check would otherwise raise.
+void TestSellCapBudgetTwdReportsComplete() {
+  Scenario s = BaseScenario();
+  s.side = Side::kSell;
+  s.pacing = Pacing::kAsap;
+  s.reference_price = 100.0;
+  s.shares_per_order = 10;
+  s.position_shares = 30;
+  s.budget_twd = 100000000;  // dwarfs the position value: the cap binds first
+
+  InstantFillBackend backend;
+  RecordingSink sink;
+  FakeQuoteSource quotes;
+  auto mono = std::make_shared<std::atomic<long>>(0);
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes, SteppedMonoClock(mono));
+  engine.set_ignore_window(true);
+  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+
+  engine.Run();
+
+  CHECK(sink.TotalFilled() == 30);
+  CHECK(sink.TerminalCategory() == EventCategory::kComplete);
+  CHECK(sink.TerminalSeverity() == Severity::kInfo);
+  std::printf("sell cap terminal: category=%s severity=%d\n", CategoryName(sink.TerminalCategory()),
+              static_cast<int>(sink.TerminalSeverity()));
+}
+
 // budget_shares completes at exactly the share goal (buy side), the last slice
 // clamps to the remainder, and a buy accrues no tax.
 void TestBuyBudgetShares() {
@@ -804,6 +845,7 @@ int main() {
   TestQuoteDrivenComplete();
   TestSellPositionCap();
   TestSellCapAckTimeoutNoOversell();
+  TestSellCapBudgetTwdReportsComplete();
   TestBuyBudgetShares();
   TestSellCapReplayResume();
   TestHardStopAtClose();
