@@ -88,6 +88,12 @@ struct Scenario {
 
 Scenario LoadScenario(const std::string& path);  // throws std::runtime_error on parse/missing
 std::vector<std::string> ValidateScenario(const Scenario& s);  // empty == valid
+
+// Apply a --budget CLI override to s.budget_twd. A non-positive override is a
+// no-op. Fails (returns false, sets *err) when the scenario is share-denominated,
+// since --budget only edits the TWD knob and would otherwise trip the generic
+// budget_twd/budget_shares XOR check with an unhelpful message.
+bool ApplyBudgetOverride(long override_twd, Scenario* s, std::string* err);
 std::string SummarizeScenario(const Scenario& s);
 
 const char* BoardName(Board b);
