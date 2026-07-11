@@ -77,7 +77,7 @@ fn aeron_quote_roundtrip() {
     let _ = handle.join();
 
     assert_eq!(
-        book.get("2330").map(|q| q.last_price),
+        book.get(0, "2330").map(|q| q.last_price),
         Some(58050),
         "quote not received over aeron"
     );

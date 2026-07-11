@@ -135,7 +135,9 @@ async fn reader_loop(
                 let _ = snap_tx.try_send(encode_sub_ack(&syms, true));
                 let snapshots: Vec<Quote> = {
                     let b = book.read().unwrap();
-                    syms.iter().filter_map(|sym| b.get(sym).cloned()).collect()
+                    syms.iter()
+                        .filter_map(|sym| b.get(0, sym).cloned())
+                        .collect()
                 };
                 // try_send (not await): drop the frame if the channel is full rather
                 // than stalling the reader on a slow consumer — the live broadcast

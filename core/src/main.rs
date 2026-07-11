@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kairos_core::book::Book;
+use kairos_core::book::{Admit, Book};
 use kairos_core::decode::{DecodeError, FeedEvent, decode_feed_event};
 use kairos_core::encode::encode_subscribe;
 use kairos_core::ipc::aeron::{AeronPub, AeronSub, CONTROL_STREAM_ID, DEFAULT_STREAM_ID};
@@ -145,8 +145,12 @@ fn aeron_poll_loop(
                 Ok(FeedEvent::Quote(q)) => {
                     Metrics::inc(&metrics.quotes_decoded);
                     metrics.observe_latency(q.source, q.quote_ts_us, q.recv_ts_us);
-                    book.write().unwrap().update(q.clone());
-                    let _ = tx.send(FeedEvent::Quote(q));
+                    match book.write().unwrap().update(q.clone()) {
+                        Admit::Admitted => {
+                            let _ = tx.send(FeedEvent::Quote(q));
+                        }
+                        Admit::Dropped => Metrics::inc(&metrics.ordering_drops),
+                    }
                 }
                 Ok(FeedEvent::Trade(t)) => {
                     metrics.observe_latency(t.source, t.trade_ts_us, t.recv_ts_us);

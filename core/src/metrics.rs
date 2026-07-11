@@ -26,6 +26,7 @@ pub struct Metrics {
     pub unknown_variants: AtomicU64, // well-formed Envelopes of an unrouted variant
     pub clients: AtomicU64,          // connected UDS consumers (gauge)
     pub lagged: AtomicU64,           // broadcast lag events (a slow consumer fell behind)
+    pub ordering_drops: AtomicU64,   // quotes dropped as out-of-order within a (source,symbol)
     lat: [Histogram; N_SOURCES],     // per-source recv-minus-venue latency (per-interval)
 }
 
@@ -37,6 +38,7 @@ struct Counters {
     unknown: u64,
     clients: u64,
     lagged: u64,
+    ordering_drops: u64,
 }
 
 impl Metrics {
@@ -67,6 +69,7 @@ impl Metrics {
                     unknown: self.unknown_variants.load(Ordering::Relaxed),
                     clients: self.clients.load(Ordering::Relaxed),
                     lagged: self.lagged.load(Ordering::Relaxed),
+                    ordering_drops: self.ordering_drops.load(Ordering::Relaxed),
                 };
                 let lat: Vec<(usize, LatSummary)> = self
                     .lat
@@ -92,6 +95,7 @@ fn render_stats(c: &Counters, lat: &[(usize, LatSummary)]) -> String {
         "kairos-core: quotes={} (+{}) decode_err={} unknown_variant={} clients={} lagged={}",
         c.quotes, c.dq, c.decode_err, c.unknown, c.clients, c.lagged,
     );
+    line.push_str(&format!(" drops={}", c.ordering_drops));
     for (src, s) in lat {
         line.push_str(&format!(
             " lat[src{src},drift]: p50={}us p95={}us p99={}us max={}us n={} neg={} missing={}",
@@ -113,6 +117,7 @@ mod tests {
             unknown: 0,
             clients: 1,
             lagged: 0,
+            ordering_drops: 0,
         }
     }
 
@@ -121,7 +126,18 @@ mod tests {
         let line = render_stats(&base_counters(), &[]);
         assert_eq!(
             line,
-            "kairos-core: quotes=100 (+20) decode_err=0 unknown_variant=0 clients=1 lagged=0"
+            "kairos-core: quotes=100 (+20) decode_err=0 unknown_variant=0 clients=1 lagged=0 drops=0"
+        );
+    }
+
+    #[test]
+    fn render_appends_drops_after_legacy_prefix() {
+        let mut c = base_counters();
+        c.ordering_drops = 7;
+        let line = render_stats(&c, &[]);
+        assert_eq!(
+            line,
+            "kairos-core: quotes=100 (+20) decode_err=0 unknown_variant=0 clients=1 lagged=0 drops=7"
         );
     }
 
