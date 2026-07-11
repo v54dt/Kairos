@@ -92,6 +92,19 @@ int main() {
   CHECK(ejson.find("\"client_count\":0") != std::string::npos);
   CHECK(ejson.find("\"clients\":[]") != std::string::npos);
 
+  // A prefix carrying control bytes is fully escaped: the status file stays one
+  // JSON line (no raw newline/tab) so the TUI hub_status parser can read it.
+  HubStatus hostile;
+  hostile.client_count = 1;
+  hostile.clients.push_back(ClientStatus{"k\n\t\"\\\x01 台積電", 7, 0, 0, 0, 0, 0});
+  const std::string hjson = SerializeHubStatus(hostile);
+  CHECK(hjson.find("\\n") != std::string::npos);
+  CHECK(hjson.find("\\t") != std::string::npos);
+  CHECK(hjson.find("\\u0001") != std::string::npos);
+  CHECK(hjson.find("台積電") != std::string::npos);
+  CHECK(hjson.find('\n') == hjson.size() - 1);  // only the trailing terminator
+  CHECK(hjson.find('\t') == std::string::npos);
+
   // (b) atomic write: content lands, temp file is gone (rename consumed it)
   const std::string dir = "/tmp/kairos-hub-status-test-" + std::to_string(::getpid());
   ::mkdir(dir.c_str(), 0755);

@@ -215,6 +215,33 @@ static void TestSellAndBudgetValidation() {
   CHECK(!ValidateScenario(rl_pos).empty());
 }
 
+// --budget writes budget_twd, but on a share-denominated scenario it must fail
+// fast with an explicit message rather than tripping the generic XOR check.
+static void TestBudgetOverride() {
+  // budget_twd scenario: the override updates the budget and succeeds.
+  Scenario twd = ValidBuy();
+  std::string err;
+  CHECK(ApplyBudgetOverride(500000, &twd, &err));
+  CHECK_EQ(twd.budget_twd, 500000);
+  CHECK(err.empty());
+
+  // A non-positive override is a no-op.
+  Scenario noop = ValidBuy();
+  CHECK(ApplyBudgetOverride(0, &noop, &err));
+  CHECK_EQ(noop.budget_twd, 300000);
+
+  // budget_shares scenario: the override is refused with the explicit message.
+  Scenario shares = ValidBuy();
+  shares.budget_twd = 0;
+  shares.budget_shares = 2000;
+  err.clear();
+  CHECK(!ApplyBudgetOverride(500000, &shares, &err));
+  CHECK(err.find("budget_shares") != std::string::npos);
+  CHECK(err.find("edit the toml") != std::string::npos);
+  CHECK_EQ(shares.budget_twd, 0);  // unchanged: no partial write
+  CHECK_EQ(shares.budget_shares, 2000);
+}
+
 int main() {
   const std::string body = R"(
 [scenario]
@@ -273,6 +300,7 @@ quote_max_age_ms = 70000
   TestJournalDefault();
   TestResolveJournalDir();
   TestSellAndBudgetValidation();
+  TestBudgetOverride();
 
   if (g_failures == 0) {
     std::printf("test_scenario: OK\n");

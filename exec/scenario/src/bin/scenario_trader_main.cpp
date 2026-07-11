@@ -126,7 +126,11 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "failed to load scenario: %s\n", e.what());
     return 1;
   }
-  if (override_budget > 0) scenario.budget_twd = override_budget;
+  std::string budget_err;
+  if (!ApplyBudgetOverride(override_budget, &scenario, &budget_err)) {
+    std::fprintf(stderr, "%s\n", budget_err.c_str());
+    return 1;
+  }
   scenario.live = flag_live;
 
   auto errs = ValidateScenario(scenario);

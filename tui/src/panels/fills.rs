@@ -166,7 +166,10 @@ fn settlement_lines(s: &Settlement) -> Vec<Line<'static>> {
             ),
             Span::raw("   (T+2)"),
         ]),
-        dim("est. fee 0.1425%\u{00d7}discount, sell tax 0.3%, T+2 net"),
+        dim(
+            "est. fee 0.1425%\u{00d7}discount (min 1 TWD odd-lot / 20 TWD round-lot), \
+             sell tax 0.3% (assumes non-day-trade), T+2 net",
+        ),
     ]
 }
 
@@ -309,6 +312,23 @@ mod tests {
         let text = buffer_text(100, 20, &fills, "20260705", 0);
         assert!(text.contains("of 60"), "total:\n{text}");
         assert!(text.contains("60 fills"), "count:\n{text}");
+    }
+
+    #[test]
+    fn settlement_footnote_states_lot_floors_and_non_daytrade() {
+        let lines = settlement_lines(&Settlement::default());
+        let footnote: String = lines
+            .last()
+            .unwrap()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(
+            footnote,
+            "est. fee 0.1425%\u{00d7}discount (min 1 TWD odd-lot / 20 TWD round-lot), \
+             sell tax 0.3% (assumes non-day-trade), T+2 net"
+        );
     }
 
     #[test]

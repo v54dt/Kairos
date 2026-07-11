@@ -100,12 +100,44 @@ fn json_bool(s: &str, key: &str) -> Option<bool> {
     }
 }
 
+// Read the JSON string value of `"key":"..."`, decoding every escape the exec
+// emitters produce (\" \\ \/ \b \f \n \r \t \uXXXX) and stopping at the first
+// UNescaped quote. Unknown/short escapes are kept verbatim (fail-soft: at worst
+// a garbled display char, never a panic) so a new-server payload degrades safely.
 fn json_str(s: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\":\"");
     let start = s.find(&needle)? + needle.len();
-    let rest = &s[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let mut out = String::new();
+    let mut chars = s[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some('b') => out.push('\u{08}'),
+                Some('f') => out.push('\u{0c}'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let hex: String = (&mut chars).take(4).collect();
+                    let cp = (hex.len() == 4)
+                        .then(|| u32::from_str_radix(&hex, 16).ok())
+                        .flatten();
+                    out.push(cp.and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 fn parse_client(obj: &str) -> ClientStatus {
@@ -258,6 +290,27 @@ mod tests {
         assert_eq!(s.clients[0].prefix, "k7");
         assert_eq!(s.clients[0].pid, 0);
         assert_eq!(s.clients[0].open, 0);
+    }
+
+    // CROSS-SIDE: exact bytes emitted by the C++ SerializeHubStatus (copied
+    // verbatim from a real emit run of the upgraded serializer) for a client
+    // prefix carrying newline, tab, quote, backslash, and CJK. The upgraded TUI
+    // unescaper must recover the original prefix, and the object splitter must not
+    // be fooled by the escaped quote inside the string.
+    const CPP_HOSTILE_HUB: &str = "{\"start_epoch_s\":1000,\"written_epoch_s\":1042,\
+        \"client_count\":1,\"clients\":[{\"prefix\":\"k7\\nx\\ty\\\"z\\\\w 台積電\",\"pid\":7,\
+        \"open\":1,\"submitted\":2,\"filled\":1,\"cancelled\":0,\"last_activity_s\":1040}],\
+        \"account_open_notional_cents\":0,\"account_day_realized_cents\":0,\
+        \"max_account_notional_cents\":0,\"halted\":false}\n";
+
+    #[test]
+    fn cross_side_hostile_prefix_round_trips() {
+        let s = parse_hub_status(CPP_HOSTILE_HUB).unwrap();
+        assert_eq!(s.client_count, 1);
+        assert_eq!(s.clients.len(), 1);
+        assert_eq!(s.clients[0].prefix, "k7\nx\ty\"z\\w 台積電");
+        assert_eq!(s.clients[0].pid, 7);
+        assert_eq!(s.clients[0].filled, 1);
     }
 
     #[test]

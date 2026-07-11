@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "json_util.h"
 #include "scenario_ctl_proto.h"
 
 using namespace kairos::exec;
@@ -155,6 +156,67 @@ int main() {
     CHECK(s.find("\"ok\":false") != std::string::npos);
     CHECK(s.find("\"err\":\"unknown mode\"") != std::string::npos);
     CHECK(s.find("\"scenarios\":[]") != std::string::npos);
+  }
+
+  // ROUND-TRIP: emit a scenario name via the shared JsonString escaper, then
+  // parse it back through the ctl-server request parser. Every hostile byte the
+  // emitters can produce must survive the escape/unescape cycle exactly.
+  for (const std::string& hostile :
+       {std::string("a\nb"), std::string("tab\there"), std::string("q\"uote"),
+        std::string("back\\slash"), std::string("bell\x07end"), std::string("cr\rlf"),
+        std::string("form\ffeed"), std::string("台積電 2330"), std::string("all\n\t\r\"\\\x01done"),
+        std::string("literal\\n not newline")}) {
+    std::string line = "{\"cmd\":\"stop\",\"name\":" + JsonString(hostile) + "}";
+    ScenarioRequest req;
+    CHECK(Accepts(line, &req));
+    CHECK(req.name == hostile);
+  }
+
+  // The escaped wire form must never carry a raw control byte (JSONL framing).
+  {
+    std::string line = "{\"cmd\":\"stop\",\"name\":" + JsonString("a\nb\tc") + "}";
+    CHECK(line.find('\n') == std::string::npos);
+    CHECK(line.find('\t') == std::string::npos);
+    CHECK(line.find("\\n") != std::string::npos);
+    CHECK(line.find("\\t") != std::string::npos);
+  }
+
+  // A snapshot with a hostile last_exit_reason emits escapes, never raw controls,
+  // so one status line stays one JSONL line the TUI can split on '\n'.
+  {
+    std::vector<ScenarioSnapshotRow> rows;
+    rows.push_back({"2330", "crashed", 0, 0, 0, 0, "reject:\nline2\ttab \"q\" \\b \x01 台積電",
+                    false, 1, true});
+    std::string s = SerializeScenarioSnapshot(true, "", rows);
+    CHECK(s.find("\\n") != std::string::npos);
+    CHECK(s.find("\\t") != std::string::npos);
+    CHECK(s.find("\\u0001") != std::string::npos);
+    CHECK(s.find("台積電") != std::string::npos);  // UTF-8 passes through
+    // exactly one '\n' (the trailing line terminator), none from the payload
+    CHECK(s.find('\n') == s.size() - 1);
+    CHECK(s.find('\t') == std::string::npos);
+  }
+
+  // CROSS-SIDE: the exact bytes the TUI json_escape emits for a hostile scenario
+  // name (copied verbatim from a real emit run of the upgraded Rust builder) must
+  // parse in the C++ ctl-server request parser and recover the original name.
+  {
+    ScenarioRequest req;
+    const char* tui_line = "{\"cmd\":\"stop\",\"name\":\"a\\nb\\tc\\\"d\\\\e\\u0001f 台積電\"}";
+    CHECK(Accepts(tui_line, &req));
+    CHECK(req.cmd == ScenarioCmd::kStop);
+    CHECK(req.name == std::string("a\nb\tc\"d\\e\x01") + "f 台積電");
+  }
+
+  // The \uXXXX decode path: a hand-built escape recovers the exact code point,
+  // and a lone surrogate / short escape is rejected fail-closed.
+  {
+    ScenarioRequest req;
+    CHECK(Accepts("{\"cmd\":\"stop\",\"name\":\"\\u0041\\u4e2d\"}", &req));
+    CHECK(req.name == "A\xe4\xb8\xad");                         // U+4E2D 中
+    CHECK(Rejects("{\"cmd\":\"stop\",\"name\":\"\\ud800\"}"));  // lone surrogate
+    CHECK(Rejects("{\"cmd\":\"stop\",\"name\":\"\\u00zz\"}"));  // non-hex
+    CHECK(Rejects("{\"cmd\":\"stop\",\"name\":\"\\u12\"}"));    // short
   }
 
   if (g_failures == 0) {

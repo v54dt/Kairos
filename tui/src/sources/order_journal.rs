@@ -42,12 +42,44 @@ fn json_int(s: &str, key: &str) -> Option<i64> {
     rest[..end].parse().ok()
 }
 
+// Read the JSON string value of `"key":"..."`, decoding every escape the exec
+// emitters produce (\" \\ \/ \b \f \n \r \t \uXXXX) and stopping at the first
+// UNescaped quote. Unknown/short escapes are kept verbatim (fail-soft: at worst
+// a garbled display char, never a panic) so a new-server payload degrades safely.
 fn json_str(s: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\":\"");
     let start = s.find(&needle)? + needle.len();
-    let rest = &s[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let mut out = String::new();
+    let mut chars = s[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some('b') => out.push('\u{08}'),
+                Some('f') => out.push('\u{0c}'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let hex: String = (&mut chars).take(4).collect();
+                    let cp = (hex.len() == 4)
+                        .then(|| u32::from_str_radix(&hex, 16).ok())
+                        .flatten();
+                    out.push(cp.and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 /// Parse one JSONL event line. A torn/mid-append line (no closing `}`) yields
@@ -251,7 +283,10 @@ pub struct FeeParams {
     pub base_rate: f64,               // brokerage base rate (0.001425)
     pub discount: f64,                // broker discount multiplier (<=1.0)
     pub min_fee_roundlot_cents: i128, // round-lot minimum fee (20 TWD)
+    pub min_fee_oddlot_cents: i128,   // odd-lot minimum fee (1 TWD)
     pub sell_tax_rate: f64,           // securities transaction tax (0.003)
+    pub daytrade_tax_rate: f64,       // day-trade sell tax (0.0015); NOT applied, see settle()
+    pub daytrade: bool,               // NOT derivable from the journal; kept false
 }
 
 impl Default for FeeParams {
@@ -260,24 +295,43 @@ impl Default for FeeParams {
             base_rate: 0.001425,
             discount: 1.0,
             min_fee_roundlot_cents: 2000,
+            min_fee_oddlot_cents: 100,
             sell_tax_rate: 0.003,
+            daytrade_tax_rate: 0.0015,
+            daytrade: false,
         }
     }
 }
 
 /// Brokerage fee (cents) for one fill: floor(notional_twd * base_rate *
-/// discount) in whole TWD, floored to the round-lot minimum.
-fn fee_cents(notional_cents: i128, p: &FeeParams) -> i128 {
+/// discount) in whole TWD, floored to the per-fill minimum. Odd-lot heuristic:
+/// a `shares` count that is not a positive multiple of 1000 is treated as an
+/// odd-lot fill (1 TWD floor) since the journal line carries only shares, not the
+/// board/scenario config; a round-lot fill keeps the 20 TWD floor.
+fn fee_cents(notional_cents: i128, shares: i64, p: &FeeParams) -> i128 {
+    let is_oddlot = shares > 0 && shares % 1000 != 0;
+    let floor = if is_oddlot {
+        p.min_fee_oddlot_cents
+    } else {
+        p.min_fee_roundlot_cents
+    };
     let value = notional_cents as f64 / 100.0;
     let raw_twd = (value * p.base_rate * p.discount).floor() as i128;
-    (raw_twd * 100).max(p.min_fee_roundlot_cents)
+    (raw_twd * 100).max(floor)
 }
 
 /// Securities transaction tax (cents) for one SELL fill: floor(notional_twd *
-/// sell_tax_rate) in whole TWD.
+/// rate) in whole TWD. The journal carries no day-trade signal, so `p.daytrade`
+/// stays false and the full 0.3% rate is applied (see the panel footnote) rather
+/// than guessed; the day-trade plumbing exists only for a future explicit config.
 fn sell_tax_cents(notional_cents: i128, p: &FeeParams) -> i128 {
+    let rate = if p.daytrade {
+        p.daytrade_tax_rate
+    } else {
+        p.sell_tax_rate
+    };
     let value = notional_cents as f64 / 100.0;
-    (value * p.sell_tax_rate).floor() as i128 * 100
+    (value * rate).floor() as i128 * 100
 }
 
 /// Estimated TW settlement over today's fills. All fields are cents; the
@@ -316,10 +370,10 @@ pub fn settle(fills: &[Fill], p: &FeeParams) -> Settlement {
         let notional = f.shares as i128 * f.price as i128;
         if f.buy {
             s.buy_notional_cents += notional;
-            s.buy_fee_cents += fee_cents(notional, p);
+            s.buy_fee_cents += fee_cents(notional, f.shares, p);
         } else {
             s.sell_notional_cents += notional;
-            s.sell_fee_cents += fee_cents(notional, p);
+            s.sell_fee_cents += fee_cents(notional, f.shares, p);
             s.sell_tax_cents += sell_tax_cents(notional, p);
         }
     }
@@ -512,10 +566,25 @@ mod tests {
 
     #[test]
     fn settlement_min_fee_floor_per_roundlot() {
-        // BUY 100 @10.00: notional 1,000 TWD; raw fee floor(1.425)=1 TWD, floored
-        // up to the 20 TWD round-lot minimum.
-        let s = settle(&[buy(100, 1000)], &FeeParams::default());
+        // BUY 1,000 @10.00 (a round lot): notional 10,000 TWD; raw fee
+        // floor(14.25)=14 TWD, floored up to the 20 TWD round-lot minimum.
+        let s = settle(&[buy(1000, 1000)], &FeeParams::default());
         assert_eq!(s.buy_fee_cents, 2000);
+    }
+
+    #[test]
+    fn settlement_oddlot_fill_uses_one_twd_floor() {
+        // BUY 37 shares @10.00 (not a 1000-multiple => odd-lot heuristic):
+        // notional 370 TWD; raw fee floor(370*0.001425)=floor(0.527)=0 TWD,
+        // floored up to the 1 TWD odd-lot minimum (100 cents), NOT the 20 TWD
+        // round-lot floor.
+        let s = settle(&[buy(37, 1000)], &FeeParams::default());
+        assert_eq!(s.buy_fee_cents, 100);
+
+        // A larger odd lot whose raw fee already clears the 1 TWD floor keeps the
+        // raw fee: SELL 1,500 @412.50 = 618,750 TWD; raw floor(881.72)=881 TWD.
+        let s = settle(&[sell(1500, 41250)], &FeeParams::default());
+        assert_eq!(s.sell_fee_cents, 88_100);
     }
 
     #[test]

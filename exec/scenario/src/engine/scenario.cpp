@@ -271,6 +271,17 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
   return errs;
 }
 
+bool ApplyBudgetOverride(long override_twd, Scenario* s, std::string* err) {
+  if (override_twd <= 0) return true;
+  if (s->budget_shares > 0) {
+    *err =
+        "--budget overrides budget_twd but this scenario uses budget_shares; edit the toml instead";
+    return false;
+  }
+  s->budget_twd = override_twd;
+  return true;
+}
+
 std::string SummarizeScenario(const Scenario& s) {
   long cap = ResolvedMaxOrderValueTwd(s.fees, s.IsOddLot());
   std::string out;

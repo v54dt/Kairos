@@ -4,24 +4,39 @@
 #include <string>
 #include <unordered_map>
 
+#include "json_util.h"
+
 namespace kairos::exec {
 
 namespace {
 
-// Escape the few characters that would break a JSON string literal.
-std::string JsonEscape(const std::string& s) {
-  std::string out;
-  out.reserve(s.size());
-  for (char c : s) {
-    if (c == '"' || c == '\\') out += '\\';
-    out += c;
+// Hex digit value, or -1 for a non-hex char.
+int HexVal(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// Append the BMP code point `cp` to *out as UTF-8 (1-3 bytes).
+void AppendUtf8(unsigned cp, std::string* out) {
+  if (cp < 0x80) {
+    *out += static_cast<char>(cp);
+  } else if (cp < 0x800) {
+    *out += static_cast<char>(0xC0 | (cp >> 6));
+    *out += static_cast<char>(0x80 | (cp & 0x3F));
+  } else {
+    *out += static_cast<char>(0xE0 | (cp >> 12));
+    *out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+    *out += static_cast<char>(0x80 | (cp & 0x3F));
   }
-  return out;
 }
 
 // Read one JSON string starting at s[*i] == '"'; append its unescaped content to
-// *out and advance *i past the closing quote. Returns false on an unterminated
-// or malformed string.
+// *out and advance *i past the closing quote. Accepts every escape the emitters
+// (json_util.h JsonEscape) can produce: \" \\ \/ \b \f \n \r \t and \uXXXX
+// (BMP, surrogates rejected). Returns false on an unterminated or malformed
+// string.
 bool ParseJsonString(const std::string& s, std::size_t* i, std::string* out) {
   if (*i >= s.size() || s[*i] != '"') return false;
   ++*i;
@@ -44,12 +59,32 @@ bool ParseJsonString(const std::string& s, std::size_t* i, std::string* out) {
         case '/':
           *out += '/';
           break;
+        case 'b':
+          *out += '\b';
+          break;
+        case 'f':
+          *out += '\f';
+          break;
         case 'n':
           *out += '\n';
+          break;
+        case 'r':
+          *out += '\r';
           break;
         case 't':
           *out += '\t';
           break;
+        case 'u': {
+          if (*i + 5 >= s.size()) return false;
+          int h3 = HexVal(s[*i + 2]), h2 = HexVal(s[*i + 3]), h1 = HexVal(s[*i + 4]),
+              h0 = HexVal(s[*i + 5]);
+          if (h3 < 0 || h2 < 0 || h1 < 0 || h0 < 0) return false;
+          unsigned cp = (h3 << 12) | (h2 << 8) | (h1 << 4) | h0;
+          if (cp >= 0xD800 && cp <= 0xDFFF) return false;  // lone surrogate
+          AppendUtf8(cp, out);
+          *i += 6;
+          continue;
+        }
         default:
           return false;
       }

@@ -152,15 +152,23 @@ pub fn supervisor_ctl_path() -> Option<PathBuf> {
     .map(PathBuf::from)
 }
 
-/// Escape the two characters that would break a JSON string literal, matching the
-/// C++ `JsonEscape` so a scenario name with a quote/backslash round-trips exactly.
+/// Escape a string for a JSON literal, matching the exec `JsonEscape` superset
+/// (`\" \\ \b \f \n \r \t` + `\u00xx` controls) so a scenario name with any
+/// control byte round-trips through the C++ ctl-server parser exactly.
 fn json_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
-        if c == '"' || c == '\\' {
-            out.push('\\');
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\u{08}' => out.push_str("\\b"),
+            '\u{0c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
         }
-        out.push(c);
     }
     out
 }
@@ -209,12 +217,44 @@ fn json_bool(s: &str, key: &str) -> Option<bool> {
     }
 }
 
+// Read the JSON string value of `"key":"..."`, decoding every escape the exec
+// emitters produce (\" \\ \/ \b \f \n \r \t \uXXXX) and stopping at the first
+// UNescaped quote. Unknown/short escapes are kept verbatim (fail-soft: at worst
+// a garbled display char, never a panic) so a new-server payload degrades safely.
 fn json_str(s: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\":\"");
     let start = s.find(&needle)? + needle.len();
-    let rest = &s[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let mut out = String::new();
+    let mut chars = s[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some('b') => out.push('\u{08}'),
+                Some('f') => out.push('\u{0c}'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let hex: String = (&mut chars).take(4).collect();
+                    let cp = (hex.len() == 4)
+                        .then(|| u32::from_str_radix(&hex, 16).ok())
+                        .flatten();
+                    out.push(cp.and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 /// Split the `"scenarios":[ {..}, {..} ]` array into its top-level `{..}` objects.
@@ -460,6 +500,53 @@ mod tests {
             stop_request("2330"),
             "{\"cmd\":\"stop\",\"name\":\"2330\"}\n"
         );
+    }
+
+    // CROSS-SIDE: these are the exact bytes emitted by the C++ SerializeScenario-
+    // Snapshot (copied verbatim from a real emit run of the upgraded serializer)
+    // for a last_exit_reason carrying newline, tab, quote, backslash, a 0x1c
+    // control byte, and CJK. The upgraded TUI unescaper must recover the original.
+    const CPP_HOSTILE_SNAPSHOT: &str = "{\"ok\":true,\"err\":\"\",\"scenarios\":[\
+        {\"name\":\"2330\",\"state\":\"crashed\",\"pid\":0,\"cum_fills\":0,\"cum_shares\":0,\
+        \"last_fill_ts\":0,\"last_exit_reason\":\"reject:\\nline2\\ttab \\\"q\\\" \
+        back\\\\slash \\u001ctl 台積電\",\"live\":false,\"restart_count\":3,\"gave_up\":true}]}\n";
+
+    #[test]
+    fn cross_side_hostile_last_exit_reason_round_trips() {
+        let (ok, err, rows) = parse_snapshot(CPP_HOSTILE_SNAPSHOT).unwrap();
+        assert!(ok);
+        assert!(err.is_empty());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "2330");
+        assert_eq!(rows[0].state, ScenarioState::Crashed);
+        assert_eq!(
+            rows[0].last_exit_reason,
+            "reject:\nline2\ttab \"q\" back\\slash \u{1c}tl 台積電"
+        );
+    }
+
+    #[test]
+    fn escape_unescape_round_trips_and_no_double_decode() {
+        // Every escape our own emitter can produce survives our own unescaper.
+        for hostile in [
+            "a\nb",
+            "tab\there",
+            "q\"uote",
+            "back\\slash",
+            "cr\rlf",
+            "form\u{0c}feed",
+            "bell\u{07}end",
+            "台積電 2330",
+            // literal backslash-n must NOT decode to a newline (no double-decode).
+            "literal\\n keep",
+        ] {
+            let line = stop_request(hostile);
+            assert_eq!(
+                json_str(&line, "name").as_deref(),
+                Some(hostile),
+                "{hostile:?}"
+            );
+        }
     }
 
     #[test]

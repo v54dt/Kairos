@@ -1,22 +1,32 @@
 #ifndef KAIROS_EXEC_JSON_UTIL_H_
 #define KAIROS_EXEC_JSON_UTIL_H_
 
-#include <cstdio>
 #include <string>
 
 namespace kairos::exec {
 
-// Minimal JSON string escaping (UTF-8 bytes pass through so Chinese survives).
+// Full JSON string escaping: every character that would break a JSON string
+// literal, including the C0 control chars as \u00xx (untrusted broker/exit text
+// may carry newlines/tabs/control bytes). UTF-8 bytes >= 0x20 pass through so
+// Chinese survives. Byte-identical to order_journal.cpp AppendJsonEscaped.
 inline std::string JsonEscape(const std::string& s) {
+  static const char* kHex = "0123456789abcdef";
   std::string out;
   out.reserve(s.size() + 8);
   for (char c : s) {
+    unsigned char u = static_cast<unsigned char>(c);
     switch (c) {
       case '"':
         out += "\\\"";
         break;
       case '\\':
         out += "\\\\";
+        break;
+      case '\b':
+        out += "\\b";
+        break;
+      case '\f':
+        out += "\\f";
         break;
       case '\n':
         out += "\\n";
@@ -28,10 +38,10 @@ inline std::string JsonEscape(const std::string& s) {
         out += "\\t";
         break;
       default:
-        if (static_cast<unsigned char>(c) < 0x20) {
-          char buf[8];
-          std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-          out += buf;
+        if (u < 0x20) {
+          out += "\\u00";
+          out += kHex[u >> 4];
+          out += kHex[u & 0xF];
         } else {
           out += c;
         }
