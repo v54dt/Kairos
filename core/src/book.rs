@@ -12,9 +12,12 @@ pub enum Admit {
 
 /// Latest-book keyed by `(source, symbol)` so two feeds for the same symbol keep
 /// independent books and can never clobber each other. Within one key an update
-/// is admitted only if its `(epoch, seq)` is not older than the held one; epoch
-/// takes precedence over seq (a higher epoch is always newer, even if seq reset
-/// on a session rebuild — see schema/NORMALIZATION.md §3).
+/// is dropped only if it is strictly older *within the same epoch* (lower seq);
+/// any epoch change is admitted. A different epoch marks a new feed session, and
+/// because the epoch is wall-clock-seeded with no persistence mandate
+/// (schema/NORMALIZATION.md §3) it can regress across a restart under a backward
+/// clock step — so admitting on any epoch change lets the rebuilt session take
+/// over the book instead of freezing it forever.
 #[derive(Default)]
 pub struct Book {
     quotes: HashMap<(u16, String), Quote>,
@@ -28,7 +31,8 @@ impl Book {
     pub fn update(&mut self, quote: Quote) -> Admit {
         let key = (quote.source, quote.symbol.clone());
         if let Some(existing) = self.quotes.get(&key)
-            && (quote.epoch, quote.seq) < (existing.epoch, existing.seq)
+            && quote.epoch == existing.epoch
+            && quote.seq < existing.seq
         {
             return Admit::Dropped;
         }
@@ -166,6 +170,24 @@ mod tests {
             Admit::Admitted
         );
         assert_eq!(book.get(0, "2330").unwrap().last_price, 57000);
+    }
+
+    #[test]
+    fn regressed_epoch_restart_is_admitted() {
+        // A restart under a backward wall-clock step seeds a LOWER epoch. The book
+        // must let the rebuilt session take over rather than drop its quotes forever.
+        let mut book = Book::new();
+        assert_eq!(
+            book.update(quote_at("2330", 0, 1_800_000_100, 900, 58_000)),
+            Admit::Admitted
+        );
+        for seq in [0u64, 1, 99] {
+            assert_eq!(
+                book.update(quote_at("2330", 0, 1_800_000_050, seq, 57_000)),
+                Admit::Admitted
+            );
+        }
+        assert_eq!(book.get(0, "2330").unwrap().last_price, 57_000);
     }
 
     #[test]
