@@ -192,9 +192,9 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
     resting_filled_ += f.shares;
     if (resting_filled_ >= resting_.shares) ClearResting();
   }
-  std::printf("kairos-exec: fill %s %ld @ %s  (cum %ld sh / NT$ %ld, fee %ld)\n", id.c_str(),
-              f.shares, CentsToString(f.price).c_str(), acct_.filled_shares, acct_.FilledTwd(),
-              acct_.total_fee_twd);
+  std::printf("kairos-exec: fill %s %ld @ %s  (cum %ld sh / NT$ %ld, fee %ld, tax %ld)\n",
+              id.c_str(), f.shares, CentsToString(f.price).c_str(), acct_.filled_shares,
+              acct_.FilledTwd(), acct_.total_fee_twd, acct_.total_tax_twd);
   sink_->Emit({EventCategory::kFill,
                Severity::kInfo,
                s_.symbol,
@@ -412,8 +412,9 @@ int ScenarioEngine::Run() {
   backend_->Disconnect();
 
   std::lock_guard<std::mutex> lock(mu_);
-  std::printf("kairos-exec: end - filled %ld sh / NT$ %ld of %ld, fee NT$ %ld\n",
-              acct_.filled_shares, acct_.FilledTwd(), s_.budget_twd, acct_.total_fee_twd);
+  std::printf("kairos-exec: end - filled %ld sh / NT$ %ld of %ld, fee NT$ %ld, tax NT$ %ld\n",
+              acct_.filled_shares, acct_.FilledTwd(), s_.budget_twd, acct_.total_fee_twd,
+              acct_.total_tax_twd);
   std::fflush(stdout);
   // Fail-closed halt: emit a terminal alert with a real reason (never an empty-field
   // event that ntfy renders as a bare "triggered") and exit non-zero so the
@@ -427,7 +428,8 @@ int ScenarioEngine::Run() {
                  {{"reason", halt_reason_},
                   {"filled_sh", std::to_string(acct_.filled_shares)},
                   {"filled_twd", std::to_string(acct_.FilledTwd())},
-                  {"budget", std::to_string(s_.budget_twd)}}});
+                  {"budget", std::to_string(s_.budget_twd)},
+                  {"tax", std::to_string(acct_.total_tax_twd)}}});
     return kHaltExit;
   }
   // Outcome: Ctrl+C -> shutdown; budget filled -> complete; reached market close with
@@ -445,7 +447,8 @@ int ScenarioEngine::Run() {
                {{"filled_sh", std::to_string(acct_.filled_shares)},
                 {"filled_twd", std::to_string(acct_.FilledTwd())},
                 {"budget", std::to_string(s_.budget_twd)},
-                {"fee", std::to_string(acct_.total_fee_twd)}}});
+                {"fee", std::to_string(acct_.total_fee_twd)},
+                {"tax", std::to_string(acct_.total_tax_twd)}}});
   return 0;
 }
 

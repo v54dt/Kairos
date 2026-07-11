@@ -126,11 +126,13 @@ struct Accounting {
   long filled_shares = 0;
   Cents filled_notional = 0;
   long total_fee_twd = 0;
+  long total_tax_twd = 0;  // securities transaction tax on sell fills only
 
   void RecordFill(const Scenario& s, Cents price, long shares) {
     filled_shares += shares;
     filled_notional += price * shares;
     total_fee_twd += BrokerageFee(price * shares, s.fees, s.IsOddLot());
+    if (s.side == Side::kSell) total_tax_twd += SellTax(price * shares, s.fees, s.fees.daytrade);
   }
 
   long FilledTwd() const { return filled_notional / 100; }
