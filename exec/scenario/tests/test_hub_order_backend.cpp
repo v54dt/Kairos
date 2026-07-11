@@ -14,18 +14,9 @@
 #include "hub_order_backend.h"
 #include "order_backend.h"
 #include "order_hub_server.h"
+#include "test_check.h"
 
 using namespace kairos::exec;
-
-static int g_failures = 0;
-
-#define CHECK(cond)                                                \
-  do {                                                             \
-    if (!(cond)) {                                                 \
-      std::printf("FAIL  %s:%d  %s\n", __FILE__, __LINE__, #cond); \
-      ++g_failures;                                                \
-    }                                                              \
-  } while (0)
 
 int main() {
   std::string path = "/tmp/kairos-test-hubbe-" + std::to_string(::getpid()) + ".sock";

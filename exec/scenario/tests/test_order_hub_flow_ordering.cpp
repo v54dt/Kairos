@@ -16,17 +16,9 @@
 #include "order_codec.h"
 #include "order_hub.h"
 #include "order_journal.h"
+#include "test_check.h"
 
 using namespace kairos::exec;
-
-static int g_fail = 0;
-#define CHECK(c)                                              \
-  do {                                                        \
-    if (!(c)) {                                               \
-      std::printf("FAIL %s:%d %s\n", __FILE__, __LINE__, #c); \
-      ++g_fail;                                               \
-    }                                                         \
-  } while (0)
 
 namespace {
 class Stub : public OrderBackend {
@@ -93,10 +85,10 @@ int main() {
 
   std::remove(fpath.c_str());
   ::rmdir(dir.c_str());
-  if (g_fail == 0) {
+  if (g_failures == 0) {
     std::printf("test_order_hub_flow_ordering: OK (send precedes journal)\n");
     return 0;
   }
-  std::printf("test_order_hub_flow_ordering: %d check(s) failed\n", g_fail);
+  std::printf("test_order_hub_flow_ordering: %d check(s) failed\n", g_failures);
   return 1;
 }
