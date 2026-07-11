@@ -3,7 +3,9 @@
 
 #include <unistd.h>
 
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -61,7 +63,46 @@ static bool IsWellFormedJsonObject(const std::string& l) {
     }                                                              \
   } while (0)
 
+// The shared TradingDayUtc8 / TradingDayNumUtc8 must equal the OLD inline UTC+8
+// journal-day form across a timestamp matrix, incl. the Taipei-midnight (UTC
+// 16:00) and UTC-midnight boundaries. Injected time_points make this host-TZ
+// independent by construction (no localtime is consulted).
+static void TestTradingDayUtc8() {
+  using namespace std::chrono;
+  auto old_str = [](system_clock::time_point tp) {
+    auto utc8 = tp + hours(8);
+    year_month_day ymd{floor<days>(utc8)};
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04d%02u%02u", static_cast<int>(ymd.year()),
+                  static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
+    return std::string(buf);
+  };
+  auto utc = [](int y, unsigned m, unsigned d) {
+    return system_clock::time_point{sys_days{year{y} / month{m} / day{d}}};
+  };
+  const std::vector<system_clock::time_point> matrix = {
+      utc(2026, 7, 10) + hours(16),               // 2026-07-11 00:00 Taipei
+      utc(2026, 7, 10) + hours(16) - seconds(1),  // one tick earlier -> 2026-07-10 Taipei
+      utc(2026, 7, 11),                           // UTC midnight -> 2026-07-11 08:00 Taipei
+      utc(2025, 12, 31) + hours(16),              // year rollover -> 2026-01-01 Taipei
+      utc(2024, 2, 28) + hours(16),               // leap-year Feb -> 2024-02-29 Taipei
+      utc(2026, 7, 11) + hours(12) + minutes(34),
+  };
+  for (const auto& tp : matrix) {
+    const std::string s = TradingDayUtc8(tp);
+    CHECK(s == old_str(tp));
+    CHECK(TradingDayNumUtc8(tp) == std::strtol(s.c_str(), nullptr, 10));
+  }
+  // Boundary values pinned so a formula regression is caught outright.
+  CHECK(TradingDayUtc8(utc(2026, 7, 10) + hours(16)) == "20260711");
+  CHECK(TradingDayUtc8(utc(2026, 7, 10) + hours(16) - seconds(1)) == "20260710");
+  CHECK(TradingDayNumUtc8(utc(2025, 12, 31) + hours(16)) == 20260101);
+  CHECK(TradingDayNumUtc8(utc(2024, 2, 28) + hours(16)) == 20240229);
+}
+
 int main() {
+  TestTradingDayUtc8();
+
   // field extraction from our JSONL lines
   CHECK(JournalJsonInt(R"({"type":"fill","shares":300,"price":58000})", "shares", -1) == 300);
   CHECK(JournalJsonInt(R"({"type":"fill","shares":300,"price":58000})", "price", -1) == 58000);

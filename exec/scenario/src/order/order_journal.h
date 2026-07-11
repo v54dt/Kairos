@@ -1,6 +1,7 @@
 #ifndef KAIROS_EXEC_ORDER_JOURNAL_H_
 #define KAIROS_EXEC_ORDER_JOURNAL_H_
 
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -73,6 +74,13 @@ class OrderFlowJournal {
 };
 
 std::string JournalPath(const std::string& dir, const std::string& name);
+
+// The trading day of `tp` in fixed UTC+8 (Taipei, no DST) — the single source
+// every trading-day derivation shares so both journal writers name the same file
+// and roll on the same boundary regardless of host TZ. String YYYYMMDD form and
+// its numeric YYYYMMDD counterpart; both are time_point-parameterized for tests.
+std::string TradingDayUtc8(std::chrono::system_clock::time_point tp);
+long TradingDayNumUtc8(std::chrono::system_clock::time_point tp);
 
 // Today's YYYYMMDD in fixed UTC+8, matching the engine's journal-file day so the
 // hub and the trader name the same per-(symbol,side,day) file.

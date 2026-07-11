@@ -19,6 +19,13 @@ long NowUs() {
       .count();
 }
 
+// Calendar date of `tp` shifted into fixed UTC+8 (Taipei has no DST), the common
+// basis for every trading-day form below.
+std::chrono::year_month_day Utc8Date(std::chrono::system_clock::time_point tp) {
+  return std::chrono::year_month_day{
+      std::chrono::floor<std::chrono::days>(tp + std::chrono::hours(8))};
+}
+
 // mkdir -p for a (typically shallow) path.
 void MakeDirs(const std::string& dir) {
   std::string acc;
@@ -119,14 +126,21 @@ std::string JournalPath(const std::string& dir, const std::string& name) {
   return dir + "/" + name + ".jsonl";
 }
 
-std::string JournalDayUtc8() {
-  auto utc8 = std::chrono::system_clock::now() + std::chrono::hours(8);
-  std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(utc8)};
+std::string TradingDayUtc8(std::chrono::system_clock::time_point tp) {
+  std::chrono::year_month_day ymd = Utc8Date(tp);
   char buf[16];
   std::snprintf(buf, sizeof(buf), "%04d%02u%02u", static_cast<int>(ymd.year()),
                 static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
   return buf;
 }
+
+long TradingDayNumUtc8(std::chrono::system_clock::time_point tp) {
+  std::chrono::year_month_day ymd = Utc8Date(tp);
+  return static_cast<int>(ymd.year()) * 10000L + static_cast<unsigned>(ymd.month()) * 100L +
+         static_cast<unsigned>(ymd.day());
+}
+
+std::string JournalDayUtc8() { return TradingDayUtc8(std::chrono::system_clock::now()); }
 
 bool OrderJournal::AppendFill(const std::string& dir, const std::string& name,
                               const std::string& id, long shares, Cents price) {

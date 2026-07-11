@@ -35,15 +35,6 @@ LocalNow LocalFromUtc(std::chrono::system_clock::time_point tp) {
   return {hhmm, weekday};
 }
 
-std::string DateFromUtc(std::chrono::system_clock::time_point tp) {
-  auto utc8 = tp + std::chrono::hours(8);
-  std::chrono::year_month_day ymd{std::chrono::floor<std::chrono::days>(utc8)};
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "%04d%02u%02u", static_cast<int>(ymd.year()),
-                static_cast<unsigned>(ymd.month()), static_cast<unsigned>(ymd.day()));
-  return buf;
-}
-
 int HhmmToMin(int hhmm) { return (hhmm / 100) * 60 + hhmm % 100; }
 
 constexpr int kMarketCloseHhmm = 1330;  // TWSE regular session close; hard stop
@@ -91,7 +82,7 @@ ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSi
   // Restart-safe accounting: replay today's fills so the budget isn't re-bought,
   // then append to the same journal.
   if (!s_.journal_dir.empty()) {
-    std::string name = s_.symbol + "-" + SideName(s_.side) + "-" + DateFromUtc(clock_.wall());
+    std::string name = s_.symbol + "-" + SideName(s_.side) + "-" + TradingDayUtc8(clock_.wall());
     long restored = 0;
     for (const auto& fl : ReadJournalFills(JournalPath(s_.journal_dir, name))) {
       acct_.RecordFill(s_, fl.price, fl.shares);
