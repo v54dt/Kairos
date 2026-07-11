@@ -283,6 +283,10 @@ add_executable(test_order_hub tests/test_order_hub.cpp)
 target_link_libraries(test_order_hub PRIVATE kairos_order_hub)
 add_test(NAME test_order_hub COMMAND test_order_hub)
 
+add_executable(test_order_hub_flow_ordering tests/test_order_hub_flow_ordering.cpp)
+target_link_libraries(test_order_hub_flow_ordering PRIVATE kairos_order_hub)
+add_test(NAME test_order_hub_flow_ordering COMMAND test_order_hub_flow_ordering)
+
 add_executable(test_hub_status tests/test_hub_status.cpp)
 target_link_libraries(test_hub_status PRIVATE kairos_hub_status kairos_order_hub)
 add_test(NAME test_hub_status COMMAND test_hub_status)

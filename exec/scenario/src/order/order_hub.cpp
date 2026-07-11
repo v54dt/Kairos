@@ -382,12 +382,12 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
   if (client >= 0) {
     std::fprintf(stderr, "kairos-order-hub: fill id=%s %ld @ %s -> client=%d\n", id.c_str(),
                  f.shares, CentsToString(f.price).c_str(), client);
+    send_(client, EncodeOrderFill({id, f.shares, f.price}));
     if (FlowJournalOn() &&
         !OrderFlowJournal::AppendFill(risk_.journal_dir, id, f.shares, f.price, false)) {
       std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow fill id=%s\n",
                    id.c_str());
     }
-    send_(client, EncodeOrderFill({id, f.shares, f.price}));
     return;
   }
   // No client route: the trader that placed this order has exited. Persist the
