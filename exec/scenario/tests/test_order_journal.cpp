@@ -25,6 +25,34 @@ static std::vector<std::string> ReadLines(const std::string& path) {
   return out;
 }
 
+// Minimal structural JSON-object check: an untorn audit line opens with '{',
+// closes with '}', carries no raw control char, and has balanced braces/quotes
+// with escapes honored. A torn/interleaved line fails at least one of these.
+static bool IsWellFormedJsonObject(const std::string& l) {
+  if (l.size() < 2 || l.front() != '{' || l.back() != '}') return false;
+  bool in_str = false;
+  int depth = 0;
+  for (std::size_t i = 0; i < l.size(); ++i) {
+    char c = l[i];
+    if (in_str) {
+      if (static_cast<unsigned char>(c) < 0x20) return false;  // raw control char
+      if (c == '\\') {
+        if (++i >= l.size()) return false;  // dangling escape
+        continue;
+      }
+      if (c == '"') in_str = false;
+      continue;
+    }
+    if (c == '"')
+      in_str = true;
+    else if (c == '{')
+      ++depth;
+    else if (c == '}' && --depth < 0)
+      return false;
+  }
+  return !in_str && depth == 0;
+}
+
 #define CHECK(cond)                                                \
   do {                                                             \
     if (!(cond)) {                                                 \
@@ -188,6 +216,44 @@ int main() {
     }
     std::remove(fpath.c_str());
     ::rmdir(fdir.c_str());
+  }
+
+  // Oversize-line concurrency: lines longer than the 4096-byte stdio buffer used
+  // to tear because fflush issued several write()s and O_APPEND is only per-write
+  // atomic. A single ::write() per line is atomic at end-of-file for any length.
+  // The ack `err` field is now capped, so drive the oversize length through an
+  // uncapped field (the submit symbol) to stress the writer directly: 16 threads,
+  // >=1000 lines each, every escaped line well past 4096 bytes; ZERO may tear.
+  {
+    const std::string bdir = "/tmp/kairos-flow-big-" + std::to_string(::getpid());
+    const std::string bpath = JournalPath(bdir, "hub-orders-" + JournalDayUtc8());
+    std::remove(bpath.c_str());
+
+    const std::string big_symbol(5000, 'Z');  // escaped line length ~5000 > 4096
+    constexpr int kThreads = 16;
+    constexpr int kLines = 1000;
+    auto writer = [&](int t) {
+      const std::string id = "kb-" + std::to_string(t);
+      for (int i = 0; i < kLines; ++i)
+        OrderFlowJournal::AppendSubmit(bdir, id, "kb", big_symbol, "Buy", "RoundLot", "TSE", "Cash",
+                                       "ROD", 1000, 92500);
+    };
+    std::vector<std::thread> ts;
+    for (int t = 0; t < kThreads; ++t) ts.emplace_back(writer, t);
+    for (auto& th : ts) th.join();
+
+    auto bl = ReadLines(bpath);
+    CHECK(bl.size() == static_cast<std::size_t>(kThreads * kLines));
+    int torn = 0;
+    for (const auto& l : bl) {
+      if (!IsWellFormedJsonObject(l) || JournalJsonStr(l, "symbol", "") != big_symbol ||
+          l.size() <= 4096)
+        ++torn;
+    }
+    CHECK(torn == 0);
+    std::printf("oversize-concurrency: %zu lines, torn=%d\n", bl.size(), torn);
+    std::remove(bpath.c_str());
+    ::rmdir(bdir.c_str());
   }
 
   if (g_failures == 0) {

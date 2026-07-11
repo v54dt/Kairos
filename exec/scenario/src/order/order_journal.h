@@ -47,11 +47,13 @@ class OrderJournal {
 // Best-effort per-day audit stream of every order event the hub processes:
 // <dir>/hub-orders-<day>.jsonl, one JSONL line per submit/ack/fill/cancel. Kept
 // SEPARATE from the run-state fill journal the engine replays (those files stay
-// replay-clean). Handle-less (open-per-line) so day rollover is automatic and
-// concurrent appends from callback threads never tear (same O_APPEND discipline
-// as OrderJournal::AppendFill). Every method returns false on failure; the caller
-// logs — it never blocks or crashes the hub. Money lines (ack/fill/cancel-ack)
-// fsync; submit/cancel-request flush only.
+// replay-clean). Handle-less (open-per-line) so day rollover is automatic.
+// Concurrent appends from callback threads never tear: each line is emitted in a
+// single ::write() on an O_APPEND fd, atomic at end-of-file for a regular file
+// regardless of line length; the only unbounded field (the broker ack `err`) is
+// additionally capped so no field approaches the page size. Every method returns
+// false on failure; the caller logs — it never blocks or crashes the hub. Money
+// lines (ack/fill/cancel-ack) fsync; submit/cancel-request flush only.
 class OrderFlowJournal {
  public:
   static bool AppendSubmit(const std::string& dir, const std::string& id, const std::string& prefix,

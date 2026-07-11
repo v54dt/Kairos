@@ -127,6 +127,40 @@ int main() {
     CHECK(DecodeJsonStr(lines[2], "symbol", &v) && v == sym_q);
   }
 
+  // The broker ack `err` is capped (belt-and-suspenders so no field nears the page
+  // size). Cutting on the escaped string must never split an escape sequence: with
+  // an err of pure backslashes/quotes (each escaping to two bytes), the boundary is
+  // exactly where a naive byte-cut would slice "\\" or "\"" in half. The line must
+  // stay valid JSON and the value end with the truncation marker.
+  const std::string marker = "...(truncated)";
+  for (const std::string& raw : {std::string(600, '\\'), std::string(600, '"')}) {
+    std::remove(path.c_str());
+    OrderFlowJournal::AppendAck(dir, "cap", false, raw);
+    auto ls = ReadLines(path);
+    CHECK(ls.size() == 1);
+    if (ls.size() == 1) {
+      for (char c : ls[0]) CHECK(static_cast<unsigned char>(c) >= 0x20);
+      CHECK(ls[0].front() == '{' && ls[0].back() == '}');
+      std::string v;
+      CHECK(DecodeJsonStr(ls[0], "err", &v));
+      CHECK(v.size() < raw.size());  // actually truncated
+      CHECK(v.size() >= marker.size() &&
+            v.compare(v.size() - marker.size(), marker.size(), marker) == 0);
+      CHECK(v.substr(0, v.size() - marker.size()) == raw.substr(0, v.size() - marker.size()));
+    }
+  }
+
+  // A short err is passed through untouched (no marker).
+  {
+    std::remove(path.c_str());
+    const std::string small = "REJECT: insufficient buying power";
+    OrderFlowJournal::AppendAck(dir, "cap2", false, small);
+    auto ls = ReadLines(path);
+    CHECK(ls.size() == 1);
+    std::string v;
+    CHECK(ls.size() == 1 && DecodeJsonStr(ls[0], "err", &v) && v == small);
+  }
+
   std::remove(path.c_str());
   ::rmdir(dir.c_str());
   if (g_fail == 0) {

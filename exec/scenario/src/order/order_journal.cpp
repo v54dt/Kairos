@@ -1,5 +1,6 @@
 #include "order_journal.h"
 
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -28,61 +29,89 @@ void MakeDirs(const std::string& dir) {
   ::mkdir(dir.c_str(), 0755);
 }
 
-// Escape every character that would break a JSON string literal, including the
-// C0 control chars (broker reject text is untrusted and may carry newlines/tabs).
-std::string JsonEscape(const std::string& s) {
+// Append `c` to `out` as one JSON escape unit, escaping every character that
+// would break a JSON string literal, including the C0 control chars (broker
+// reject text is untrusted and may carry newlines/tabs).
+void AppendJsonEscaped(std::string& out, char c) {
   static const char* kHex = "0123456789abcdef";
+  unsigned char u = static_cast<unsigned char>(c);
+  switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\b':
+      out += "\\b";
+      break;
+    case '\f':
+      out += "\\f";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (u < 0x20) {
+        out += "\\u00";
+        out += kHex[u >> 4];
+        out += kHex[u & 0xF];
+      } else {
+        out += c;
+      }
+  }
+}
+
+std::string JsonEscape(const std::string& s) {
   std::string out;
   out.reserve(s.size());
+  for (char c : s) AppendJsonEscaped(out, c);
+  return out;
+}
+
+// JsonEscape but the escaped output is capped at `cap` bytes, cut only at a whole
+// escape-unit boundary (never mid-escape) so the result stays valid JSON; a
+// "...(truncated)" marker is appended when any input was dropped.
+std::string JsonEscapeCap(const std::string& s, std::size_t cap) {
+  std::string out;
+  out.reserve(s.size() < cap ? s.size() : cap);
   for (char c : s) {
-    unsigned char u = static_cast<unsigned char>(c);
-    switch (c) {
-      case '"':
-        out += "\\\"";
-        break;
-      case '\\':
-        out += "\\\\";
-        break;
-      case '\b':
-        out += "\\b";
-        break;
-      case '\f':
-        out += "\\f";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        if (u < 0x20) {
-          out += "\\u00";
-          out += kHex[u >> 4];
-          out += kHex[u & 0xF];
-        } else {
-          out += c;
-        }
+    std::size_t before = out.size();
+    AppendJsonEscaped(out, c);
+    if (out.size() > cap) {
+      out.resize(before);
+      out += "...(truncated)";
+      return out;
     }
   }
   return out;
 }
 
+// Cap for the broker-supplied ack `err` field, measured on the ESCAPED string, so
+// no single field ever approaches the page size and stresses the write below.
+constexpr std::size_t kErrEscapedCap = 512;
+
 // Append one whole line to <dir>/<name>.jsonl, creating <dir>; fsync when asked.
-// One fwrite per line under O_APPEND so interleaved appends never tear.
+// The whole line goes out in a single ::write() on an O_APPEND fd: for a regular
+// file that write is atomic at end-of-file, so concurrent appends never interleave
+// regardless of line length. A short write is treated as a failure (return false),
+// never looped — a second write() would not be contiguous and would tear the line.
 bool AppendJsonlLine(const std::string& dir, const std::string& name, const std::string& line,
                      bool do_fsync) {
   MakeDirs(dir);
-  std::FILE* f = std::fopen(JournalPath(dir, name).c_str(), "ae");  // append, close-on-exec
-  if (f == nullptr) return false;
-  std::fwrite(line.data(), 1, line.size(), f);
-  std::fflush(f);
-  if (do_fsync) ::fsync(::fileno(f));
-  std::fclose(f);
-  return true;
+  int fd = ::open(JournalPath(dir, name).c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+  if (fd < 0) return false;
+  ssize_t n = ::write(fd, line.data(), line.size());
+  bool ok = n == static_cast<ssize_t>(line.size());
+  if (ok && do_fsync) ::fsync(fd);
+  ::close(fd);
+  return ok;
 }
 }  // namespace
 
@@ -130,7 +159,8 @@ bool OrderFlowJournal::AppendAck(const std::string& dir, const std::string& id, 
                                  const std::string& err) {
   return Emit(dir,
               "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"ack\",\"id\":\"" + JsonEscape(id) +
-                  "\",\"ok\":" + (ok ? "1" : "0") + ",\"err\":\"" + JsonEscape(err) + "\"}\n",
+                  "\",\"ok\":" + (ok ? "1" : "0") + ",\"err\":\"" +
+                  JsonEscapeCap(err, kErrEscapedCap) + "\"}\n",
               true);
 }
 
