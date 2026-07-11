@@ -6,24 +6,10 @@
 #include <cstdlib>
 #include <string>
 
+#include "json_util.h"
 #include "socket_path.h"
 
 namespace kairos::exec {
-
-namespace {
-
-// Escape the few characters that would break a JSON string literal.
-std::string JsonEscape(const std::string& s) {
-  std::string out;
-  out.reserve(s.size());
-  for (char c : s) {
-    if (c == '"' || c == '\\') out += '\\';
-    out += c;
-  }
-  return out;
-}
-
-}  // namespace
 
 std::string SerializeHubStatus(const HubStatus& s) {
   std::string out = "{\"start_epoch_s\":" + std::to_string(s.start_epoch_s) +
