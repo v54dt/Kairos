@@ -134,6 +134,108 @@ static void TestAccounting() {
   CHECK_EQ(acct.RemainingTwd(s), 0);
 }
 
+// The sell position cap clamps a new slice to the shares still allowed (filled +
+// in-flight subtracted by the caller); a zero cap is terminal, not a spin.
+static void TestSellCap() {
+  Scenario s = PegScenario();
+  s.side = Side::kSell;
+  s.position_shares = 100000;
+  s.shares_per_order = 100;  // deterministic base slice
+  auto book = MakeBook(500'00, 501'00);
+  RestingOrder none;
+  long base = 100;
+
+  // cap smaller than the base slice clamps the order down to the cap
+  Action c = DecideAction(s, book, none, s.budget_twd, 1.0, 5);
+  CHECK(c.kind == ActionKind::kPlace);
+  CHECK_EQ(c.shares, 5);
+
+  // cap 0 (position fully committed by filled + in-flight) -> terminal done
+  Action z = DecideAction(s, book, none, s.budget_twd, 1.0, 0);
+  CHECK(z.kind == ActionKind::kNone);
+  CHECK(z.done);
+
+  // no cap (-1, the buy path) leaves the fee-optimal slice untouched
+  Action u = DecideAction(s, book, none, s.budget_twd, 1.0, -1);
+  CHECK_EQ(u.shares, base);
+
+  // resting in-flight counts against the cap: filled 20 + in-flight 5 of a 30
+  // position leaves 5, so the next slice can never push the total past 30
+  long cap_remaining = 30 - (20 + 5);
+  Action inflight = DecideAction(s, book, none, s.budget_twd, 1.0, cap_remaining);
+  CHECK(inflight.kind == ActionKind::kPlace);
+  CHECK_EQ(inflight.shares, 5);
+
+  // RoundLot cap re-rounds the clamp down to whole 1000-share lots
+  Scenario r = s;
+  r.board = Board::kRoundLot;
+  r.shares_per_order = 3000;
+  r.budget_twd = 10000000;
+  Action rr = DecideAction(r, book, none, r.budget_twd, 1.0, 1500);
+  CHECK(rr.kind == ActionKind::kPlace);
+  CHECK_EQ(rr.shares, 1000);
+}
+
+// budget_shares carries a native share-remaining goal through pacing/completion
+// with no TWD round-trip.
+static void TestBudgetShares() {
+  Scenario s = PegScenario();
+  s.budget_twd = 0;
+  s.budget_shares = 5000;
+  s.shares_per_order = 1000;
+  auto book = MakeBook(500'00, 501'00);
+  RestingOrder none;
+
+  Accounting acct;
+  CHECK_EQ(acct.Remaining(s), 5000);
+  CHECK(!acct.BudgetReached(s));
+
+  // a full-size slice while behind the goal
+  Action a = DecideAction(s, book, none, acct.Remaining(s));
+  CHECK(a.kind == ActionKind::kPlace);
+  CHECK_EQ(a.shares, 1000);
+
+  // the last slice clamps to the shares remaining, not a full slice
+  Accounting near;
+  near.RecordFill(s, 500'00, 4500);
+  CHECK_EQ(near.Remaining(s), 500);
+  Action last = DecideAction(s, book, none, near.Remaining(s));
+  CHECK_EQ(last.shares, 500);
+
+  // completion at exactly the share goal
+  for (int i = 0; i < 5; ++i) acct.RecordFill(s, 500'00, 1000);
+  CHECK_EQ(acct.filled_shares, 5000);
+  CHECK_EQ(acct.Remaining(s), 0);
+  CHECK(acct.BudgetReached(s));
+
+  // twap paces shares: behind schedule -> place; ahead -> wait (not done)
+  CHECK(DecideAction(s, book, none, 5000, 0.5).kind == ActionKind::kPlace);
+  Action ahead = DecideAction(s, book, none, 2000, 0.5);  // filled 3000 = 60% > 50%
+  CHECK(ahead.kind == ActionKind::kNone);
+  CHECK(!ahead.done);
+}
+
+// Sell fills accrue the securities transaction tax; buys never do. Values mirror
+// the known-good SellTax cases in test_market_fees.
+static void TestSellTaxAccounting() {
+  Scenario buy = PegScenario();
+  Accounting ab;
+  ab.RecordFill(buy, 500'00, 3);
+  CHECK_EQ(ab.total_tax_twd, 0);
+
+  Scenario sell = PegScenario();
+  sell.side = Side::kSell;
+  sell.position_shares = 100000;
+  Accounting a;
+  a.RecordFill(sell, 100'00, 1000);  // notional NT$ 100000 -> tax 300
+  CHECK_EQ(a.total_tax_twd, 300);
+
+  sell.fees.daytrade = true;
+  Accounting d;
+  d.RecordFill(sell, 100'00, 1000);  // day-trade rate 0.15% -> tax 150
+  CHECK_EQ(d.total_tax_twd, 150);
+}
+
 static void TestWindow() {
   const int start = 900, end = 1325, close = 1330;
   // before start -> wait; inside -> twap; past end pre-close -> fill remainder; close -> stop
@@ -165,6 +267,9 @@ int main() {
   TestPacing();
   TestWindow();
   TestAccounting();
+  TestSellCap();
+  TestBudgetShares();
+  TestSellTaxAccounting();
   TestAckTimeout();
   if (g_failures == 0) {
     std::printf("test_engine_logic: OK\n");

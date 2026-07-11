@@ -17,6 +17,7 @@ struct FeeParams {
   long min_fee_roundlot = 20;
   double sell_tax_rate = 0.003;
   double daytrade_tax_rate = 0.0015;
+  bool daytrade = false;         // sell fills pay the day-trade tax rate instead of the full rate
   long max_order_value_twd = 0;  // 0 => auto fee-optimal cap
 };
 

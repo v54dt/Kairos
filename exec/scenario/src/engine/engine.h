@@ -7,6 +7,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include "dashboard_metrics.h"
 #include "engine_logic.h"
@@ -54,6 +55,10 @@ class ScenarioEngine {
   void OnCancel(const std::string& id, bool ok);
   void OnDisconnect();
   void ClearResting();  // call under mu_
+  // Move the still-unfilled part of the current resting order into the
+  // possibly-live ledger (below) before we stop tracking it, so the sell cap
+  // keeps counting it. Call under mu_.
+  void AbandonResting();
   // Count one order failure (submit-reject or ack-timeout); halt the run once the
   // consecutive count reaches the configured cap. Call under mu_.
   void RegisterFailure(const std::string& reason);
@@ -75,6 +80,11 @@ class ScenarioEngine {
   RestingOrder resting_;
   std::string resting_id_;
   long resting_filled_ = 0;
+  // Orders dropped from resting_ (ack-timeout, or a re-peg cancel the broker
+  // rejected) that may still be live at the broker: id -> shares not yet filled.
+  // Counted against the sell position cap until a fill or a confirmed cancel
+  // resolves them, so filled + in-flight can never oversell the position.
+  std::unordered_map<std::string, long> inflight_lost_;
   bool resting_acked_ = false;  // broker confirmed the working order (OnSubmit)
   bool cancelling_ = false;     // cancel issued for re-peg, awaiting OnCancel/full fill
   int resting_seq_ = 0;         // order id's sequence number (dashboard iteration_id)

@@ -103,6 +103,30 @@ inline long DecideOrderShares(const Scenario& s, Cents price_cents, long remaini
   return std::max<long>(shares, 0);
 }
 
+// Shares for one order in shares-denominated (budget_shares) mode: the fee-optimal
+// per-order slice, clamped by remaining_shares. The goal is a share count, so no
+// TWD round-trip. Round-lot results are whole 1000-share lots.
+inline long DecideOrderSharesByCount(const Scenario& s, Cents price_cents, long remaining_shares) {
+  if (price_cents <= 0 || remaining_shares <= 0) return 0;
+  const bool oddlot = s.IsOddLot();
+
+  long base_shares;
+  if (s.shares_per_order > 0) {
+    base_shares = s.shares_per_order;
+  } else if (oddlot) {
+    base_shares = OptimalSharesPerOrder(price_cents, s.fees, true);
+  } else {
+    base_shares = 1000;
+  }
+
+  long shares = std::min(base_shares, remaining_shares);
+  if (!oddlot) {
+    shares = (shares / 1000) * 1000;
+    if (shares == 0) return 0;
+  }
+  return std::max<long>(shares, 0);
+}
+
 }  // namespace kairos::exec
 
 #endif  // KAIROS_EXEC_PRICING_H_

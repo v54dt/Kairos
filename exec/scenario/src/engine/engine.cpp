@@ -127,6 +127,12 @@ void ScenarioEngine::ClearResting() {
   cancelling_ = false;
 }
 
+void ScenarioEngine::AbandonResting() {
+  if (s_.side != Side::kSell) return;  // the ledger only feeds the sell position cap
+  long unfilled = resting_.active ? resting_.shares - resting_filled_ : 0;
+  if (unfilled > 0 && !resting_id_.empty()) inflight_lost_[resting_id_] += unfilled;
+}
+
 void ScenarioEngine::RegisterFailure(const std::string& reason) {
   ++consecutive_failures_;
   if (s_.max_consecutive_order_failures > 0 &&
@@ -167,8 +173,14 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
 void ScenarioEngine::OnCancel(const std::string& id, bool ok) {
   std::lock_guard<std::mutex> lock(mu_);
   journal_.LogCancel(id, ok);
+  if (ok) {
+    // A confirmed cancel means the order can no longer fill: release any shares
+    // it was still holding against the sell cap.
+    if (inflight_lost_.erase(id) > 0) cv_.notify_all();
+  }
   if (id != resting_id_) return;
-  ClearResting();  // working order gone; next tick re-places at the current peg
+  if (!ok) AbandonResting();  // cancel rejected -> the order may still be live at broker
+  ClearResting();             // stop tracking it; next tick re-places at the current peg
   cv_.notify_all();
 }
 
@@ -191,19 +203,29 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
   if (id == resting_id_) {
     resting_filled_ += f.shares;
     if (resting_filled_ >= resting_.shares) ClearResting();
+  } else {
+    auto it = inflight_lost_.find(id);  // late fill of an abandoned (possibly-live) order
+    if (it != inflight_lost_.end()) {
+      it->second -= f.shares;
+      if (it->second <= 0) inflight_lost_.erase(it);
+    }
   }
-  std::printf("kairos-exec: fill %s %ld @ %s  (cum %ld sh / NT$ %ld, fee %ld)\n", id.c_str(),
-              f.shares, CentsToString(f.price).c_str(), acct_.filled_shares, acct_.FilledTwd(),
-              acct_.total_fee_twd);
-  sink_->Emit({EventCategory::kFill,
-               Severity::kInfo,
-               s_.symbol,
-               "",
-               {{"shares", std::to_string(f.shares)},
-                {"price", CentsToString(f.price)},
-                {"cum_twd", std::to_string(acct_.FilledTwd())},
-                {"budget", std::to_string(s_.budget_twd)}}});
-  int pct = s_.budget_twd > 0 ? static_cast<int>(acct_.FilledTwd() * 100 / s_.budget_twd) : 0;
+  std::printf("kairos-exec: fill %s %ld @ %s  (cum %ld sh / NT$ %ld, fee %ld, tax %ld)\n",
+              id.c_str(), f.shares, CentsToString(f.price).c_str(), acct_.filled_shares,
+              acct_.FilledTwd(), acct_.total_fee_twd, acct_.total_tax_twd);
+  sink_->Emit(
+      {EventCategory::kFill,
+       Severity::kInfo,
+       s_.symbol,
+       "",
+       {{"shares", std::to_string(f.shares)},
+        {"price", CentsToString(f.price)},
+        {"cum_twd", std::to_string(acct_.FilledTwd())},
+        {"budget", std::to_string(s_.budget_shares > 0 ? s_.budget_shares : s_.budget_twd)}}});
+  int pct =
+      s_.budget_shares > 0
+          ? static_cast<int>(acct_.filled_shares * 100 / s_.budget_shares)
+          : (s_.budget_twd > 0 ? static_cast<int>(acct_.FilledTwd() * 100 / s_.budget_twd) : 0);
   if (pct >= last_milestone_pct_ + 25) {
     last_milestone_pct_ = pct - (pct % 25);
     std::printf("kairos-exec: progress %d%%\n", last_milestone_pct_);
@@ -243,14 +265,23 @@ int ScenarioEngine::Run() {
     return kConnectFailExit;
   }
   quotes_->Start();
-  std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
-              s_.budget_twd, PricePolicyName(s_.price_policy), s_.live ? "*** LIVE ***" : "PAPER");
+  if (s_.budget_shares > 0) {
+    std::printf("kairos-exec: %s %s %ld shares, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
+                s_.budget_shares, PricePolicyName(s_.price_policy),
+                s_.live ? "*** LIVE ***" : "PAPER");
+  } else {
+    std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
+                s_.budget_twd, PricePolicyName(s_.price_policy),
+                s_.live ? "*** LIVE ***" : "PAPER");
+  }
   std::fflush(stdout);
-  sink_->Emit({EventCategory::kStart,
-               Severity::kInfo,
-               s_.symbol,
-               "",
-               {{"side", SideName(s_.side)}, {"budget", std::to_string(s_.budget_twd)}}});
+  sink_->Emit(
+      {EventCategory::kStart,
+       Severity::kInfo,
+       s_.symbol,
+       "",
+       {{"side", SideName(s_.side)},
+        {"budget", std::to_string(s_.budget_shares > 0 ? s_.budget_shares : s_.budget_twd)}}});
 
   while (!stop_) {
     double window_progress = 1.0;  // ignore-window => no twap throttle
@@ -300,6 +331,7 @@ int ScenarioEngine::Run() {
     }
 
     long remaining;
+    long sell_cap_remaining = -1;  // -1 = no cap (buy)
     RestingOrder resting;
     std::string rid;
     bool acked, cancelling, halted_now = false;
@@ -323,10 +355,21 @@ int ScenarioEngine::Run() {
                      "ack_timeout:" + resting_id_,
                      {{"reason", "ack timeout after " + std::to_string(since_submit) +
                                      "ms (order may be live at broker)"}}});
+        AbandonResting();  // keep the possibly-live order counted against the sell cap
         ClearResting();
         RegisterFailure("ack timeout");
       }
-      remaining = acct_.RemainingTwd(s_);
+      remaining = acct_.Remaining(s_);
+      if (s_.side == Side::kSell) {
+        // Count in-flight (resting minus its partial fills) plus any abandoned
+        // orders still live at the broker as already committed, so a resting order
+        // plus a new one can never oversell the held position.
+        long inflight = resting_.active ? resting_.shares - resting_filled_ : 0;
+        for (const auto& entry : inflight_lost_) inflight += entry.second;
+        long committed = acct_.filled_shares + inflight;
+        sell_cap_remaining = s_.position_shares - committed;
+        if (sell_cap_remaining < 0) sell_cap_remaining = 0;
+      }
       resting = resting_;
       rid = resting_id_;
       acked = resting_acked_;
@@ -342,7 +385,7 @@ int ScenarioEngine::Run() {
     if (remaining <= 0) break;
 
     if (!stale) {
-      Action act = DecideAction(s_, tob, resting, remaining, window_progress);
+      Action act = DecideAction(s_, tob, resting, remaining, window_progress, sell_cap_remaining);
       if (act.done && !resting.active) {
         std::lock_guard<std::mutex> lock(mu_);
         complete_ = true;
@@ -403,28 +446,39 @@ int ScenarioEngine::Run() {
   backend_->Disconnect();
 
   std::lock_guard<std::mutex> lock(mu_);
-  std::printf("kairos-exec: end - filled %ld sh / NT$ %ld of %ld, fee NT$ %ld\n",
-              acct_.filled_shares, acct_.FilledTwd(), s_.budget_twd, acct_.total_fee_twd);
+  if (s_.budget_shares > 0) {
+    std::printf("kairos-exec: end - filled %ld sh of %ld, NT$ %ld, fee NT$ %ld, tax NT$ %ld\n",
+                acct_.filled_shares, s_.budget_shares, acct_.FilledTwd(), acct_.total_fee_twd,
+                acct_.total_tax_twd);
+  } else {
+    std::printf("kairos-exec: end - filled %ld sh / NT$ %ld of %ld, fee NT$ %ld, tax NT$ %ld\n",
+                acct_.filled_shares, acct_.FilledTwd(), s_.budget_twd, acct_.total_fee_twd,
+                acct_.total_tax_twd);
+  }
   std::fflush(stdout);
   // Fail-closed halt: emit a terminal alert with a real reason (never an empty-field
   // event that ntfy renders as a bare "triggered") and exit non-zero so the
   // supervisor treats it as a crash and its restart backoff/cap takes over.
   if (halted_) {
     std::fprintf(stderr, "kairos-exec: FATAL %s\n", halt_reason_.c_str());
-    sink_->Emit({EventCategory::kError,
-                 Severity::kError,
-                 s_.symbol,
-                 "halt:" + s_.symbol,
-                 {{"reason", halt_reason_},
-                  {"filled_sh", std::to_string(acct_.filled_shares)},
-                  {"filled_twd", std::to_string(acct_.FilledTwd())},
-                  {"budget", std::to_string(s_.budget_twd)}}});
+    sink_->Emit(
+        {EventCategory::kError,
+         Severity::kError,
+         s_.symbol,
+         "halt:" + s_.symbol,
+         {{"reason", halt_reason_},
+          {"filled_sh", std::to_string(acct_.filled_shares)},
+          {"filled_twd", std::to_string(acct_.FilledTwd())},
+          {"budget", std::to_string(s_.budget_shares > 0 ? s_.budget_shares : s_.budget_twd)},
+          {"tax", std::to_string(acct_.total_tax_twd)}}});
     return kHaltExit;
   }
-  // Outcome: Ctrl+C -> shutdown; budget filled -> complete; reached market close with
-  // budget unfilled -> incomplete (don't silently "complete" an unfinished run).
+  // Outcome: Ctrl+C -> shutdown; done -> complete; reached market close still
+  // running -> incomplete (don't silently "complete" an unfinished run). complete_
+  // also covers a done state the TWD budget can't see, e.g. a SELL whose position
+  // cap fully liquidated before the budget bound.
   bool interrupted = stop_.load();
-  bool filled = acct_.BudgetReached(s_);
+  bool filled = complete_ || acct_.BudgetReached(s_);
   EventCategory cat = interrupted ? EventCategory::kShutdown
                       : filled    ? EventCategory::kComplete
                                   : EventCategory::kIncomplete;
@@ -435,8 +489,9 @@ int ScenarioEngine::Run() {
                "",
                {{"filled_sh", std::to_string(acct_.filled_shares)},
                 {"filled_twd", std::to_string(acct_.FilledTwd())},
-                {"budget", std::to_string(s_.budget_twd)},
-                {"fee", std::to_string(acct_.total_fee_twd)}}});
+                {"budget", std::to_string(s_.budget_shares > 0 ? s_.budget_shares : s_.budget_twd)},
+                {"fee", std::to_string(acct_.total_fee_twd)},
+                {"tax", std::to_string(acct_.total_tax_twd)}}});
   return 0;
 }
 
