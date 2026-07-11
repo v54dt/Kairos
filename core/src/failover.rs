@@ -163,11 +163,11 @@ impl Selector {
                 active
             } else {
                 // The serving secondary died before the primary earned switch-back:
-                // move to the next fresh secondary, else the primary if it is at
-                // least receiving, else hold.
-                self.first_fresh_from(1, now_us)
-                    .or(prim_fresh.then_some(primary))
-                    .unwrap_or(active)
+                // move to the next fresh secondary, else hold. We do NOT jump to a
+                // merely-momentarily-fresh primary here — that would flap tick-by-tick
+                // when both feeds flicker in antiphase; the primary is taken only via
+                // the recover-hold branch above.
+                self.first_fresh_from(1, now_us).unwrap_or(active)
             }
         };
 
@@ -283,16 +283,66 @@ mod tests {
     }
 
     #[test]
-    fn dead_secondary_falls_back_to_a_live_primary() {
+    fn dead_secondary_holds_until_primary_earns_recover_hold() {
         let s = Selector::new(vec![0, 1], 1_000, 5_000);
         s.note(0, 0);
         s.note(1, 0);
         s.note(1, 2_000);
         assert_eq!(s.eval(2_000), Some(Switch { from: 0, to: 1 }));
-        // Secondary dies while primary is receiving again but has not earned the
-        // hold-based switch-back; fall back immediately rather than serve a dead feed.
+        // Secondary dies while the primary is receiving again but has NOT earned the
+        // hold-based switch-back. Hold on the last coherent source rather than flap to
+        // a momentarily-fresh primary.
         s.note(0, 4_000);
-        assert_eq!(s.eval(4_000), Some(Switch { from: 1, to: 0 }));
+        assert_eq!(s.eval(4_000), None);
+        assert_eq!(s.active_source(), 1);
+        s.note(0, 6_000);
+        assert_eq!(s.eval(6_000), None);
+        assert_eq!(s.active_source(), 1);
+        // Primary continuously fresh since 4_000; at 9_000 the hold has elapsed.
+        s.note(0, 9_000);
+        assert_eq!(s.eval(9_000), Some(Switch { from: 1, to: 0 }));
         assert_eq!(s.active_source(), 0);
+    }
+
+    #[test]
+    fn dead_secondary_moves_to_another_live_secondary() {
+        let s = Selector::new(vec![0, 1, 2], 1_000, 5_000);
+        s.note(0, 0);
+        s.note(1, 0);
+        s.note(2, 0);
+        s.note(1, 2_000); // primary silent, first secondary receiving
+        assert_eq!(s.eval(2_000), Some(Switch { from: 0, to: 1 }));
+        // The serving secondary dies while another secondary is live: move to it
+        // immediately (this is not a primary flap).
+        s.note(2, 4_000);
+        assert_eq!(s.eval(4_000), Some(Switch { from: 1, to: 2 }));
+        assert_eq!(s.active_source(), 2);
+    }
+
+    #[test]
+    fn antiphase_flicker_does_not_flap() {
+        let s = Selector::new(vec![0, 1], 1_000, 5_000);
+        s.note(0, 0);
+        s.note(1, 0);
+        let mut switches = 0usize;
+        // Both feeds flicker stale/fresh in antiphase across eval ticks (primary on
+        // even steps, secondary on odd). Without emergency-fallback hysteresis this
+        // switched on every tick; it must settle after at most the first failover.
+        let mut t = 1_500u64;
+        for step in 0..20 {
+            if step % 2 == 0 {
+                s.note(0, t);
+            } else {
+                s.note(1, t);
+            }
+            if s.eval(t).is_some() {
+                switches += 1;
+            }
+            t += 1_500;
+        }
+        assert!(
+            switches <= 1,
+            "antiphase flicker must not flap the selection: {switches} switches"
+        );
     }
 }
