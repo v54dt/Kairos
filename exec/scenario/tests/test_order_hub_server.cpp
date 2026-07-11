@@ -8,17 +8,27 @@
 
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
 #include "order_backend.h"
 #include "order_codec.h"
 #include "order_hub_server.h"
+#include "order_journal.h"
 #include "uds_frame.h"
 
 using namespace kairos::exec;
 
 static int g_failures = 0;
+
+static std::vector<std::string> ReadLines(const std::string& path) {
+  std::vector<std::string> out;
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line)) out.push_back(line);
+  return out;
+}
 
 #define CHECK(cond)                                                \
   do {                                                             \
@@ -90,6 +100,60 @@ int main() {
 
   ::close(fd);
   server.Stop();
+
+  // --- End-to-end order-flow audit demo over a real socket: submit -> ack ->
+  // --- fill -> cancel produces a hub-orders file that reconstructs the sequence. ---
+  {
+    const std::string dir = "/tmp/kairos-hub-e2e-" + std::to_string(::getpid());
+    const std::string sock = "/tmp/kairos-test-hube2e-" + std::to_string(::getpid()) + ".sock";
+    const std::string fpath = JournalPath(dir, "hub-orders-" + JournalDayUtc8());
+    std::remove(fpath.c_str());
+
+    PaperOrderBackend pb;
+    OrderHub::RiskConfig risk;
+    risk.journal_dir = dir;
+    OrderHubServer srv(&pb, sock, risk);
+    CHECK(srv.Start());
+
+    int c = ConnectClient(sock);
+    CHECK(c >= 0);
+    if (c >= 0) {
+      OrderSubmitMsg m{"k-e2e", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
+                       "ROD",   92500,  1000};
+      CHECK(WriteFrame(c, EncodeOrderSubmit(m)));
+      for (int i = 0; i < 2; ++i) {  // drain ack + fill
+        std::vector<std::uint8_t> frame;
+        if (ReadFrame(c, &frame) != 1) break;
+      }
+      CHECK(WriteFrame(c, EncodeOrderCancel({"k-e2e"})));
+      std::vector<std::string> lines;
+      for (int i = 0; i < 200 && lines.size() < 5; ++i) {  // bounded wait for async writes
+        lines = ReadLines(fpath);
+        if (lines.size() < 5) ::usleep(10000);
+      }
+      CHECK(lines.size() == 5);
+      std::printf("--- %s ---\n", fpath.c_str());
+      for (const auto& l : lines) std::printf("%s\n", l.c_str());
+      std::printf("--- end ---\n");
+      if (lines.size() == 5) {
+        CHECK(JournalJsonStr(lines[0], "type", "") == "submit");
+        CHECK(JournalJsonStr(lines[1], "type", "") == "ack");
+        CHECK(JournalJsonStr(lines[2], "type", "") == "fill");
+        CHECK(JournalJsonStr(lines[3], "type", "") == "cancel_req");
+        CHECK(JournalJsonStr(lines[4], "type", "") == "cancel_ack");
+        long prev = 0;
+        for (const auto& l : lines) {
+          long t = JournalJsonInt(l, "t", -1);
+          CHECK(t >= prev);
+          prev = t;
+        }
+      }
+      ::close(c);
+    }
+    srv.Stop();
+    std::remove(fpath.c_str());
+    ::rmdir(dir.c_str());
+  }
 
   if (g_failures == 0) {
     std::printf("test_order_hub_server: OK\n");
