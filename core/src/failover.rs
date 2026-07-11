@@ -114,7 +114,13 @@ impl Selector {
 
     fn fresh(&self, i: usize, now_us: u64) -> bool {
         let t = self.last_us[i].load(Ordering::Relaxed);
-        t != 0 && now_us.saturating_sub(t) <= self.stale_us
+        if t == 0 {
+            // Never emitted yet: grant the same stale window from startup so a
+            // late-connecting source is not treated as stale-long-ago at t=0 (else a
+            // cold primary fails over on the first tick before its first quote).
+            return now_us <= self.stale_us;
+        }
+        now_us.saturating_sub(t) <= self.stale_us
     }
 
     fn first_fresh_from(&self, start_idx: usize, now_us: u64) -> Option<u16> {
@@ -302,6 +308,26 @@ mod tests {
         s.note(0, 9_000);
         assert_eq!(s.eval(9_000), Some(Switch { from: 1, to: 0 }));
         assert_eq!(s.active_source(), 0);
+    }
+
+    #[test]
+    fn late_primary_gets_startup_grace() {
+        let s = Selector::new(vec![0, 1], 2_000_000, 5_000_000);
+        // Secondary wins the first-quote race; the primary has not emitted yet.
+        s.note(1, 100_000);
+        assert_eq!(
+            s.eval(100_000),
+            None,
+            "a never-noted primary keeps its stale window from startup"
+        );
+        assert_eq!(s.active_source(), 0);
+        // Primary still silent past the stale window -> now fail over.
+        s.note(1, 2_500_000);
+        assert_eq!(
+            s.eval(2_500_000),
+            Some(Switch { from: 0, to: 1 }),
+            "grace expires after the stale window"
+        );
     }
 
     #[test]
