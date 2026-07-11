@@ -111,6 +111,63 @@ dir = "/var/lib/kairos/journal"
   std::remove(path.c_str());
 }
 
+static Scenario ValidBuy() {
+  Scenario s;
+  s.symbol = "2330";
+  s.budget_twd = 300000;
+  return s;
+}
+
+// budget_twd XOR budget_shares, the Sell position_shares seatbelt, and the
+// round-lot 1000-share multiples for the new share-denominated fields.
+static void TestSellAndBudgetValidation() {
+  CHECK(ValidateScenario(ValidBuy()).empty());
+
+  // exactly one of budget_twd / budget_shares must be > 0
+  Scenario both = ValidBuy();
+  both.budget_shares = 1000;  // budget_twd also > 0
+  CHECK(!ValidateScenario(both).empty());
+  Scenario neither = ValidBuy();
+  neither.budget_twd = 0;
+  CHECK(!ValidateScenario(neither).empty());
+  Scenario shares_buy = ValidBuy();
+  shares_buy.budget_twd = 0;
+  shares_buy.budget_shares = 2000;  // buy + budget_shares is valid
+  CHECK(ValidateScenario(shares_buy).empty());
+
+  // Sell requires position_shares > 0 (fail-closed seatbelt)
+  Scenario sell_no_pos = ValidBuy();
+  sell_no_pos.side = Side::kSell;
+  CHECK(!ValidateScenario(sell_no_pos).empty());
+  Scenario sell_ok = ValidBuy();
+  sell_ok.side = Side::kSell;
+  sell_ok.position_shares = 5000;
+  CHECK(ValidateScenario(sell_ok).empty());
+
+  // Sell budget_shares must not exceed the held position
+  Scenario over = ValidBuy();
+  over.side = Side::kSell;
+  over.budget_twd = 0;
+  over.budget_shares = 6000;
+  over.position_shares = 5000;
+  CHECK(!ValidateScenario(over).empty());
+  Scenario under = over;
+  under.budget_shares = 5000;  // == position is allowed
+  CHECK(ValidateScenario(under).empty());
+
+  // RoundLot requires 1000-share multiples for the new fields
+  Scenario rl_budget = ValidBuy();
+  rl_budget.board = Board::kRoundLot;
+  rl_budget.budget_twd = 0;
+  rl_budget.budget_shares = 1500;
+  CHECK(!ValidateScenario(rl_budget).empty());
+  Scenario rl_pos = ValidBuy();
+  rl_pos.board = Board::kRoundLot;
+  rl_pos.side = Side::kSell;
+  rl_pos.position_shares = 1500;
+  CHECK(!ValidateScenario(rl_pos).empty());
+}
+
 int main() {
   const std::string body = R"(
 [scenario]
@@ -167,6 +224,7 @@ quote_max_age_ms = 70000
 
   TestBaseMerge();
   TestJournalDefault();
+  TestSellAndBudgetValidation();
 
   if (g_failures == 0) {
     std::printf("test_scenario: OK\n");

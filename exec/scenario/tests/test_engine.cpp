@@ -154,6 +154,30 @@ class FlakyThenOkBackend : public OrderBackend {
   bool connected_ = false;
 };
 
+// Acks and fully fills every submit synchronously, tallying shares — used to prove
+// the sell cap and shares-goal completion without a real fill model.
+class InstantFillBackend : public OrderBackend {
+ public:
+  bool Connect() override {
+    connected_ = true;
+    return true;
+  }
+  void Disconnect() override { connected_ = false; }
+  bool IsConnected() const override { return connected_; }
+  void Submit(const OrderSubmitMsg& o) override {
+    ++submit_count;
+    total_shares += o.shares;
+    if (on_ack_) on_ack_(o.id, true, "");
+    if (on_fill_) on_fill_(o.id, Fill{o.shares, o.price});
+  }
+  void Cancel(const std::string&) override {}
+  std::atomic<int> submit_count{0};
+  std::atomic<long> total_shares{0};
+
+ private:
+  bool connected_ = false;
+};
+
 // EngineClock whose mono advances 2s per read so SdkGate never sleeps and the
 // ack-timeout watchdog fires immediately (sub-second tests).
 EngineClock SteppedMonoClock(std::shared_ptr<std::atomic<long>> mono_ns) {
@@ -318,8 +342,10 @@ class RecordingSink : public EventSink {
         if (k == "shares") fills_.push_back(std::stol(v));
     } else if (ev.category == EventCategory::kComplete || ev.category == EventCategory::kShutdown ||
                ev.category == EventCategory::kIncomplete) {
-      for (const auto& [k, v] : ev.fields)
+      for (const auto& [k, v] : ev.fields) {
         if (k == "fee") final_fee_ = std::stol(v);
+        if (k == "tax") final_tax_ = std::stol(v);
+      }
     } else if (ev.category == EventCategory::kError && ev.dedup_key.rfind("halt:", 0) == 0) {
       for (const auto& [k, v] : ev.fields)
         if (k == "reason") halt_reason_ = v;
@@ -345,11 +371,16 @@ class RecordingSink : public EventSink {
     std::lock_guard<std::mutex> lock(mu_);
     return final_fee_;
   }
+  long FinalTax() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return final_tax_;
+  }
 
  private:
   mutable std::mutex mu_;
   std::vector<long> fills_;
   long final_fee_ = 0;
+  long final_tax_ = 0;
   std::string halt_reason_;
 };
 
@@ -599,10 +630,117 @@ quote_max_age_ms = 0
   std::filesystem::remove_all(home);
 }
 
+// A SELL never sells more than position_shares even when the TWD budget is far
+// larger: cumulative fills stop exactly at the held position, and the tax accrues.
+void TestSellPositionCap() {
+  Scenario s = BaseScenario();
+  s.side = Side::kSell;
+  s.pacing = Pacing::kAsap;
+  s.reference_price = 100.0;
+  s.shares_per_order = 10;
+  s.position_shares = 30;    // hard cap
+  s.budget_twd = 100000000;  // budget could buy far more; the cap must bind first
+
+  InstantFillBackend backend;
+  RecordingSink sink;
+  FakeQuoteSource quotes;
+  auto mono = std::make_shared<std::atomic<long>>(0);
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes, SteppedMonoClock(mono));
+  engine.set_ignore_window(true);
+  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+
+  engine.Run();
+
+  CHECK(backend.submit_count.load() == 3);   // 10 + 10 + 10 = 30, then cap stops it
+  CHECK(backend.total_shares.load() == 30);  // never oversells the position
+  CHECK(sink.TotalFilled() == 30);
+  CHECK(sink.FinalTax() == 9);  // 3 fills of NT$1000 @ 0.3% -> 3 each
+  std::printf("sell cap: submits=%d shares=%ld tax=%ld\n", backend.submit_count.load(),
+              backend.total_shares.load(), sink.FinalTax());
+}
+
+// budget_shares completes at exactly the share goal (buy side), the last slice
+// clamps to the remainder, and a buy accrues no tax.
+void TestBuyBudgetShares() {
+  Scenario s = BaseScenario();
+  s.side = Side::kBuy;
+  s.pacing = Pacing::kAsap;
+  s.reference_price = 100.0;
+  s.shares_per_order = 10;
+  s.budget_twd = 0;
+  s.budget_shares = 25;  // 10 + 10 + 5
+
+  InstantFillBackend backend;
+  RecordingSink sink;
+  FakeQuoteSource quotes;
+  auto mono = std::make_shared<std::atomic<long>>(0);
+  ScenarioEngine engine(std::move(s), &backend, &sink, &quotes, SteppedMonoClock(mono));
+  engine.set_ignore_window(true);
+  quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+
+  engine.Run();
+
+  CHECK(backend.total_shares.load() == 25);  // exactly the share goal, no overshoot
+  CHECK(sink.TotalFilled() == 25);
+  CHECK(sink.FinalTax() == 0);  // buys pay no tax
+  std::printf("buy budget_shares: submits=%d shares=%ld\n", backend.submit_count.load(),
+              backend.total_shares.load());
+}
+
+// Journal replay restores the sold tally so a restart never re-sells: a first run
+// sells the whole position, a second run over the same journal submits nothing.
+void TestSellCapReplayResume() {
+  std::string dir = "/tmp/kairos-sellcap-" + std::to_string(::getpid());
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  EngineClock clock;
+  clock.wall = [] { return WallAt(2026, 7, 3, 10, 0); };  // fixed date -> stable journal name
+  auto mono = std::make_shared<std::atomic<long>>(0);
+  clock.mono = SteppedMonoClock(mono).mono;
+
+  auto make = [&](Scenario s) {
+    s.side = Side::kSell;
+    s.pacing = Pacing::kAsap;
+    s.reference_price = 100.0;
+    s.shares_per_order = 10;
+    s.position_shares = 30;
+    s.budget_twd = 100000000;
+    s.journal_dir = dir;
+    return s;
+  };
+
+  {
+    InstantFillBackend backend;
+    RecordingSink sink;
+    FakeQuoteSource quotes;
+    ScenarioEngine engine(make(BaseScenario()), &backend, &sink, &quotes, clock);
+    engine.set_ignore_window(true);
+    quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+    engine.Run();
+    CHECK(backend.total_shares.load() == 30);
+  }
+  {
+    InstantFillBackend backend;
+    RecordingSink sink;
+    FakeQuoteSource quotes;
+    ScenarioEngine engine(make(BaseScenario()), &backend, &sink, &quotes, clock);
+    engine.set_ignore_window(true);
+    quotes.Push("2330", ValidBook(FloatToCents(100.0)));
+    engine.Run();
+    CHECK(backend.submit_count.load() == 0);  // replay saw 30 already sold: cap == 0
+    CHECK(backend.total_shares.load() == 0);  // no re-sell of the closed position
+  }
+  std::printf("sell cap replay: no re-sell after restart\n");
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {
   TestQuoteDrivenComplete();
+  TestSellPositionCap();
+  TestBuyBudgetShares();
+  TestSellCapReplayResume();
   TestHardStopAtClose();
   TestTwapPacingSteppedClock();
   TestQueueSimEngineFills();
