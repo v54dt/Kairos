@@ -42,12 +42,44 @@ fn json_int(s: &str, key: &str) -> Option<i64> {
     rest[..end].parse().ok()
 }
 
+// Read the JSON string value of `"key":"..."`, decoding every escape the exec
+// emitters produce (\" \\ \/ \b \f \n \r \t \uXXXX) and stopping at the first
+// UNescaped quote. Unknown/short escapes are kept verbatim (fail-soft: at worst
+// a garbled display char, never a panic) so a new-server payload degrades safely.
 fn json_str(s: &str, key: &str) -> Option<String> {
     let needle = format!("\"{key}\":\"");
     let start = s.find(&needle)? + needle.len();
-    let rest = &s[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
+    let mut out = String::new();
+    let mut chars = s[start..].chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next() {
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some('b') => out.push('\u{08}'),
+                Some('f') => out.push('\u{0c}'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some('t') => out.push('\t'),
+                Some('u') => {
+                    let hex: String = (&mut chars).take(4).collect();
+                    let cp = (hex.len() == 4)
+                        .then(|| u32::from_str_radix(&hex, 16).ok())
+                        .flatten();
+                    out.push(cp.and_then(char::from_u32).unwrap_or('\u{fffd}'));
+                }
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => break,
+            },
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 /// Parse one JSONL event line. A torn/mid-append line (no closing `}`) yields

@@ -197,6 +197,18 @@ int main() {
     CHECK(s.find('\t') == std::string::npos);
   }
 
+  // CROSS-SIDE: the exact bytes the TUI json_escape emits for a hostile scenario
+  // name (copied verbatim from a real emit run of the upgraded Rust builder) must
+  // parse in the C++ ctl-server request parser and recover the original name.
+  {
+    ScenarioRequest req;
+    const char* tui_line =
+        "{\"cmd\":\"stop\",\"name\":\"a\\nb\\tc\\\"d\\\\e\\u0001f 台積電\"}";
+    CHECK(Accepts(tui_line, &req));
+    CHECK(req.cmd == ScenarioCmd::kStop);
+    CHECK(req.name == std::string("a\nb\tc\"d\\e\x01") + "f 台積電");
+  }
+
   // The \uXXXX decode path: a hand-built escape recovers the exact code point,
   // and a lone surrogate / short escape is rejected fail-closed.
   {
