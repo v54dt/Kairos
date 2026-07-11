@@ -300,6 +300,7 @@ int ScenarioEngine::Run() {
     }
 
     long remaining;
+    long sell_cap_remaining = -1;  // -1 = no cap (buy)
     RestingOrder resting;
     std::string rid;
     bool acked, cancelling, halted_now = false;
@@ -327,6 +328,14 @@ int ScenarioEngine::Run() {
         RegisterFailure("ack timeout");
       }
       remaining = acct_.RemainingTwd(s_);
+      if (s_.side == Side::kSell) {
+        // Count in-flight (resting minus its partial fills) as already committed so a
+        // resting order plus a new one can never oversell the held position.
+        long inflight = resting_.active ? resting_.shares - resting_filled_ : 0;
+        long committed = acct_.filled_shares + inflight;
+        sell_cap_remaining = s_.position_shares - committed;
+        if (sell_cap_remaining < 0) sell_cap_remaining = 0;
+      }
       resting = resting_;
       rid = resting_id_;
       acked = resting_acked_;
@@ -342,7 +351,7 @@ int ScenarioEngine::Run() {
     if (remaining <= 0) break;
 
     if (!stale) {
-      Action act = DecideAction(s_, tob, resting, remaining, window_progress);
+      Action act = DecideAction(s_, tob, resting, remaining, window_progress, sell_cap_remaining);
       if (act.done && !resting.active) {
         std::lock_guard<std::mutex> lock(mu_);
         complete_ = true;

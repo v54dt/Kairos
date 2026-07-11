@@ -63,10 +63,15 @@ struct RestingOrder {
 // spreads the budget evenly across the window: only place while filled is behind
 // the schedule (budget * progress), wait once on/ahead of it. Re-peg of the
 // current slice is never gated (the scenario owns the cadence, the hub is a gateway).
+// sell_cap_remaining (>= 0) is the shares still allowed to sell before hitting
+// position_shares (filled + in-flight already subtracted by the caller); -1 = no
+// cap (buy). A new slice is clamped to it so a resting order plus this one can
+// never overshoot the held position.
 inline Action DecideAction(const Scenario& s, const TopOfBook& tob, const RestingOrder& resting,
-                           long remaining_twd, double window_progress = 1.0) {
+                           long remaining, double window_progress = 1.0,
+                           long sell_cap_remaining = -1) {
   Action a;
-  if (remaining_twd <= 0) {
+  if (remaining <= 0) {
     a.reason = "budget reached";
     a.done = true;
     return a;
@@ -79,18 +84,28 @@ inline Action DecideAction(const Scenario& s, const TopOfBook& tob, const Restin
   }
   if (!resting.active) {
     if (s.pacing == Pacing::kTwap) {
-      long filled = s.budget_twd - remaining_twd;
+      long filled = s.budget_twd - remaining;
       long scheduled = static_cast<long>(s.budget_twd * window_progress);
       if (filled > scheduled) {
         a.reason = "twap: ahead of schedule";  // wait for the schedule to advance
         return a;
       }
     }
-    long shares = DecideOrderShares(s, target, remaining_twd);
+    long shares = DecideOrderShares(s, target, remaining);
     if (shares <= 0) {
       a.reason = "remaining below one slice";
       a.done = true;  // dust: can't afford another share at this price
       return a;
+    }
+    if (sell_cap_remaining >= 0) {
+      long capped = std::min(shares, sell_cap_remaining);
+      if (!s.IsOddLot()) capped = (capped / 1000) * 1000;
+      if (capped <= 0) {
+        a.reason = "sell cap: position committed";
+        a.done = true;  // filled + in-flight already at position_shares
+        return a;
+      }
+      shares = capped;
     }
     a.kind = ActionKind::kPlace;
     a.price = target;
