@@ -16,11 +16,10 @@
 #include "order_codec.h"
 #include "order_hub_server.h"
 #include "order_journal.h"
+#include "test_check.h"
 #include "uds_frame.h"
 
 using namespace kairos::exec;
-
-static int g_failures = 0;
 
 static std::vector<std::string> ReadLines(const std::string& path) {
   std::vector<std::string> out;
@@ -29,14 +28,6 @@ static std::vector<std::string> ReadLines(const std::string& path) {
   while (std::getline(in, line)) out.push_back(line);
   return out;
 }
-
-#define CHECK(cond)                                                \
-  do {                                                             \
-    if (!(cond)) {                                                 \
-      std::printf("FAIL  %s:%d  %s\n", __FILE__, __LINE__, #cond); \
-      ++g_failures;                                                \
-    }                                                              \
-  } while (0)
 
 static int ConnectClient(const std::string& path) {
   int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);

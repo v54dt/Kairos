@@ -14,10 +14,9 @@
 #include "engine_logic.h"  // Accounting
 #include "order_journal.h"
 #include "scenario.h"
+#include "test_check.h"
 
 using namespace kairos::exec;
-
-static int g_failures = 0;
 
 static std::vector<std::string> ReadLines(const std::string& path) {
   std::vector<std::string> out;
@@ -54,14 +53,6 @@ static bool IsWellFormedJsonObject(const std::string& l) {
   }
   return !in_str && depth == 0;
 }
-
-#define CHECK(cond)                                                \
-  do {                                                             \
-    if (!(cond)) {                                                 \
-      std::printf("FAIL  %s:%d  %s\n", __FILE__, __LINE__, #cond); \
-      ++g_failures;                                                \
-    }                                                              \
-  } while (0)
 
 // The shared TradingDayUtc8 / TradingDayNumUtc8 must equal the OLD inline UTC+8
 // journal-day form across a timestamp matrix, incl. the Taipei-midnight (UTC

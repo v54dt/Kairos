@@ -14,18 +14,9 @@
 #include <vector>
 
 #include "scenario_state.h"
+#include "test_check.h"
 
 using namespace kairos::exec;
-
-static int g_failures = 0;
-
-#define CHECK(cond)                                                \
-  do {                                                             \
-    if (!(cond)) {                                                 \
-      std::printf("FAIL  %s:%d  %s\n", __FILE__, __LINE__, #cond); \
-      ++g_failures;                                                \
-    }                                                              \
-  } while (0)
 
 // The exact lines engine.cpp prints (kept verbatim so the parser stays pinned).
 static const char* kBanner = "kairos-exec: Buy 2330 NT$ 300000, cross, PAPER";

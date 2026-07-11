@@ -13,9 +13,32 @@ pub fn format_age(d: Duration) -> String {
     }
 }
 
+/// Compact single-unit age for the scenarios "last fill" column: whole seconds
+/// under a minute, whole minutes under an hour, else whole hours.
+pub fn format_fill_age(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{}h", secs / 3600)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fill_age_single_unit() {
+        assert_eq!(format_fill_age(Duration::from_secs(0)), "0s");
+        assert_eq!(format_fill_age(Duration::from_secs(59)), "59s");
+        assert_eq!(format_fill_age(Duration::from_secs(90)), "1m");
+        assert_eq!(format_fill_age(Duration::from_secs(3599)), "59m");
+        assert_eq!(format_fill_age(Duration::from_secs(3600)), "1h");
+        assert_eq!(format_fill_age(Duration::from_secs(7200)), "2h");
+    }
 
     #[test]
     fn seconds() {

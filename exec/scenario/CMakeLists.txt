@@ -348,3 +348,15 @@ add_test(NAME test_ntfy_dispatcher COMMAND test_ntfy_dispatcher)
 add_executable(test_dashboard_metrics tests/test_dashboard_metrics.cpp)
 target_link_libraries(test_dashboard_metrics PRIVATE kairos_dashboard)
 add_test(NAME test_dashboard_metrics COMMAND test_dashboard_metrics)
+
+# Bound every test so a hung child or wedged socket cannot stall CI forever. The process-spawning
+# and opt-in e2e/fault targets fork real binaries, so they get larger-but-still-bounded budgets over
+# the 60s default.
+get_property(
+  KAIROS_ALL_TESTS
+  DIRECTORY
+  PROPERTY TESTS)
+set_tests_properties(${KAIROS_ALL_TESTS} PROPERTIES TIMEOUT 60)
+set_tests_properties(test_scenario_process test_scenario_restart test_scenario_restart_e2e
+                     test_hub_unroutable_e2e test_engine PROPERTIES TIMEOUT 120)
+set_tests_properties(test_scenario_supervisor_e2e test_sim_fault_drills PROPERTIES TIMEOUT 180)
