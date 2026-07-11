@@ -69,7 +69,3 @@ pub struct Trade {
     pub simtrade: bool,
     pub underlying_price: i64,
 }
-
-pub fn book_key(quote: &Quote) -> &str {
-    &quote.symbol
-}
