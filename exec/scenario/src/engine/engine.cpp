@@ -71,14 +71,11 @@ ScenarioEngine::ScenarioEngine(Scenario scenario, OrderBackend* backend, EventSi
       if (s == sym) backend_->OnMarketTrade(s, t, t.trade_ts_us);
     });
   }
-  // A live run with no configured journal defaults to the TUI's <data-dir>/journal
-  // so it always has a fill record; paper never inherits this path, so simulated
-  // fills can't contaminate the journal a live run replays from.
-  if (s_.journal_dir.empty() && s_.live) {
-    const char* home = std::getenv("HOME");
-    if (home != nullptr && home[0] != '\0')
-      s_.journal_dir = std::string(home) + "/Kairos/data/journal";
-  }
+  // A live run with no configured journal resolves the shared journal dir
+  // ($KAIROS_JOURNAL_DIR, else the TUI's <data-dir>/journal) so it always has a
+  // fill record on the same file the hub uses; paper never inherits this path, so
+  // simulated fills can't contaminate the journal a live run replays from.
+  if (s_.live) s_.journal_dir = ResolveJournalDir(s_.journal_dir, nullptr);
   // Restart-safe accounting: replay today's fills so the budget isn't re-bought,
   // then append to the same journal.
   if (!s_.journal_dir.empty()) {

@@ -86,6 +86,16 @@ long TradingDayNumUtc8(std::chrono::system_clock::time_point tp);
 // hub and the trader name the same per-(symbol,side,day) file.
 std::string JournalDayUtc8();
 
+// Resolve the run-state journal directory shared by the trader and the hub, so
+// both sides append to and replay one file. Precedence: an explicit per-side toml
+// dir > the shared $KAIROS_JOURNAL_DIR > a deprecated per-side env fallback named
+// by legacy_env_name (skipped when null) > $HOME/Kairos/data/journal. Empty only
+// when none resolve (HOME unset with no config/env) — journaling then disabled.
+// *used_legacy, when non-null, is set true iff the legacy fallback supplied the
+// result, so the caller can log a one-time deprecation note.
+std::string ResolveJournalDir(const std::string& toml_dir, const char* legacy_env_name,
+                              bool* used_legacy = nullptr);
+
 // Replay: fills from a journal file (missing file => empty; bad lines skipped).
 std::vector<JournalFill> ReadJournalFills(const std::string& path);
 

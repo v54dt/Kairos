@@ -8,6 +8,7 @@
 #include <fstream>
 #include <string>
 
+#include "order_journal.h"  // ResolveJournalDir
 #include "scenario.h"
 
 using namespace kairos::exec;
@@ -109,6 +110,52 @@ dir = "/var/lib/kairos/journal"
   Scenario s2 = LoadScenario(path);
   CHECK(s2.journal_dir == "/var/lib/kairos/journal");  // explicit value wins over the default
   std::remove(path.c_str());
+}
+
+// The shared journal-dir resolver both mains use. The engine form (no legacy env)
+// and the hub form (legacy KAIROS_HUB_JOURNAL_DIR fallback) must agree on the
+// shared KAIROS_JOURNAL_DIR, with the per-side toml always winning, so the trader
+// and the hub never split the restart journal.
+static void TestResolveJournalDir() {
+  ::setenv("HOME", "/tmp/kairos-home-xyz", 1);
+  ::unsetenv("KAIROS_JOURNAL_DIR");
+  ::unsetenv("KAIROS_HUB_JOURNAL_DIR");
+
+  // No config, no env: both sides fall back to the same $HOME default.
+  CHECK(ResolveJournalDir("", nullptr) == "/tmp/kairos-home-xyz/Kairos/data/journal");
+  CHECK(ResolveJournalDir("", "KAIROS_HUB_JOURNAL_DIR") ==
+        "/tmp/kairos-home-xyz/Kairos/data/journal");
+
+  // The shared var is honored by BOTH forms, and they resolve the SAME directory.
+  ::setenv("KAIROS_JOURNAL_DIR", "/srv/shared/journal", 1);
+  CHECK(ResolveJournalDir("", nullptr) == "/srv/shared/journal");
+  bool used_legacy = true;
+  CHECK(ResolveJournalDir("", "KAIROS_HUB_JOURNAL_DIR", &used_legacy) == "/srv/shared/journal");
+  CHECK(!used_legacy);  // the shared var, not the legacy fallback, supplied it
+  CHECK(ResolveJournalDir("", nullptr) == ResolveJournalDir("", "KAIROS_HUB_JOURNAL_DIR"));
+
+  // Per-side toml wins over every env var, on both forms.
+  CHECK(ResolveJournalDir("/etc/kairos/journal", nullptr) == "/etc/kairos/journal");
+  CHECK(ResolveJournalDir("/etc/kairos/journal", "KAIROS_HUB_JOURNAL_DIR") ==
+        "/etc/kairos/journal");
+
+  // Only the deprecated var set: the hub form falls back to it and flags the use;
+  // the engine form (no legacy) drops to the $HOME default instead.
+  ::unsetenv("KAIROS_JOURNAL_DIR");
+  ::setenv("KAIROS_HUB_JOURNAL_DIR", "/legacy/hub/journal", 1);
+  used_legacy = false;
+  CHECK(ResolveJournalDir("", "KAIROS_HUB_JOURNAL_DIR", &used_legacy) == "/legacy/hub/journal");
+  CHECK(used_legacy);
+  CHECK(ResolveJournalDir("", nullptr) == "/tmp/kairos-home-xyz/Kairos/data/journal");
+
+  // The shared var takes precedence over the deprecated one when both are set.
+  ::setenv("KAIROS_JOURNAL_DIR", "/srv/shared/journal", 1);
+  used_legacy = true;
+  CHECK(ResolveJournalDir("", "KAIROS_HUB_JOURNAL_DIR", &used_legacy) == "/srv/shared/journal");
+  CHECK(!used_legacy);
+
+  ::unsetenv("KAIROS_JOURNAL_DIR");
+  ::unsetenv("KAIROS_HUB_JOURNAL_DIR");
 }
 
 static Scenario ValidBuy() {
@@ -224,6 +271,7 @@ quote_max_age_ms = 70000
 
   TestBaseMerge();
   TestJournalDefault();
+  TestResolveJournalDir();
   TestSellAndBudgetValidation();
 
   if (g_failures == 0) {

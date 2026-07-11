@@ -126,6 +126,23 @@ std::string JournalPath(const std::string& dir, const std::string& name) {
   return dir + "/" + name + ".jsonl";
 }
 
+std::string ResolveJournalDir(const std::string& toml_dir, const char* legacy_env_name,
+                              bool* used_legacy) {
+  if (used_legacy != nullptr) *used_legacy = false;
+  if (!toml_dir.empty()) return toml_dir;
+  if (const char* env = std::getenv("KAIROS_JOURNAL_DIR"); env != nullptr && env[0] != '\0')
+    return env;
+  if (legacy_env_name != nullptr) {
+    if (const char* env = std::getenv(legacy_env_name); env != nullptr && env[0] != '\0') {
+      if (used_legacy != nullptr) *used_legacy = true;
+      return env;
+    }
+  }
+  if (const char* home = std::getenv("HOME"); home != nullptr && home[0] != '\0')
+    return std::string(home) + "/Kairos/data/journal";
+  return "";
+}
+
 std::string TradingDayUtc8(std::chrono::system_clock::time_point tp) {
   std::chrono::year_month_day ymd = Utc8Date(tp);
   char buf[16];

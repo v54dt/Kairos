@@ -229,7 +229,7 @@ target_link_libraries(test_order_flow_escape PRIVATE kairos_order_journal kairos
 add_test(NAME test_order_flow_escape COMMAND test_order_flow_escape)
 
 add_executable(test_scenario tests/test_scenario.cpp)
-target_link_libraries(test_scenario PRIVATE kairos_scenario)
+target_link_libraries(test_scenario PRIVATE kairos_scenario kairos_order_journal)
 add_test(NAME test_scenario COMMAND test_scenario)
 
 add_executable(test_blacklist tests/test_blacklist.cpp)
