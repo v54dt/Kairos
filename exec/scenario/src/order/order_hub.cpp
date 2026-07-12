@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <utility>
 
 #include "order_codec.h"
@@ -57,18 +58,6 @@ long OrderHub::NowMonoMs() const {
       .count();
 }
 
-bool OrderHub::DuplicateSubmit(const OrderSubmitMsg& o, long now_ms) {
-  while (!dup_ring_.empty() && now_ms - dup_ring_.front().mono_ms > risk_.dup_order_window_ms) {
-    dup_ring_.pop_front();
-  }
-  for (const DupEntry& e : dup_ring_) {
-    if (e.symbol == o.symbol && e.side == o.side && e.shares == o.shares && e.price == o.price) {
-      return true;
-    }
-  }
-  return false;
-}
-
 void OrderHub::RemoveDupEntry(const std::string& id) {
   for (auto it = dup_ring_.begin(); it != dup_ring_.end(); ++it) {
     if (it->id == id) {
@@ -89,28 +78,6 @@ void OrderHub::RememberOrder(const std::string& id, const std::string& symbol, S
 }
 
 void OrderHub::ForgetOrder(const std::string& id) { order_meta_.erase(id); }
-
-bool OrderHub::CollarReference(const std::string& symbol, Cents* ref) const {
-  auto it = last_fill_price_cents_.find(symbol);
-  if (it == last_fill_price_cents_.end()) return false;
-  *ref = it->second;
-  return true;
-}
-
-bool OrderHub::SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const {
-  for (const auto& rid : open_ids_) {
-    auto it = routes_.find(rid);
-    if (it == routes_.end()) continue;
-    const Route& r = it->second;
-    if (r.closed || r.side == o.side || r.symbol != o.symbol) continue;
-    bool cross = o.side == Side::kBuy ? o.price >= r.price : o.price <= r.price;
-    if (cross) {
-      *other_id = rid;
-      return true;
-    }
-  }
-  return false;
-}
 
 void OrderHub::SetTradingDayForTest(long day) {
   std::lock_guard<std::mutex> lock(mu_);
@@ -178,38 +145,22 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         meta_fifo_.clear();
       }
       long now_ms = risk_.dup_order_window_ms > 0 ? NowMonoMs() : 0;
-      // Fail-closed field validation: a doubtful submit is rejected, never forwarded.
-      auto live = routes_.find(o.id);
-      if (o.id.empty() || o.symbol.empty() || o.shares <= 0 || o.shares > kMaxTwStockShares ||
-          o.price <= 0 || o.price > kMaxTwStockPriceCents) {
-        reject = "invalid order fields";
-      } else if (live != routes_.end() && !live->second.closed) {
-        reject = "duplicate live order id";
-      } else if (risk_.max_order_shares > 0 && o.shares > risk_.max_order_shares) {
-        reject = "order size " + std::to_string(o.shares) + " exceeds max " +
-                 std::to_string(risk_.max_order_shares);
-      } else if (Cents ref = 0; risk_.price_collar_pct > 0 && CollarReference(o.symbol, &ref) &&
-                                std::llabs(o.price - ref) * 100 > risk_.price_collar_pct * ref) {
-        reject = "price " + CentsToString(o.price) + " deviates >" +
-                 std::to_string(risk_.price_collar_pct) + "% from last fill " + CentsToString(ref) +
-                 " (fat-finger?)";
-      } else if (risk_.dup_order_window_ms > 0 && DuplicateSubmit(o, now_ms)) {
-        reject = "duplicate order within " + std::to_string(risk_.dup_order_window_ms) +
-                 "ms (suspected runaway loop)";
-      } else if (std::int64_t n = static_cast<std::int64_t>(o.price) * o.shares;
-                 risk_.max_account_notional_cents > 0 &&
-                 account_day_realized_cents_ + account_open_notional_cents_ + n >
-                     risk_.max_account_notional_cents) {
-        reject = "account notional cap exceeded";
-      } else if (risk_.max_open_orders_per_client > 0 &&
-                 clients_[client].open_orders + 1 > risk_.max_open_orders_per_client) {
-        reject = "per-client open-order limit exceeded";
-      } else if (risk_.max_open_notional_per_client_cents > 0 &&
-                 clients_[client].open_notional + n > risk_.max_open_notional_per_client_cents) {
-        reject = "per-client open-notional limit exceeded";
-      } else if (std::string other; risk_.self_match_protection && SelfMatchCross(o, &other)) {
-        reject = "self-match risk vs open order " + other;
+      auto cs_it =
+          clients_.find(client);  // non-inserting snapshot; the gate never mutates clients_
+      RiskStateView view{routes_,
+                         open_ids_,
+                         last_fill_price_cents_,
+                         dup_ring_,
+                         account_open_notional_cents_,
+                         account_day_realized_cents_,
+                         cs_it != clients_.end() ? cs_it->second.open_orders : 0,
+                         cs_it != clients_.end() ? cs_it->second.open_notional : 0,
+                         now_ms};
+      std::optional<std::string> gate_reject = gate_.Evaluate(o, view);
+      if (gate_reject) {
+        reject = *gate_reject;
       } else {
+        std::int64_t n = static_cast<std::int64_t>(o.price) * o.shares;
         ClientStats& cs = clients_[client];
         routes_[o.id] = Route{client, o.shares, false, false, o.symbol, o.side, o.price};
         open_ids_.insert(o.id);
