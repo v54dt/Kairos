@@ -14,10 +14,10 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::thread;
-use std::time::{Duration, Instant};
 
+use kairos_core::daemon::{install_stop_flag, stats_loop};
 use kairos_core::record::recorder::{Stats, run_stream};
 use kairos_core::replay::{effective_stack_dir, ensure_no_active_replay};
 
@@ -60,23 +60,24 @@ fn parse_args() -> anyhow::Result<Args> {
     })
 }
 
-fn stats_loop(streams: Vec<i32>, stats: Vec<Arc<Stats>>, stop: Arc<AtomicBool>) {
-    while !stop.load(Ordering::Relaxed) {
-        let until = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(200));
-        }
-        for (sid, s) in streams.iter().zip(&stats) {
-            eprintln!(
+/// One stderr block per stats cycle: the per-stream lines joined by '\n', so the
+/// bytes are identical to the previous one-eprintln-per-stream loop.
+fn render_stats(streams: &[i32], stats: &[Arc<Stats>]) -> String {
+    streams
+        .iter()
+        .zip(stats)
+        .map(|(sid, s)| {
+            format!(
                 "kairos-recordd: stream {sid} records={} bytes={} drops={} write_errs={} disk_free_mib={}",
                 s.records.load(Ordering::Relaxed),
                 s.bytes.load(Ordering::Relaxed),
                 s.drops.load(Ordering::Relaxed),
                 s.write_errs.load(Ordering::Relaxed),
                 s.disk_free.load(Ordering::Relaxed) / (1024 * 1024),
-            );
-        }
-    }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn main() -> anyhow::Result<()> {
@@ -85,11 +86,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(dir) = effective_stack_dir(args.aeron_dir.as_deref()) {
         ensure_no_active_replay(&dir)?;
     }
-    let stop = Arc::new(AtomicBool::new(false));
-    ctrlc::set_handler({
-        let stop = stop.clone();
-        move || stop.store(true, Ordering::SeqCst)
-    })?;
+    let stop = install_stop_flag()?;
 
     let stats: Vec<Arc<Stats>> = args
         .streams
@@ -104,7 +101,7 @@ fn main() -> anyhow::Result<()> {
 
     thread::spawn({
         let (streams, stats, stop) = (args.streams.clone(), stats.clone(), stop.clone());
-        move || stats_loop(streams, stats, stop)
+        move || stats_loop(&stop, || render_stats(&streams, &stats))
     });
 
     let mut handles = Vec::new();
@@ -122,4 +119,26 @@ fn main() -> anyhow::Result<()> {
     }
     eprintln!("kairos-recordd: shutting down");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_stats_is_byte_identical() {
+        let stats = vec![Arc::new(Stats::default()), Arc::new(Stats::default())];
+        stats[0].records.store(3, Ordering::Relaxed);
+        stats[0].bytes.store(4096, Ordering::Relaxed);
+        stats[0].drops.store(1, Ordering::Relaxed);
+        stats[0].write_errs.store(0, Ordering::Relaxed);
+        stats[0].disk_free.store(5 * 1024 * 1024, Ordering::Relaxed);
+        stats[1].records.store(7, Ordering::Relaxed);
+        stats[1].bytes.store(8192, Ordering::Relaxed);
+        assert_eq!(
+            render_stats(&[1001, 1002], &stats),
+            "kairos-recordd: stream 1001 records=3 bytes=4096 drops=1 write_errs=0 disk_free_mib=5\n\
+             kairos-recordd: stream 1002 records=7 bytes=8192 drops=0 write_errs=0 disk_free_mib=0"
+        );
+    }
 }

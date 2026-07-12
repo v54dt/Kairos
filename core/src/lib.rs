@@ -5,6 +5,7 @@ pub mod kairos_capnp {
 pub mod book;
 pub mod compare;
 pub mod config;
+pub mod daemon;
 pub mod decode;
 pub mod encode;
 pub mod export;
