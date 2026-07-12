@@ -205,23 +205,14 @@ pub fn render(frame: &mut Frame, area: Rect, fills: &[Fill], date: &str, sel: us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use crate::panels::test_util::buffer_text;
 
-    fn buffer_text(w: u16, h: u16, fills: &[Fill], date: &str, sel: usize) -> String {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(f, f.area(), fills, date, sel))
-            .unwrap();
-        let buf = term.backend().buffer().clone();
-        let area = buf.area;
-        let mut s = String::new();
-        for y in 0..area.height {
-            for x in 0..area.width {
-                s.push_str(buf[(x, y)].symbol());
-            }
-            s.push('\n');
-        }
-        s
+    fn draw_fills<'a>(
+        fills: &'a [Fill],
+        date: &'a str,
+        sel: usize,
+    ) -> impl FnOnce(&mut ratatui::Frame) + 'a {
+        move |f| render(f, f.area(), fills, date, sel)
     }
 
     fn buy(t: i64, shares: i64, price: i64) -> Fill {
@@ -246,7 +237,7 @@ mod tests {
 
     #[test]
     fn renders_empty_without_panic() {
-        buffer_text(100, 30, &[], "20260705", 0);
+        buffer_text(100, 30, draw_fills(&[], "20260705", 0));
     }
 
     #[test]
@@ -255,7 +246,7 @@ mod tests {
         let t_buy = (9 * 3600 + 4 * 60 + 12 - 8 * 3600) as i64 * 1_000_000;
         let t_sell = (9 * 3600 + 5 * 60 + 20 - 8 * 3600) as i64 * 1_000_000;
         let fills = vec![buy(t_buy, 3000, 58500), sell(t_sell, 1000, 41250)];
-        let text = buffer_text(100, 30, &fills, "20260705", 0);
+        let text = buffer_text(100, 30, draw_fills(&fills, "20260705", 0));
         assert!(
             text.contains("today's fills (2026-07-05)"),
             "title:\n{text}"
@@ -291,7 +282,7 @@ mod tests {
     #[test]
     fn footer_shows_range_of_total_for_many_fills() {
         let fills: Vec<Fill> = (0..60).map(|i| buy(i, 1000, 58500)).collect();
-        let text = buffer_text(100, 20, &fills, "20260705", 0);
+        let text = buffer_text(100, 20, draw_fills(&fills, "20260705", 0));
         assert!(text.contains("of 60"), "total:\n{text}");
         assert!(text.contains("60 fills"), "count:\n{text}");
     }
@@ -346,7 +337,7 @@ mod tests {
         .unwrap();
         let fills = scan_fills(&dir, &date);
         std::fs::remove_dir_all(&dir).ok();
-        let text = buffer_text(100, 30, &fills, &date, 0);
+        let text = buffer_text(100, 30, draw_fills(&fills, &date, 0));
         assert!(text.contains("2 fills"), "count:\n{text}");
         assert!(text.contains("-1,757,500"), "payable:\n{text}");
         assert!(text.contains("+410,676"), "receivable:\n{text}");

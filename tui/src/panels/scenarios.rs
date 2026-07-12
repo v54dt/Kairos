@@ -367,10 +367,9 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panels::test_util::buffer_text;
     use crate::sources::hub_status::{HubReport, HubStatus};
     use crate::sources::supervisor::ScenarioState;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
 
     fn row(
         name: &str,
@@ -400,30 +399,16 @@ mod tests {
         }
     }
 
-    fn draw(w: u16, h: u16, view: &ScenariosView, sup: &SupervisorState, ui: &ScenarioUi) {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(f, f.area(), view, sup, ui)).unwrap();
+    fn draw_scen<'a>(
+        view: &'a ScenariosView,
+        sup: &'a SupervisorState,
+        ui: &'a ScenarioUi,
+    ) -> impl FnOnce(&mut ratatui::Frame) + 'a {
+        move |f| render(f, f.area(), view, sup, ui)
     }
 
-    fn buffer_text(
-        w: u16,
-        h: u16,
-        view: &ScenariosView,
-        sup: &SupervisorState,
-        ui: &ScenarioUi,
-    ) -> String {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(f, f.area(), view, sup, ui)).unwrap();
-        let buf = term.backend().buffer().clone();
-        let area = buf.area;
-        let mut s = String::new();
-        for y in 0..area.height {
-            for x in 0..area.width {
-                s.push_str(buf[(x, y)].symbol());
-            }
-            s.push('\n');
-        }
-        s
+    fn draw(w: u16, h: u16, view: &ScenariosView, sup: &SupervisorState, ui: &ScenarioUi) {
+        buffer_text(w, h, draw_scen(view, sup, ui));
     }
 
     #[test]
@@ -447,9 +432,7 @@ mod tests {
         let text = buffer_text(
             100,
             30,
-            &ScenariosView::default(),
-            &sup,
-            &ScenarioUi::default(),
+            draw_scen(&ScenariosView::default(), &sup, &ScenarioUi::default()),
         );
         assert!(
             text.contains("supervisor not connected"),
@@ -470,9 +453,7 @@ mod tests {
         let text = buffer_text(
             120,
             30,
-            &ScenariosView::default(),
-            &sup,
-            &ScenarioUi::default(),
+            draw_scen(&ScenariosView::default(), &sup, &ScenarioUi::default()),
         );
         assert!(
             text.contains('\u{25cf}'),
@@ -506,9 +487,7 @@ mod tests {
         let text = buffer_text(
             130,
             30,
-            &ScenariosView::default(),
-            &sup,
-            &ScenarioUi::default(),
+            draw_scen(&ScenariosView::default(), &sup, &ScenarioUi::default()),
         );
         assert!(
             text.contains("3000"),
@@ -533,9 +512,7 @@ mod tests {
         let text = buffer_text(
             120,
             30,
-            &ScenariosView::default(),
-            &sup,
-            &ScenarioUi::default(),
+            draw_scen(&ScenariosView::default(), &sup, &ScenarioUi::default()),
         );
         assert!(text.contains("closed-exited"), "state name shown:\n{text}");
         assert!(
@@ -558,9 +535,11 @@ mod tests {
         let text = buffer_text(
             100,
             30,
-            &ScenariosView::default(),
-            &connected(rows),
-            &ScenarioUi::default(),
+            draw_scen(
+                &ScenariosView::default(),
+                &connected(rows),
+                &ScenarioUi::default(),
+            ),
         );
         assert!(text.contains("showing 1"), "footer start missing:\n{text}");
         assert!(text.contains("of 40"), "footer total missing:\n{text}");
@@ -575,7 +554,11 @@ mod tests {
             sel: 39,
             ..Default::default()
         };
-        let text = buffer_text(80, 24, &ScenariosView::default(), &connected(rows), &ui);
+        let text = buffer_text(
+            80,
+            24,
+            draw_scen(&ScenariosView::default(), &connected(rows), &ui),
+        );
         assert!(
             text.contains("s39 "),
             "selected row scrolled off-screen:\n{text}"

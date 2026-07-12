@@ -9,6 +9,9 @@ mod risk;
 mod scenarios;
 mod systemd;
 
+#[cfg(test)]
+pub(crate) mod test_util;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
