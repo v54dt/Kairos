@@ -11,6 +11,7 @@
 #include "dashboard_metrics.h"
 #include "engine_logic.h"
 #include "event_sink.h"
+#include "failure_halt.h"
 #include "order_backend.h"
 #include "order_journal.h"
 #include "quote_book.h"
@@ -120,11 +121,9 @@ class ScenarioEngine {
   std::string cancel_pending_id_;  // order whose cancel RTT is outstanding (one at a time)
   int cancel_seq_ = 0;             // that order's dashboard iteration_id
   bool complete_ = false;
-  int consecutive_failures_ = 0;  // reset by a successful ack; halts the run at the cap
-  bool halted_ = false;           // fail-closed: stop placing orders and exit non-zero
-  std::string halt_reason_;       // terminal event / crash reason (never empty when halted_)
-  bool journal_ok_ = false;       // a usable run-state journal is open
-  bool quote_stalled_ = false;    // quote-stall alert armed/fired (main-thread only)
+  FailureHalt failure_halt_;    // fail-closed order-failure streak; guarded by mu_
+  bool journal_ok_ = false;     // a usable run-state journal is open
+  bool quote_stalled_ = false;  // quote-stall alert armed/fired (main-thread only)
   std::atomic<bool> stop_{false};
   bool ignore_window_ = false;
   int schedule_start_min_ =

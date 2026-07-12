@@ -116,13 +116,7 @@ void ScenarioEngine::AbandonResting() {
 }
 
 void ScenarioEngine::RegisterFailure(const std::string& reason) {
-  ++consecutive_failures_;
-  if (s_.max_consecutive_order_failures > 0 &&
-      consecutive_failures_ >= s_.max_consecutive_order_failures) {
-    halted_ = true;
-    halt_reason_ = "halted: " + std::to_string(consecutive_failures_) +
-                   " consecutive order failures (" + reason + ")";
-  }
+  failure_halt_.RegisterFailure(reason, s_.max_consecutive_order_failures);
 }
 
 void ScenarioEngine::StampCancel(const std::string& id, int seq) {
@@ -138,7 +132,7 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
   if (id != resting_id_) return;
   if (ok) {
     resting_acked_ = true;
-    consecutive_failures_ = 0;  // a good ack clears the fail-closed streak
+    failure_halt_.Reset();  // a good ack clears the fail-closed streak
     if (dashboard_ && s_.live) {
       auto now = clock_.mono();
       dashboard_->ReportOrder(resting_seq_, "success", "", SteadyMillis(now - resting_t_start_),
@@ -396,14 +390,14 @@ int ScenarioEngine::EmitTerminal() {
   // Fail-closed halt: emit a terminal alert with a real reason (never an empty-field
   // event that ntfy renders as a bare "triggered") and exit non-zero so the
   // supervisor treats it as a crash and its restart backoff/cap takes over.
-  if (halted_) {
-    std::fprintf(stderr, "kairos-exec: FATAL %s\n", halt_reason_.c_str());
+  if (failure_halt_.halted()) {
+    std::fprintf(stderr, "kairos-exec: FATAL %s\n", failure_halt_.reason().c_str());
     sink_->Emit(
         {EventCategory::kError,
          Severity::kError,
          s_.symbol,
          "halt:" + s_.symbol,
-         {{"reason", halt_reason_},
+         {{"reason", failure_halt_.reason()},
           {"filled_sh", std::to_string(acct_.filled_shares)},
           {"filled_twd", std::to_string(acct_.FilledTwd())},
           {"budget", std::to_string(s_.budget_shares > 0 ? s_.budget_shares : s_.budget_twd)},
@@ -495,7 +489,7 @@ int ScenarioEngine::Run() {
     int rid_seq = 0;
     {
       std::lock_guard<std::mutex> lock(mu_);
-      if (complete_ || halted_) break;
+      if (complete_ || failure_halt_.halted()) break;
       RunAckWatchdog(timed_out_id, timed_out_seq);
       remaining = acct_.Remaining(s_);
       if (s_.side == Side::kSell) {
@@ -511,7 +505,7 @@ int ScenarioEngine::Run() {
       rid_seq = resting_seq_;
       acked = resting_acked_;
       cancelling = cancelling_;
-      halted_now = halted_;
+      halted_now = failure_halt_.halted();
     }
     // Best-effort cancel of the timed-out (possibly-live) order before re-placing.
     if (!timed_out_id.empty()) {
@@ -530,7 +524,7 @@ int ScenarioEngine::Run() {
 
     std::unique_lock<std::mutex> lock(mu_);
     cv_.wait_for(lock, std::chrono::milliseconds(200),
-                 [this] { return stop_.load() || complete_ || halted_; });
+                 [this] { return stop_.load() || complete_ || failure_halt_.halted(); });
   }
 
   WindDown();
