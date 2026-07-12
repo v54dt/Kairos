@@ -382,6 +382,14 @@ target_compile_definitions(
   PRIVATE KAIROS_CTL_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/ctl_corpus.txt")
 add_test(NAME test_ctl_corpus COMMAND test_ctl_corpus)
 
+add_executable(test_order_wire tests/test_order_wire.cpp)
+target_link_libraries(test_order_wire PRIVATE kairos_order_codec)
+target_compile_definitions(
+  test_order_wire
+  PRIVATE
+    KAIROS_ORDER_WIRE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/order_golden.bin")
+add_test(NAME test_order_wire COMMAND test_order_wire)
+
 # Bound every test so a hung child or wedged socket cannot stall CI forever. The process-spawning
 # and opt-in e2e/fault targets fork real binaries, so they get larger-but-still-bounded budgets over
 # the 60s default.

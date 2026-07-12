@@ -36,6 +36,12 @@ journal_corpus.jsonl / journal_expected.txt
   is the per-line decoded-value table the tui parser must reproduce. Consumers:
   exec test_journal_corpus (regenerate + byte-compare), tui order_journal golden test.
 
+order_golden.bin
+  Contract: OrderEnvelope wire format for every variant (submit/cancel/ack/fill/
+  cancel_result) via the C++ order_codec. Length-prefixed frames (uint32 LE len +
+  bytes). No Rust consumer yet -> single-language pin. Regeneration: run
+  test_order_wire with KAIROS_REGEN=1. Consumer: exec test_order_wire.
+
 ctl_corpus.txt
   Contract: scenario-ctl JSON-lines protocol. SNAP<TAB> lines are
   SerializeScenarioSnapshot outputs (all states, restart_count/gave_up, hostile
