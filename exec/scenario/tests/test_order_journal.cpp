@@ -142,6 +142,29 @@ int main() {
   std::remove(path.c_str());
   ::rmdir(dir.c_str());
 
+  // Hostile id: OrderJournal::LogAck must JSON-escape the id so a quote in it can
+  // never break the JSONL framing. The emitted line stays a well-formed object and
+  // the id round-trips back through the same parser the TUI mirrors.
+  {
+    const std::string hdir = "/tmp/kairos-hostile-id-" + std::to_string(::getpid());
+    const std::string hname = "2330-Buy-20260707";
+    const std::string hpath = JournalPath(hdir, hname);
+    std::remove(hpath.c_str());
+    {
+      OrderJournal j;
+      CHECK(j.Open(hdir, hname));
+      j.LogAck("bad\"id", false);
+    }
+    auto hl = ReadLines(hpath);
+    CHECK(hl.size() == 1);
+    CHECK(IsWellFormedJsonObject(hl[0]));
+    CHECK(hl[0].find("bad\\\"id") != std::string::npos);  // escaped, not raw
+    CHECK(JournalJsonStr(hl[0], "id", "") == "bad\"id");  // round-trips
+    CHECK(JournalJsonInt(hl[0], "ok", -1) == 0);
+    std::remove(hpath.c_str());
+    ::rmdir(hdir.c_str());
+  }
+
   // OrderJournal::AppendFill: the handle-less writer the hub uses for an orphan
   // fill round-trips through the same ReadJournalFills a trader replays with.
   {

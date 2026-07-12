@@ -83,7 +83,7 @@ std::string Generate() {
     j.LogAck("k2-1", true);
     j.LogFill("k2-1", 1000, 58100);
     j.LogCancel("k2-1", true);
-    j.LogAck("bad\"id", false);  // FINDING: OrderJournal does NOT escape id -> malformed JSON line
+    j.LogAck("bad\"id", false);  // hostile id -> JsonEscaped by OrderJournal (regression guard)
   }
 
   std::string out;

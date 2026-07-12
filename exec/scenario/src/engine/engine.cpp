@@ -9,15 +9,12 @@
 #include <utility>
 
 #include "order_codec.h"
+#include "time_util.h"  // SteadyMillis
 #include "tw_market.h"
 
 namespace kairos::exec {
 
 namespace {
-
-double Millis(std::chrono::steady_clock::duration d) {
-  return std::chrono::duration_cast<std::chrono::microseconds>(d).count() / 1000.0;
-}
 
 struct LocalNow {
   int hhmm;
@@ -146,9 +143,9 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
     consecutive_failures_ = 0;  // a good ack clears the fail-closed streak
     if (dashboard_ && s_.live) {
       auto now = clock_.mono();
-      dashboard_->ReportOrder(resting_seq_, "success", "", Millis(now - resting_t_start_),
-                              Millis(resting_t_submit_ - resting_t_start_),
-                              Millis(now - resting_t_submit_));
+      dashboard_->ReportOrder(resting_seq_, "success", "", SteadyMillis(now - resting_t_start_),
+                              SteadyMillis(resting_t_submit_ - resting_t_start_),
+                              SteadyMillis(now - resting_t_submit_));
     }
   } else {
     std::fprintf(stderr, "kairos-exec: order %s rejected: %s\n", id.c_str(), err.c_str());
@@ -156,7 +153,7 @@ void ScenarioEngine::OnAck(const std::string& id, bool ok, const std::string& er
         {EventCategory::kError, Severity::kError, s_.symbol, "reject:" + id, {{"reason", err}}});
     if (dashboard_ && s_.live) {
       dashboard_->ReportOrder(resting_seq_, "submit_error", err, std::nullopt,
-                              Millis(resting_t_submit_ - resting_t_start_), std::nullopt);
+                              SteadyMillis(resting_t_submit_ - resting_t_start_), std::nullopt);
     }
     ClearResting();               // rejected -> free the working slot
     RegisterFailure("rejected");  // a reject storm halts fail-closed, not re-tries forever
@@ -171,7 +168,8 @@ void ScenarioEngine::OnCancel(const std::string& id, bool ok) {
   // which may be an ack-abandoned id no longer equal to resting_id_.
   if (dashboard_ && s_.live && id == cancel_pending_id_) {
     dashboard_->ReportOrder(cancel_seq_, ok ? "success" : "cancel_error", "", std::nullopt,
-                            std::nullopt, std::nullopt, Millis(clock_.mono() - cancel_t_sent_));
+                            std::nullopt, std::nullopt,
+                            SteadyMillis(clock_.mono() - cancel_t_sent_));
     cancel_pending_id_.clear();
   }
   if (ok) {
@@ -362,8 +360,8 @@ int ScenarioEngine::Run() {
         if (dashboard_ && s_.live) {
           dashboard_->ReportOrder(resting_seq_, "ack_timeout",
                                   "ack timeout after " + std::to_string(since_submit) + "ms",
-                                  Millis(clock_.mono() - resting_t_start_),
-                                  Millis(resting_t_submit_ - resting_t_start_),
+                                  SteadyMillis(clock_.mono() - resting_t_start_),
+                                  SteadyMillis(resting_t_submit_ - resting_t_start_),
                                   static_cast<double>(since_submit));
         }
         AbandonResting();  // keep the possibly-live order counted against the sell cap
