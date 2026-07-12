@@ -7,7 +7,6 @@
 #include <functional>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 
 #include "dashboard_metrics.h"
 #include "engine_logic.h"
@@ -17,6 +16,7 @@
 #include "quote_book.h"
 #include "quote_source.h"
 #include "scenario.h"
+#include "sell_cap_ledger.h"
 
 namespace kairos::exec {
 
@@ -108,10 +108,9 @@ class ScenarioEngine {
   std::string resting_id_;
   long resting_filled_ = 0;
   // Orders dropped from resting_ (ack-timeout, or a re-peg cancel the broker
-  // rejected) that may still be live at the broker: id -> shares not yet filled.
-  // Counted against the sell position cap until a fill or a confirmed cancel
-  // resolves them, so filled + in-flight can never oversell the position.
-  std::unordered_map<std::string, long> inflight_lost_;
+  // rejected) that may still be live at the broker; counted against the sell
+  // position cap so filled + in-flight can never oversell. Guarded by mu_.
+  SellCapLedger sell_cap_;
   bool resting_acked_ = false;  // broker confirmed the working order (OnSubmit)
   bool cancelling_ = false;     // cancel issued for re-peg, awaiting OnCancel/full fill
   int resting_seq_ = 0;         // order id's sequence number (dashboard iteration_id)

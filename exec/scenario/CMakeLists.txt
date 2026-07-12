@@ -132,7 +132,7 @@ target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
 add_library(kairos_order_journal src/order/order_journal.cpp)
 target_include_directories(kairos_order_journal PUBLIC ${KAIROS_INC})
 
-add_library(kairos_engine src/engine/engine.cpp)
+add_library(kairos_engine src/engine/engine.cpp src/engine/sell_cap_ledger.cpp)
 target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_engine PUBLIC kairos_scenario kairos_dashboard kairos_order_journal
                                            pthread)

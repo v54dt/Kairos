@@ -112,9 +112,7 @@ void ScenarioEngine::ClearResting() {
 }
 
 void ScenarioEngine::AbandonResting() {
-  if (s_.side != Side::kSell) return;  // the ledger only feeds the sell position cap
-  long unfilled = resting_.active ? resting_.shares - resting_filled_ : 0;
-  if (unfilled > 0 && !resting_id_.empty()) inflight_lost_[resting_id_] += unfilled;
+  sell_cap_.AbandonResting(s_.side, resting_.active, resting_.shares, resting_filled_, resting_id_);
 }
 
 void ScenarioEngine::RegisterFailure(const std::string& reason) {
@@ -175,7 +173,7 @@ void ScenarioEngine::OnCancel(const std::string& id, bool ok) {
   if (ok) {
     // A confirmed cancel means the order can no longer fill: release any shares
     // it was still holding against the sell cap.
-    if (inflight_lost_.erase(id) > 0) cv_.notify_all();
+    if (sell_cap_.ReleaseOnCancel(id)) cv_.notify_all();
   }
   if (id != resting_id_) return;
   if (!ok) AbandonResting();  // cancel rejected -> the order may still be live at broker
@@ -203,11 +201,7 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
     resting_filled_ += f.shares;
     if (resting_filled_ >= resting_.shares) ClearResting();
   } else {
-    auto it = inflight_lost_.find(id);  // late fill of an abandoned (possibly-live) order
-    if (it != inflight_lost_.end()) {
-      it->second -= f.shares;
-      if (it->second <= 0) inflight_lost_.erase(it);
-    }
+    sell_cap_.OnLateFill(id, f.shares);  // late fill of an abandoned (possibly-live) order
   }
   std::printf("kairos-exec: fill %s %ld @ %s  (cum %ld sh / NT$ %ld, fee %ld, tax %ld)\n",
               id.c_str(), f.shares, CentsToString(f.price).c_str(), acct_.filled_shares,
@@ -508,11 +502,9 @@ int ScenarioEngine::Run() {
         // Count in-flight (resting minus its partial fills) plus any abandoned
         // orders still live at the broker as already committed, so a resting order
         // plus a new one can never oversell the held position.
-        long inflight = resting_.active ? resting_.shares - resting_filled_ : 0;
-        for (const auto& entry : inflight_lost_) inflight += entry.second;
-        long committed = acct_.filled_shares + inflight;
-        sell_cap_remaining = s_.position_shares - committed;
-        if (sell_cap_remaining < 0) sell_cap_remaining = 0;
+        sell_cap_remaining =
+            sell_cap_.SellCapRemaining(s_.position_shares, acct_.filled_shares, resting_.active,
+                                       resting_.shares, resting_filled_);
       }
       resting = resting_;
       rid = resting_id_;
