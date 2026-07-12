@@ -7,13 +7,18 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
+#include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "hub_status.h"
 #include "order_codec.h"
 #include "order_hub.h"
+#include "risk_gate.h"
 #include "test_check.h"
 
 using namespace kairos::exec;
@@ -607,6 +612,363 @@ void TestGuardsCombinedFailClosed() {
   hub.Stop();
 }
 
+// ======================================================================
+// Direct RiskGate unit layer: exercises the money-guard with no hub, no
+// backend, no sockets. Each clause gets an admit + a reject; the precedence
+// matrix and the reject-string pins lock the first-match order and wording.
+// ======================================================================
+
+// Holds the containers the RiskStateView refers to so a view can be built by
+// hand, then mutated between evaluations.
+struct GateFixture {
+  std::unordered_map<std::string, Route> routes;
+  std::unordered_set<std::string> open_ids;
+  std::unordered_map<std::string, Cents> last_fill;
+  std::deque<DupEntry> dup_ring;
+  std::int64_t account_open = 0;
+  std::int64_t account_realized = 0;
+  int client_open_orders = 0;
+  std::int64_t client_open_notional = 0;
+  long now_ms = 0;
+
+  RiskStateView View() {
+    return RiskStateView{routes,       open_ids,         last_fill,          dup_ring,
+                         account_open, account_realized, client_open_orders, client_open_notional,
+                         now_ms};
+  }
+  void AddOpen(const std::string& id, const std::string& sym, Side side, Cents price, long shares) {
+    routes[id] = Route{7, shares, true, false, sym, side, price};
+    open_ids.insert(id);
+  }
+};
+
+std::optional<std::string> Eval(const RiskConfig& cfg, GateFixture& fx, const OrderSubmitMsg& o) {
+  RiskGate gate(cfg);
+  RiskStateView view = fx.View();
+  return gate.Evaluate(o, view);
+}
+
+// ---- one admit + one reject per clause ---------------------------------
+
+void TestGateInvalidFields() {
+  RiskConfig cfg;
+  GateFixture fx;
+  const OrderSubmitMsg bad[] = {
+      Order("", "2330", Side::kBuy, 10000, 1000),                         // empty id
+      Order("id", "", Side::kBuy, 10000, 1000),                           // empty symbol
+      Order("id", "2330", Side::kBuy, 10000, 0),                          // zero shares
+      Order("id", "2330", Side::kBuy, 10000, -5),                         // negative shares
+      Order("id", "2330", Side::kBuy, 10000, kMaxTwStockShares + 1),      // over share ceiling
+      Order("id", "2330", Side::kBuy, 0, 1000),                           // zero price
+      Order("id", "2330", Side::kBuy, -1, 1000),                          // negative price
+      Order("id", "2330", Side::kBuy, kMaxTwStockPriceCents + 1, 1000)};  // over price ceiling
+  for (const auto& o : bad) {
+    auto r = Eval(cfg, fx, o);
+    CHECK(r && *r == "invalid order fields");
+  }
+  CHECK(!Eval(cfg, fx, Order("ok", "2330", Side::kBuy, 10000, 1000)));  // admit
+}
+
+void TestGateDuplicateLiveId() {
+  RiskConfig cfg;
+  GateFixture fx;
+  fx.AddOpen("D", "2330", Side::kBuy, 10000, 1000);  // live, not closed
+  auto r = Eval(cfg, fx, Order("D", "2330", Side::kBuy, 10000, 1000));
+  CHECK(r && *r == "duplicate live order id");
+
+  // A closed route with the same id is not a live duplicate -> admit.
+  fx.routes["D"].closed = true;
+  fx.open_ids.erase("D");
+  CHECK(!Eval(cfg, fx, Order("D", "2330", Side::kBuy, 10000, 1000)));
+}
+
+void TestGateMaxOrderShares() {
+  RiskConfig cfg;
+  cfg.max_order_shares = 1000;
+  GateFixture fx;
+  auto r = Eval(cfg, fx, Order("s", "2330", Side::kBuy, 10000, 1001));
+  CHECK(r && *r == "order size 1001 exceeds max 1000");
+  CHECK(!Eval(cfg, fx, Order("s", "2330", Side::kBuy, 10000, 1000)));  // at cap -> admit
+
+  RiskConfig off;  // disabled (0): a huge count within the ceiling admits
+  CHECK(!Eval(off, fx, Order("s", "2330", Side::kBuy, 10000, 2000000)));
+}
+
+void TestGatePriceCollar() {
+  RiskConfig cfg;
+  cfg.price_collar_pct = 10;
+  GateFixture fx;
+  fx.last_fill["2330"] = 10000;  // reference 100.00
+  auto r = Eval(cfg, fx, Order("hi", "2330", Side::kBuy, 12000, 1000));
+  CHECK(r && *r == "price 120.00 deviates >10% from last fill 100.00 (fat-finger?)");
+  CHECK(!Eval(cfg, fx, Order("in", "2330", Side::kBuy, 10500, 1000)));  // +5% -> admit
+
+  GateFixture cold;  // no reference yet -> collar inactive -> admit even off-band
+  CHECK(!Eval(cfg, cold, Order("cs", "2330", Side::kBuy, 12000, 1000)));
+
+  RiskConfig off;  // disabled (0): off-band admits
+  CHECK(!Eval(off, fx, Order("d", "2330", Side::kBuy, 5000000, 1000)));
+}
+
+void TestGateDuplicateWindow() {
+  RiskConfig cfg;
+  cfg.dup_order_window_ms = 60000;
+  GateFixture fx;
+  fx.now_ms = 1000;
+  fx.dup_ring.push_back({"live", "2330", Side::kBuy, 1000, 10000, 1000});
+  auto r = Eval(cfg, fx, Order("dup", "2330", Side::kBuy, 10000, 1000));
+  CHECK(r && *r == "duplicate order within 60000ms (suspected runaway loop)");
+  CHECK(!Eval(cfg, fx, Order("p", "2330", Side::kBuy, 10100, 1000)));  // different price -> admit
+
+  // Outside the window the ring is pruned in place -> admit, ring emptied.
+  fx.now_ms = 1000 + 60001;
+  CHECK(!Eval(cfg, fx, Order("late", "2330", Side::kBuy, 10000, 1000)));
+  CHECK(fx.dup_ring.empty());
+}
+
+void TestGateAccountNotionalCap() {
+  RiskConfig cfg;
+  cfg.max_account_notional_cents = 30000000;
+  GateFixture fx;
+  fx.account_open = 20000000;
+  auto r = Eval(cfg, fx, Order("c", "2330", Side::kBuy, 15000, 1000));  // +15M -> 35M > 30M
+  CHECK(r && *r == "account notional cap exceeded");
+  CHECK(!Eval(cfg, fx, Order("d", "2330", Side::kBuy, 10000, 500)));  // +5M -> 25M -> admit
+}
+
+void TestGatePerClientOpenOrders() {
+  RiskConfig cfg;
+  cfg.max_open_orders_per_client = 2;
+  GateFixture fx;
+  fx.client_open_orders = 2;
+  auto r = Eval(cfg, fx, Order("o", "2330", Side::kBuy, 10000, 100));
+  CHECK(r && *r == "per-client open-order limit exceeded");
+  fx.client_open_orders = 1;
+  CHECK(!Eval(cfg, fx, Order("o", "2330", Side::kBuy, 10000, 100)));  // 1+1 <= 2 -> admit
+}
+
+void TestGatePerClientNotional() {
+  RiskConfig cfg;
+  cfg.max_open_notional_per_client_cents = 25000000;
+  GateFixture fx;
+  fx.client_open_notional = 20000000;
+  auto r = Eval(cfg, fx, Order("p", "2330", Side::kBuy, 20000, 1000));  // +20M -> 40M > 25M
+  CHECK(r && *r == "per-client open-notional limit exceeded");
+  fx.client_open_notional = 10000000;
+  CHECK(!Eval(cfg, fx, Order("p", "2330", Side::kBuy, 10000, 1000)));  // +10M -> 20M -> admit
+}
+
+void TestGateSelfMatch() {
+  RiskConfig cfg;  // self_match_protection on by default
+  GateFixture fx;
+  fx.AddOpen("A", "2330", Side::kSell, 10000, 1000);                    // resting sell 100.00
+  auto r = Eval(cfg, fx, Order("B", "2330", Side::kBuy, 10000, 1000));  // buy >= sell -> cross
+  CHECK(r && *r == "self-match risk vs open order A");
+  CHECK(!Eval(cfg, fx, Order("C", "2330", Side::kBuy, 9900, 1000)));    // buy < sell -> no cross
+  CHECK(!Eval(cfg, fx, Order("D", "2330", Side::kSell, 10000, 1000)));  // same side -> no cross
+  CHECK(!Eval(cfg, fx, Order("E", "1101", Side::kBuy, 10000, 1000)));   // other symbol -> no cross
+
+  RiskConfig off;  // protection disabled: a crossing order admits
+  off.self_match_protection = false;
+  CHECK(!Eval(off, fx, Order("F", "2330", Side::kBuy, 10000, 1000)));
+}
+
+// ---- precedence matrix (first-match wins) ------------------------------
+// Recorded against the pre-refactor hub (unmodified code, this worktree) with
+// every co-violated clause active. Each expected string below is the exact
+// reject the original inline chain produced for the same multi-violation input.
+
+void TestGatePrecedenceMatrix() {
+  // P1: invalid fields (share ceiling) beats oversize (clause 1 > 3).
+  {
+    RiskConfig cfg;
+    cfg.max_order_shares = 1000;
+    GateFixture fx;
+    auto r = Eval(cfg, fx, Order("p1", "2330", Side::kBuy, 10000, kMaxTwStockShares + 1));
+    CHECK(r && *r == "invalid order fields");
+  }
+  // P2: duplicate live id beats oversize + off-band (clause 2 > 3, 4).
+  {
+    RiskConfig cfg;
+    cfg.max_order_shares = 1000;
+    cfg.price_collar_pct = 10;
+    GateFixture fx;
+    fx.AddOpen("D", "2330", Side::kBuy, 10000, 1000);
+    fx.last_fill["2330"] = 10000;
+    auto r = Eval(cfg, fx, Order("D", "2330", Side::kBuy, 12000, 2000));
+    CHECK(r && *r == "duplicate live order id");
+  }
+  // P3: oversize beats off-band + account cap (clause 3 > 4, 6).
+  {
+    RiskConfig cfg;
+    cfg.max_order_shares = 1000;
+    cfg.price_collar_pct = 10;
+    cfg.max_account_notional_cents = 25000000;
+    GateFixture fx;
+    fx.last_fill["2330"] = 10000;
+    fx.account_open = 20000000;
+    auto r = Eval(cfg, fx, Order("p3", "2330", Side::kBuy, 12000, 2000));
+    CHECK(r && *r == "order size 2000 exceeds max 1000");
+  }
+  // P4: off-band price beats duplicate-window (clause 4 > 5).
+  {
+    RiskConfig cfg;
+    cfg.price_collar_pct = 10;
+    cfg.dup_order_window_ms = 60000;
+    GateFixture fx;
+    fx.last_fill["2330"] = 10000;
+    fx.now_ms = 1000;
+    fx.dup_ring.push_back({"live", "2330", Side::kBuy, 1000, 12000, 1000});
+    auto r = Eval(cfg, fx, Order("p4", "2330", Side::kBuy, 12000, 1000));
+    CHECK(r && *r == "price 120.00 deviates >10% from last fill 100.00 (fat-finger?)");
+  }
+  // P5: duplicate-window beats account + per-client caps (clause 5 > 6, 7, 8).
+  {
+    RiskConfig cfg;
+    cfg.dup_order_window_ms = 60000;
+    cfg.max_account_notional_cents = 25000000;
+    cfg.max_open_orders_per_client = 2;
+    cfg.max_open_notional_per_client_cents = 25000000;
+    GateFixture fx;
+    fx.now_ms = 1000;
+    fx.dup_ring.push_back({"live", "2330", Side::kBuy, 1000, 10000, 1000});
+    fx.account_open = 20000000;
+    fx.client_open_orders = 2;
+    fx.client_open_notional = 20000000;
+    auto r = Eval(cfg, fx, Order("p5", "2330", Side::kBuy, 10000, 1000));
+    CHECK(r && *r == "duplicate order within 60000ms (suspected runaway loop)");
+  }
+  // P6: account cap beats per-client caps + self-match (clause 6 > 7, 8, 9).
+  {
+    RiskConfig cfg;
+    cfg.max_account_notional_cents = 25000000;
+    cfg.max_open_orders_per_client = 2;
+    cfg.max_open_notional_per_client_cents = 25000000;
+    GateFixture fx;
+    fx.AddOpen("rs", "2330", Side::kSell, 10000, 1000);  // crossing sell for self-match
+    fx.account_open = 20100000;
+    fx.client_open_orders = 2;
+    fx.client_open_notional = 20100000;
+    auto r = Eval(cfg, fx, Order("p6", "2330", Side::kBuy, 10000, 1000));
+    CHECK(r && *r == "account notional cap exceeded");
+  }
+  // P7: per-client open-order beats per-client notional + self-match, account
+  // cap disabled (clause 7 > 8, 9).
+  {
+    RiskConfig cfg;
+    cfg.max_account_notional_cents = 0;
+    cfg.max_open_orders_per_client = 2;
+    cfg.max_open_notional_per_client_cents = 25000000;
+    GateFixture fx;
+    fx.AddOpen("rs", "2330", Side::kSell, 10000, 1000);
+    fx.account_open = 20100000;
+    fx.client_open_orders = 2;
+    fx.client_open_notional = 20100000;
+    auto r = Eval(cfg, fx, Order("p7", "2330", Side::kBuy, 10000, 1000));
+    CHECK(r && *r == "per-client open-order limit exceeded");
+  }
+}
+
+// ---- reject-string pins: every gate message, byte-for-byte --------------
+// A future wording change must edit this test too, making it a conscious act.
+
+void TestGateRejectStringPins() {
+  {
+    RiskConfig cfg;
+    GateFixture fx;
+    CHECK(*Eval(cfg, fx, Order("", "2330", Side::kBuy, 10000, 1000)) == "invalid order fields");
+  }
+  {
+    RiskConfig cfg;
+    GateFixture fx;
+    fx.AddOpen("D", "2330", Side::kBuy, 10000, 1000);
+    CHECK(*Eval(cfg, fx, Order("D", "2330", Side::kBuy, 10000, 1000)) == "duplicate live order id");
+  }
+  {
+    RiskConfig cfg;
+    cfg.max_order_shares = 1000;
+    GateFixture fx;
+    CHECK(*Eval(cfg, fx, Order("s", "2330", Side::kBuy, 10000, 1001)) ==
+          "order size 1001 exceeds max 1000");
+  }
+  {
+    RiskConfig cfg;
+    cfg.price_collar_pct = 10;
+    GateFixture fx;
+    fx.last_fill["2330"] = 10000;
+    CHECK(*Eval(cfg, fx, Order("hi", "2330", Side::kBuy, 12000, 1000)) ==
+          "price 120.00 deviates >10% from last fill 100.00 (fat-finger?)");
+  }
+  {
+    RiskConfig cfg;
+    cfg.dup_order_window_ms = 60000;
+    GateFixture fx;
+    fx.now_ms = 1000;
+    fx.dup_ring.push_back({"live", "2330", Side::kBuy, 1000, 10000, 1000});
+    CHECK(*Eval(cfg, fx, Order("dup", "2330", Side::kBuy, 10000, 1000)) ==
+          "duplicate order within 60000ms (suspected runaway loop)");
+  }
+  {
+    RiskConfig cfg;
+    cfg.max_account_notional_cents = 1;
+    GateFixture fx;
+    CHECK(*Eval(cfg, fx, Order("a", "2330", Side::kBuy, 10000, 1000)) ==
+          "account notional cap exceeded");
+  }
+  {
+    RiskConfig cfg;
+    cfg.max_open_orders_per_client = 1;
+    GateFixture fx;
+    fx.client_open_orders = 1;
+    CHECK(*Eval(cfg, fx, Order("o", "2330", Side::kBuy, 10000, 100)) ==
+          "per-client open-order limit exceeded");
+  }
+  {
+    RiskConfig cfg;
+    cfg.max_open_notional_per_client_cents = 1;
+    GateFixture fx;
+    CHECK(*Eval(cfg, fx, Order("p", "2330", Side::kBuy, 10000, 1000)) ==
+          "per-client open-notional limit exceeded");
+  }
+  {
+    RiskConfig cfg;
+    GateFixture fx;
+    fx.AddOpen("A", "2330", Side::kSell, 10000, 1000);
+    CHECK(*Eval(cfg, fx, Order("B", "2330", Side::kBuy, 10000, 1000)) ==
+          "self-match risk vs open order A");
+  }
+}
+
+// ---- client-stat parity pin: a rejected submit does not touch client stats
+// The gate reads a non-inserting client-stat snapshot, so a reject leaves the
+// admit-path accounting untouched (the hub owns and mutates clients_ only on
+// admit). Pins that the delegation kept the admit-side accounting identical.
+
+void TestRejectLeavesClientStatsUntouched() {
+  StubBackend backend;
+  Sink sink;
+  OrderHub::RiskConfig cfg;
+  cfg.max_open_orders_per_client = 2;
+  cfg.max_order_shares = 1000;
+  OrderHub hub(&backend, sink.Fn(), cfg);
+  CHECK(hub.Start());
+
+  hub.OnClientConnect(7);
+  Feed(hub, 7, Order("k7-1", "2330", Side::kBuy, 10000, 1000));  // admit: submitted 1, 10M open
+  HubStatus s = hub.CaptureStatus();
+  CHECK(s.client_count == 1);
+  CHECK(s.account_open_notional_cents == 10000000);
+  CHECK(s.clients.size() == 1 && s.clients[0].submitted == 1);
+
+  Feed(hub, 7, Order("k7-2", "2330", Side::kBuy, 10000, 2000));  // reject: oversize
+  s = hub.CaptureStatus();
+  CHECK(s.client_count == 1);                                   // no new client, no change
+  CHECK(s.account_open_notional_cents == 10000000);             // aggregate untouched by the reject
+  CHECK(s.clients.size() == 1 && s.clients[0].submitted == 1);  // submitted not bumped by a reject
+
+  hub.Stop();
+}
+
 }  // namespace
 
 int main() {
@@ -626,6 +988,19 @@ int main() {
   TestGuardsAllDisabled();
   TestCancelsNeverBlockedUnderGuards();
   TestGuardsCombinedFailClosed();
+
+  TestGateInvalidFields();
+  TestGateDuplicateLiveId();
+  TestGateMaxOrderShares();
+  TestGatePriceCollar();
+  TestGateDuplicateWindow();
+  TestGateAccountNotionalCap();
+  TestGatePerClientOpenOrders();
+  TestGatePerClientNotional();
+  TestGateSelfMatch();
+  TestGatePrecedenceMatrix();
+  TestGateRejectStringPins();
+  TestRejectLeavesClientStatsUntouched();
 
   if (g_failures == 0) {
     std::printf("test_hub_risk_gate: OK\n");
