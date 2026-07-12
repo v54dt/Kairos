@@ -1,0 +1,20 @@
+# trading_days.txt -- UTC+8 trading-date + Taipei hhmm golden (Track RF1 B).
+#
+# Contract: from an epoch-microsecond timestamp, the UTC+8 date (yyyymmdd) and
+# Taipei local hhmm. Writers/readers pinned: exec TradingDayUtc8 /
+# TradingDayNumUtc8 / HhmmFromUs (canonical), core yyyymmdd_utc8 +
+# tapegen::hhmm_from_us, tui civil_from_days. Generated FROM the exec helper.
+#
+# Regeneration: KAIROS_REGEN=1 ctest -R test_trading_days (writes this file).
+# Columns: ts_us|yyyymmdd|hhmm
+0|19700101|800
+-1000000|19700101|759
+1783123200000000|20260704|800
+1783094400000000|20260704|0
+1783094399999999|20260703|2359
+1767196800000000|20260101|0
+1709208000000000|20240229|2000
+4102358400000000|20991231|800
+1783299600000000|20260706|900
+1783315500000000|20260706|1325
+1783315800000000|20260706|1330

@@ -503,6 +503,31 @@ mod tests {
         assert_eq!(civil_from_days(20639), (2026, 7, 5));
     }
 
+    // Shared cross-language golden generated from the C++ canonical helper; the
+    // yyyymmdd derived via this module's civil_from_days must agree with every row.
+    // (tui has no hhmm helper, so the hhmm column is not asserted here.)
+    #[test]
+    fn golden_trading_days_yyyymmdd_match() {
+        const F: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../schema/testdata/trading_days.txt"
+        ));
+        let mut rows = 0;
+        for line in F.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split('|').collect();
+            assert_eq!(f.len(), 3, "bad row: {line}");
+            let ts: i64 = f[0].parse().unwrap();
+            let days = (ts.div_euclid(1_000_000) + 8 * 3600).div_euclid(86_400);
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(format!("{y:04}{m:02}{d:02}"), f[1], "row: {line}");
+            rows += 1;
+        }
+        assert!(rows >= 10, "fixture shrank: {rows}");
+    }
+
     #[test]
     fn fills_one_row_per_fill_with_side_from_sign() {
         let text = "\
