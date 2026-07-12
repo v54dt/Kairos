@@ -7,27 +7,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use kairos_core::book::{Admit, Book};
-use kairos_core::decode::{DecodeError, FeedEvent, decode_feed_event};
+use kairos_core::book::Book;
+use kairos_core::decode::FeedEvent;
 use kairos_core::encode::encode_subscribe;
 use kairos_core::failover::Selector;
-use kairos_core::ipc::aeron::{AeronPub, AeronSub};
+use kairos_core::ipc::aeron::AeronPub;
 use kairos_core::metrics::Metrics;
+use kairos_core::poll::{PollDeps, run as run_poll};
 use kairos_core::streams::StreamTable;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::path::quote_socket_path;
 use kairos_core::uds::server::{ServerHandles, run_server};
-use kairos_core::watchdog::{
-    DRIVER_DEAD_GRACE, DriverLivenessWatchdog, PollErrorWatchdog, driver_timeout_ms_from_env,
-    max_poll_errors_from_env,
-};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{broadcast, watch};
-
-/// How often the poll loop probes the media driver's CnC heartbeat.
-const LIVENESS_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Re-publish the desired set at least this often (also the upstream heartbeat
 /// that recovers a sidecar restart/reconnect).
@@ -85,21 +79,14 @@ async fn main() -> anyhow::Result<()> {
 
     for entry in table.quotes() {
         let stream_id = entry.stream_id;
-        let aeron_book = book.clone();
-        let aeron_tx = tx.clone();
-        let aeron_metrics = metrics.clone();
-        let aeron_selector = selector.clone();
-        let aeron_shutdown = shutting_down.clone();
-        thread::spawn(move || {
-            aeron_poll_loop(
-                stream_id,
-                aeron_book,
-                aeron_tx,
-                aeron_metrics,
-                aeron_selector,
-                aeron_shutdown,
-            )
-        });
+        let deps = PollDeps {
+            book: book.clone(),
+            tx: tx.clone(),
+            metrics: metrics.clone(),
+            selector: selector.clone(),
+        };
+        let poll_shutdown = shutting_down.clone();
+        thread::spawn(move || run_poll(stream_id, deps, poll_shutdown));
     }
 
     let control_stream_id = table.control_stream_id();
@@ -172,110 +159,5 @@ fn control_publish_loop(
         let desired = registry.lock().unwrap().desired();
         let refs: Vec<&str> = desired.iter().map(String::as_str).collect();
         let _ = publisher.offer(&encode_subscribe(&refs));
-    }
-}
-
-fn aeron_poll_loop(
-    stream_id: i32,
-    book: Arc<RwLock<Book>>,
-    tx: broadcast::Sender<FeedEvent>,
-    metrics: Arc<Metrics>,
-    selector: Arc<Selector>,
-    shutting_down: Arc<AtomicBool>,
-) {
-    let sub = match AeronSub::connect(None, stream_id) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("kairos-core: FATAL aeron connect failed on stream {stream_id}: {e:?}");
-            std::process::exit(1);
-        }
-    };
-    let mut idle: u32 = 0;
-    let mut last_err: Option<Instant> = None;
-    let mut poll_wd = PollErrorWatchdog::new(max_poll_errors_from_env());
-    let mut live_wd = DriverLivenessWatchdog::new(DRIVER_DEAD_GRACE);
-    let driver_timeout_ms = driver_timeout_ms_from_env();
-    let mut last_liveness = Instant::now();
-    loop {
-        if shutting_down.load(Ordering::SeqCst) {
-            return;
-        }
-        if last_liveness.elapsed() >= LIVENESS_CHECK_INTERVAL {
-            last_liveness = Instant::now();
-            if live_wd.observe(sub.driver_active(driver_timeout_ms), Instant::now())
-                && !shutting_down.load(Ordering::SeqCst)
-            {
-                eprintln!(
-                    "kairos-core: FATAL media driver inactive (no CnC heartbeat for >{driver_timeout_ms}ms); exiting for restart"
-                );
-                std::process::exit(1);
-            }
-        }
-        let now_us = if selector.is_multi() {
-            selector.now_us()
-        } else {
-            0
-        };
-        match sub.poll(
-            |data| match decode_feed_event(data) {
-                Ok(FeedEvent::Quote(q)) => {
-                    Metrics::inc(&metrics.quotes_decoded);
-                    metrics.observe_latency(q.source, q.quote_ts_us, q.recv_ts_us);
-                    selector.note(q.source, now_us);
-                    match book.write().unwrap().update(q.clone()) {
-                        Admit::Admitted if selector.serves(q.source) => {
-                            let _ = tx.send(FeedEvent::Quote(q));
-                        }
-                        Admit::Admitted => {}
-                        Admit::Dropped => Metrics::inc(&metrics.ordering_drops),
-                    }
-                }
-                Ok(FeedEvent::Trade(t)) => {
-                    metrics.observe_latency(t.source, t.trade_ts_us, t.recv_ts_us);
-                    selector.note(t.source, now_us);
-                    if selector.serves(t.source) {
-                        let _ = tx.send(FeedEvent::Trade(t));
-                    }
-                }
-                Err(DecodeError::UnknownVariant) => Metrics::inc(&metrics.unknown_variants),
-                Err(_) => Metrics::inc(&metrics.decode_errors),
-            },
-            64,
-        ) {
-            Ok(n) if n > 0 => {
-                idle = 0;
-                poll_wd.on_ok();
-            }
-            Ok(_) => {
-                poll_wd.on_ok();
-                idle_backoff(&mut idle);
-            }
-            Err(e) => {
-                if poll_wd.on_err() && !shutting_down.load(Ordering::SeqCst) {
-                    eprintln!(
-                        "kairos-core: FATAL aeron poll errored {} times consecutively ({e:?}); exiting for restart",
-                        poll_wd.threshold()
-                    );
-                    std::process::exit(1);
-                }
-                if last_err.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
-                    eprintln!("kairos-core: aeron poll error: {e:?}");
-                    last_err = Some(Instant::now());
-                }
-                idle_backoff(&mut idle);
-            }
-        }
-    }
-}
-
-// Spin → yield → park so an idle feed doesn't burn a core.
-fn idle_backoff(idle: &mut u32) {
-    *idle = idle.saturating_add(1);
-    if *idle < 10 {
-        std::hint::spin_loop();
-    } else if *idle < 20 {
-        std::thread::yield_now();
-    } else {
-        std::thread::sleep(Duration::from_micros(50));
     }
 }

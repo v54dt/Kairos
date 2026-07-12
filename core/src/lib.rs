@@ -12,6 +12,7 @@ pub mod ipc;
 pub mod lat_hist;
 pub mod metrics;
 pub mod model;
+pub mod poll;
 pub mod record;
 pub mod replay;
 pub mod sim;
