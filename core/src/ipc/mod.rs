@@ -3,7 +3,7 @@ pub mod aeron;
 use std::time::Duration;
 
 /// Spin → yield → park so an idle Aeron poll loop doesn't burn a core.
-pub fn idle_backoff(idle: &mut u32) {
+pub(crate) fn idle_backoff(idle: &mut u32) {
     *idle = idle.saturating_add(1);
     if *idle < 10 {
         std::hint::spin_loop();
