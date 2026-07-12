@@ -12,10 +12,11 @@ use std::time::Duration;
 
 use kairos_core::book::Book;
 use kairos_core::decode::{FeedEvent, decode_quote_bytes};
-use kairos_core::encode::encode_subscribe;
+use kairos_core::encode::{encode_quote, encode_subscribe};
 use kairos_core::failover::Selector;
 use kairos_core::metrics::Metrics;
 use kairos_core::model::{Exchange, PriceLevel, Quote, QuoteBoard, Session};
+use kairos_core::poll::{PollDeps, handle_event};
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::frame::{read_frame, write_frame};
 use kairos_core::uds::server::{ServerHandles, run_server};
@@ -85,12 +86,10 @@ async fn next_frame(client: &mut UnixStream) -> Vec<u8> {
         .unwrap()
 }
 
-// The active source is what the poll loop would gate tx.send on; replicate it here
-// so the client only ever sees the active source live.
-fn forward(selector: &Selector, tx: &broadcast::Sender<FeedEvent>, q: Quote) {
-    if selector.serves(q.source) {
-        let _ = tx.send(FeedEvent::Quote(q));
-    }
+// Drive the quote through the REAL poll gate exactly as the poll loop would after
+// decoding it, so the client only ever sees the active source live.
+fn forward(deps: &PollDeps, q: Quote) {
+    handle_event(deps, &encode_quote(&q), 0);
 }
 
 #[tokio::test]
@@ -152,6 +151,12 @@ async fn live_stream_serves_only_the_active_source_across_a_failover() {
     selector.note(0, 0);
     selector.note(1, 0);
     assert_eq!(selector.eval(0), None);
+    let deps = PollDeps {
+        book: book.clone(),
+        tx: tx.clone(),
+        metrics: Arc::new(Metrics::default()),
+        selector: selector.clone(),
+    };
 
     let srv_socket = socket.clone();
     let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -168,8 +173,8 @@ async fn live_stream_serves_only_the_active_source_across_a_failover() {
     let _ack = next_frame(&mut c).await; // book empty -> subAck only, no snapshot
 
     // Active source 0: the primary's tick is delivered, the secondary's is gated out.
-    forward(&selector, &tx, quote("2330", 1, 2, 59_100));
-    forward(&selector, &tx, quote("2330", 0, 2, 58_100));
+    forward(&deps, quote("2330", 1, 2, 59_100));
+    forward(&deps, quote("2330", 0, 2, 58_100));
     let f = decode_quote_bytes(&next_frame(&mut c).await).unwrap();
     assert_eq!(f.source, 0);
     assert_eq!(f.last_price, 58_100);
@@ -179,8 +184,8 @@ async fn live_stream_serves_only_the_active_source_across_a_failover() {
     assert!(selector.eval(100_000).is_some());
 
     // Now the secondary is delivered and the primary is gated out.
-    forward(&selector, &tx, quote("2330", 0, 3, 58_200));
-    forward(&selector, &tx, quote("2330", 1, 3, 59_200));
+    forward(&deps, quote("2330", 0, 3, 58_200));
+    forward(&deps, quote("2330", 1, 3, 59_200));
     let f = decode_quote_bytes(&next_frame(&mut c).await).unwrap();
     assert_eq!(f.source, 1);
     assert_eq!(f.last_price, 59_200);
