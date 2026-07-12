@@ -196,6 +196,12 @@ async fn reader_loop(
                 }
                 // Ack the subscription, then push the current snapshot per symbol.
                 let _ = snap_tx.try_send(encode_sub_ack(&syms, true));
+                // Failover serve-gate, layer 2 of 2 (subscribe snapshot). The snapshot
+                // is drawn from the currently-preferred source, mirroring the live gate
+                // in poll::handle_event. Because each layer re-derives the gate (there is
+                // no shared re-push on switch), a failover switch does NOT re-snapshot
+                // already-connected clients: they keep the old source until the symbol
+                // next ticks. Deferred to D2 — see the note in poll::handle_event.
                 let order = selector.serve_order();
                 let snapshots: Vec<Quote> = {
                     let b = book.read().unwrap();

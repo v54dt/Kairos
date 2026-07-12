@@ -56,6 +56,15 @@ pub fn handle_event(deps: &PollDeps, data: &[u8], now_us: u64) -> Outcome {
             deps.metrics
                 .observe_latency(q.source, q.quote_ts_us, q.recv_ts_us);
             deps.selector.note(q.source, now_us);
+            // Failover serve-gate, layer 1 of 2 (live broadcast). Only the active
+            // source's ticks reach connected clients; the subscribe-snapshot path
+            // re-derives the same gate in uds::server::reader_loop via
+            // serve_order/get_preferred. Consequence accepted in the D4 review: a
+            // failover switch is invisible to already-connected clients until the
+            // symbol next ticks, when this gate delivers the new source (pinned by
+            // failover_serve.rs). Moving the gate to the writer layer (re-snapshot
+            // every client on switch) is deferred until a second live feed (D2) can
+            // exercise it.
             match deps.book.write().unwrap().update(q.clone()) {
                 Admit::Admitted if deps.selector.serves(q.source) => {
                     let _ = deps.tx.send(FeedEvent::Quote(q));
