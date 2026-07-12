@@ -10,15 +10,14 @@ use std::thread;
 use std::time::Duration;
 
 use kairos_core::book::Book;
+use kairos_core::config::{Config, fatal};
 use kairos_core::decode::FeedEvent;
 use kairos_core::encode::encode_subscribe;
 use kairos_core::failover::Selector;
 use kairos_core::ipc::aeron::AeronPub;
 use kairos_core::metrics::Metrics;
 use kairos_core::poll::{PollDeps, run as run_poll};
-use kairos_core::streams::StreamTable;
 use kairos_core::subreg::SubRegistry;
-use kairos_core::uds::path::quote_socket_path;
 use kairos_core::uds::server::{ServerHandles, run_server};
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::{broadcast, watch};
@@ -57,18 +56,15 @@ async fn main() -> anyhow::Result<()> {
         let _ = shutdown_tx.send(true);
     });
 
-    let table = StreamTable::from_env().unwrap_or_else(|e| {
-        eprintln!("kairos-core: FATAL invalid KAIROS_STREAMS: {e:?}");
-        std::process::exit(1);
-    });
-
-    let priority = table
-        .source_priority(std::env::var("KAIROS_SOURCE_PRIORITY").ok().as_deref())
-        .unwrap_or_else(|e| {
-            eprintln!("kairos-core: FATAL invalid KAIROS_SOURCE_PRIORITY: {e:?}");
-            std::process::exit(1);
-        });
-    let selector = Arc::new(Selector::from_env(priority.clone()));
+    let cfg = Config::from_env().unwrap_or_else(|m| fatal(&m));
+    eprintln!("kairos-core: {}", cfg.describe());
+    let table = cfg.streams;
+    let priority = cfg.priority;
+    let selector = Arc::new(Selector::new(
+        priority.clone(),
+        cfg.failover_stale_ms * 1_000,
+        cfg.failover_recover_hold_ms * 1_000,
+    ));
     if selector.is_multi() {
         eprintln!("kairos-core: multi-source failover active, priority {priority:?}");
         let eval_selector = selector.clone();
@@ -93,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
     let control_registry = registry.clone();
     thread::spawn(move || control_publish_loop(control_stream_id, control_registry, change_rx));
 
-    let socket_path = quote_socket_path();
+    let socket_path = cfg.quote_sock;
     eprintln!("kairos-core: UDS quote server on {socket_path}");
     let handles = ServerHandles {
         book,

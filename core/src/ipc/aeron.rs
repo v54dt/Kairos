@@ -18,9 +18,7 @@ pub fn resolve_aeron_dir(explicit: Option<&str>) -> Option<String> {
     if let Some(d) = explicit {
         return Some(d.to_owned());
     }
-    std::env::var("KAIROS_AERON_DIR")
-        .ok()
-        .filter(|d| !d.is_empty())
+    crate::config::env_nonempty("KAIROS_AERON_DIR")
 }
 
 /// Build a started client and report the Aeron directory it actually resolved to

@@ -34,10 +34,7 @@ fn run_user_dir() -> Option<String> {
 /// else `/run/user/<uid>` when it exists. `None` if neither is usable. Used by the
 /// sim launcher to name its own namespaced sockets under the same private dir.
 pub fn runtime_dir() -> Option<String> {
-    if let Some(d) = std::env::var("XDG_RUNTIME_DIR")
-        .ok()
-        .filter(|d| !d.is_empty())
-    {
+    if let Some(d) = crate::config::env_nonempty("XDG_RUNTIME_DIR") {
         return Some(d);
     }
     run_user_dir()
@@ -48,8 +45,8 @@ pub fn runtime_dir() -> Option<String> {
 /// none resolves. C++/other consumers follow the same rule.
 pub fn quote_socket_path() -> String {
     resolve(
-        std::env::var("KAIROS_QUOTE_SOCK").ok().as_deref(),
-        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+        crate::config::env_nonempty("KAIROS_QUOTE_SOCK").as_deref(),
+        crate::config::env_nonempty("XDG_RUNTIME_DIR").as_deref(),
         run_user_dir().as_deref(),
         "kairos-quotes.sock",
     )
@@ -66,8 +63,8 @@ pub fn quote_socket_path() -> String {
 /// is the LIVE order socket the sim isolation guard must never collide with.
 pub fn order_socket_path() -> String {
     resolve(
-        std::env::var("KAIROS_ORDER_SOCK").ok().as_deref(),
-        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+        crate::config::env_nonempty("KAIROS_ORDER_SOCK").as_deref(),
+        crate::config::env_nonempty("XDG_RUNTIME_DIR").as_deref(),
         run_user_dir().as_deref(),
         "kairos-orders.sock",
     )

@@ -77,21 +77,13 @@ impl DriverLivenessWatchdog {
 /// Consecutive poll-error budget from `$KAIROS_AERON_MAX_POLL_ERRORS`
 /// (default `DEFAULT_MAX_POLL_ERRORS`; a non-numeric or zero value falls back).
 pub fn max_poll_errors_from_env() -> u32 {
-    std::env::var("KAIROS_AERON_MAX_POLL_ERRORS")
-        .ok()
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_MAX_POLL_ERRORS)
+    crate::config::env_parsed("KAIROS_AERON_MAX_POLL_ERRORS", DEFAULT_MAX_POLL_ERRORS)
 }
 
 /// Driver heartbeat-staleness threshold (ms) from `$KAIROS_DRIVER_TIMEOUT_MS`
 /// (default `DEFAULT_DRIVER_TIMEOUT_MS`; a non-numeric or non-positive value falls back).
 pub fn driver_timeout_ms_from_env() -> i64 {
-    std::env::var("KAIROS_DRIVER_TIMEOUT_MS")
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(DEFAULT_DRIVER_TIMEOUT_MS)
+    crate::config::env_parsed("KAIROS_DRIVER_TIMEOUT_MS", DEFAULT_DRIVER_TIMEOUT_MS)
 }
 
 #[cfg(test)]

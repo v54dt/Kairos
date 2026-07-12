@@ -49,9 +49,9 @@ impl SimPaths {
     /// `$KAIROS_SIM_QUOTE_SOCK`, `$KAIROS_SIM_ORDER_SOCK`, and `runtime_dir()`.
     pub fn resolve() -> anyhow::Result<Self> {
         Self::resolve_with(
-            std::env::var("KAIROS_SIM_AERON_DIR").ok().as_deref(),
-            std::env::var("KAIROS_SIM_QUOTE_SOCK").ok().as_deref(),
-            std::env::var("KAIROS_SIM_ORDER_SOCK").ok().as_deref(),
+            crate::config::env_nonempty("KAIROS_SIM_AERON_DIR").as_deref(),
+            crate::config::env_nonempty("KAIROS_SIM_QUOTE_SOCK").as_deref(),
+            crate::config::env_nonempty("KAIROS_SIM_ORDER_SOCK").as_deref(),
             runtime_dir().as_deref(),
         )
     }

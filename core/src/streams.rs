@@ -111,6 +111,10 @@ impl StreamTable {
         self.entries.iter().filter(|e| e.role == StreamRole::Quotes)
     }
 
+    pub fn entries(&self) -> &[StreamEntry] {
+        &self.entries
+    }
+
     /// Resolve the failover source priority (primary first). `spec` is the raw
     /// `KAIROS_SOURCE_PRIORITY` value; `None`/empty yields the quotes sources in
     /// declared order. A non-empty spec must list EXACTLY the configured quotes
