@@ -1,0 +1,45 @@
+Kairos cross-language golden fixtures (Track RF1).
+
+Each file below pins a cross-language contract EXACTLY as the code produces it
+today. Multiple language sides read the SAME file; corrupting one byte fails the
+consumer tests on both sides. This is the same discipline as the capnp wire
+goldens (*_golden_envelope.bin, read by core/tests/golden_wire.rs and
+sidecar/concords/tests/test_golden*.cpp).
+
+Consumers locate a fixture the same way the wire golden does: C++ via a
+KAIROS_*_PATH compile definition (absolute, from CMAKE_CURRENT_SOURCE_DIR); Rust
+via include_str!/include_bytes! of CARGO_MANIFEST_DIR/../schema/testdata/<file>.
+
+quote_golden_envelope.bin / quote_v2_golden_envelope.bin / trade_golden_envelope.bin
+  Frozen capnp Envelope wire format. Regeneration: sidecar test_golden_v2 /
+  test_golden emit paths (see sidecar/concords/tests).
+
+runtime_paths.txt
+  Contract: env>XDG>run-user UDS/sentinel path resolution (core resolve, exec
+  ResolveSock, tui halt/hub_status/supervisor resolve). Regeneration: hand-edited
+  table (schema/testdata/gen is not used); columns documented in the file header.
+  Consumers: core uds::path test, exec test_socket_path, tui halt/hub_status/
+  supervisor golden tests.
+
+trading_days.txt
+  Contract: UTC+8 trading-date (yyyymmdd) and Taipei hhmm from an epoch-us
+  timestamp (exec TradingDayUtc8/TradingDayNumUtc8/HhmmFromUs, core yyyymmdd_utc8
+  + tapegen::hhmm_from_us, tui civil_from_days). Regeneration: run test_trading_days
+  with KAIROS_REGEN=1 (writes the file from the C++ canonical helper). Consumers:
+  exec test_trading_days, core recorder test, tui order_journal date test.
+
+journal_corpus.jsonl / journal_expected.txt
+  Contract: order-journal JSONL as the C++ writers emit it (OrderJournal::Log* and
+  OrderFlowJournal::Append*), incl. hostile-string escaping and the err truncation
+  cap. The clock-derived "t" field is masked to 0 in the committed corpus.
+  Regeneration: run test_journal_corpus with KAIROS_REGEN=1. journal_expected.txt
+  is the per-line decoded-value table the tui parser must reproduce. Consumers:
+  exec test_journal_corpus (regenerate + byte-compare), tui order_journal golden test.
+
+ctl_corpus.txt
+  Contract: scenario-ctl JSON-lines protocol. SNAP<TAB> lines are
+  SerializeScenarioSnapshot outputs (all states, restart_count/gave_up, hostile
+  last_exit_reason); REQ<TAB> lines are tui list/start/stop request builders.
+  Regeneration: run test_ctl_corpus with KAIROS_REGEN=1. Consumers: exec
+  test_ctl_corpus (regenerate SNAP + parse REQ), tui ctl_corpus integration test
+  (parse SNAP + regenerate REQ).

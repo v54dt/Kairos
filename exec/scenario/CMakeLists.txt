@@ -349,6 +349,15 @@ add_executable(test_dashboard_metrics tests/test_dashboard_metrics.cpp)
 target_link_libraries(test_dashboard_metrics PRIVATE kairos_dashboard)
 add_test(NAME test_dashboard_metrics COMMAND test_dashboard_metrics)
 
+# --- RF1 cross-language golden fixtures (schema/testdata) ---
+add_executable(test_socket_path tests/test_socket_path.cpp)
+target_include_directories(test_socket_path PRIVATE ${KAIROS_INC})
+target_compile_definitions(
+  test_socket_path
+  PRIVATE
+    KAIROS_RUNTIME_PATHS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/runtime_paths.txt")
+add_test(NAME test_socket_path COMMAND test_socket_path)
+
 # Bound every test so a hung child or wedged socket cannot stall CI forever. The process-spawning
 # and opt-in e2e/fault targets fork real binaries, so they get larger-but-still-bounded budgets over
 # the 60s default.

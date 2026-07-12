@@ -182,6 +182,44 @@ mod tests {
         assert_eq!(resolve(Some(""), Some(""), Some("")), None);
     }
 
+    // Shared cross-language golden: rows for this module's base must resolve the
+    // same here as in core resolve() and exec ResolveSock.
+    #[test]
+    fn golden_runtime_paths_hub_halt() {
+        let fixture = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../schema/testdata/runtime_paths.txt"
+        ));
+        fn token(t: &str) -> Option<&str> {
+            match t {
+                "UNSET" => None,
+                "EMPTY" => Some(""),
+                v => Some(v),
+            }
+        }
+        let mut rows = 0;
+        for line in fixture.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split('|').collect();
+            assert_eq!(f.len(), 5, "bad row: {line}");
+            if f[3] != "kairos-hub-halt" {
+                continue;
+            }
+            let ru = match f[2] {
+                "yes" => Some("/run/user/1000"),
+                "no" => None,
+                other => panic!("bad run_user: {other}"),
+            };
+            let got = resolve(token(f[0]), token(f[1]), ru);
+            let want = (f[4] != "FATAL").then(|| f[4].to_string());
+            assert_eq!(got, want, "row: {line}");
+            rows += 1;
+        }
+        assert!(rows >= 8, "no rows for kairos-hub-halt: {rows}");
+    }
+
     #[test]
     fn typing_halt_then_enter_arms() {
         let mut p = HaltPrompt::ConfirmHalt(String::new());
