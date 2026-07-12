@@ -2,12 +2,9 @@
 //   (default)        PAPER: real quotes, queue-model simulated fills, no order socket
 //   --paper-instant  PAPER: real quotes, instant full fills (pipeline sanity mode)
 //   --check          offline: print the plan, no connection
-//   --quotes [secs]  quote-only: print the live quote for `secs`, no orders
 //   --live           real orders (requires typing LIVE, or --yes to skip)
 
 #include <atomic>
-#include <cctype>
-#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -15,7 +12,6 @@
 #include <iostream>
 #include <memory>
 #include <string>
-#include <thread>
 #include <vector>
 
 #include "blacklist.h"
@@ -59,42 +55,19 @@ void PrintPlan(const Scenario& s) {
   }
 }
 
-int RunQuotes(const Scenario& s, int secs) {
-  std::atomic<bool> got{false};
-  UdsQuoteClient client(
-      QuoteSocketPath(), {s.symbol}, [&](const std::string& sym, const TopOfBook& t) {
-        got = true;
-        std::printf("%-8s bid=%s ask=%s last=%s%s\n", sym.c_str(),
-                    CentsToString(t.best_bid()).c_str(), CentsToString(t.best_ask()).c_str(),
-                    CentsToString(t.last_trade).c_str(), t.is_trial ? " (trial)" : "");
-        std::fflush(stdout);
-      });
-  client.Start();
-  for (int i = 0; i < secs * 10 && !g_stop; ++i) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
-  client.Stop();
-  std::printf(got ? "kairos-exec: quotes OK\n" : "kairos-exec: NO quotes received\n");
-  return got ? 0 : 1;
-}
 }  // namespace
 
 int main(int argc, char** argv) {
   std::string path;
-  bool flag_check = false, flag_quotes = false, flag_live = false, assume_yes = false;
+  bool flag_check = false, flag_live = false, assume_yes = false;
   bool flag_paper_instant = false;
   bool ignore_window = false;
   bool ignore_blacklist = false;
-  int quotes_secs = 30;
   long override_budget = 0;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--check") {
       flag_check = true;
-    } else if (a == "--quotes") {
-      flag_quotes = true;
-      if (i + 1 < argc && std::isdigit(static_cast<unsigned char>(argv[i + 1][0])))
-        quotes_secs = std::atoi(argv[++i]);
     } else if (a == "--live") {
       flag_live = true;
     } else if (a == "--paper-instant") {
@@ -114,7 +87,7 @@ int main(int argc, char** argv) {
   if (path.empty()) {
     std::fprintf(stderr,
                  "usage: kairos_scenario_trader <scenario.toml> "
-                 "[--check|--quotes [s]|--live|--paper-instant] "
+                 "[--check|--live|--paper-instant] "
                  "[--budget n] [--ignore-window] [--ignore-blacklist] [--yes]\n");
     return 1;
   }
@@ -176,9 +149,6 @@ int main(int argc, char** argv) {
     PrintPlan(scenario);
     std::printf("kairos-exec: config OK (offline check)\n");
     return 0;
-  }
-  if (flag_quotes) {
-    return RunQuotes(scenario, quotes_secs);
   }
 
   std::printf("%s", SummarizeScenario(scenario).c_str());
