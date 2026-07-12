@@ -69,45 +69,20 @@ impl HaltPrompt {
 }
 
 /// Advance the confirm state machine. Returns the next prompt state and, when a
-/// confirmation completes, the authorized action.
+/// confirmation completes, the authorized action. Thin adapter over the shared
+/// typed-buffer sub-machine: `HALT` arms, `RESUME` clears.
 pub fn handle_key(prompt: &HaltPrompt, key: HaltKey) -> (HaltPrompt, Option<HaltAction>) {
+    use crate::sources::confirm::{Transition, typed_step};
     match prompt {
         HaltPrompt::Idle => (HaltPrompt::Idle, None),
-        HaltPrompt::ConfirmHalt(buf) => step(buf, key, "HALT", HaltAction::Arm, |b| {
-            HaltPrompt::ConfirmHalt(b)
-        }),
-        HaltPrompt::ConfirmResume(buf) => step(buf, key, "RESUME", HaltAction::Clear, |b| {
-            HaltPrompt::ConfirmResume(b)
-        }),
-    }
-}
-
-fn step(
-    buf: &str,
-    key: HaltKey,
-    word: &str,
-    action: HaltAction,
-    rebuild: impl Fn(String) -> HaltPrompt,
-) -> (HaltPrompt, Option<HaltAction>) {
-    match key {
-        HaltKey::Cancel => (HaltPrompt::Idle, None),
-        HaltKey::Enter => {
-            if buf == word {
-                (HaltPrompt::Idle, Some(action))
-            } else {
-                (HaltPrompt::Idle, None)
-            }
-        }
-        HaltKey::Backspace => {
-            let mut b = buf.to_string();
-            b.pop();
-            (rebuild(b), None)
-        }
-        HaltKey::Char(c) => {
-            let mut b = buf.to_string();
-            b.push(c);
-            (rebuild(b), None)
-        }
+        HaltPrompt::ConfirmHalt(buf) => match typed_step(buf, "HALT", key) {
+            Transition::Edit(b) => (HaltPrompt::ConfirmHalt(b), None),
+            Transition::Resolve(fire) => (HaltPrompt::Idle, fire.then_some(HaltAction::Arm)),
+        },
+        HaltPrompt::ConfirmResume(buf) => match typed_step(buf, "RESUME", key) {
+            Transition::Edit(b) => (HaltPrompt::ConfirmResume(b), None),
+            Transition::Resolve(fire) => (HaltPrompt::Idle, fire.then_some(HaltAction::Clear)),
+        },
     }
 }
 
