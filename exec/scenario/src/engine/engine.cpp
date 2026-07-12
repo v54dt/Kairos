@@ -4,12 +4,10 @@
 
 #include <chrono>
 #include <cstdio>
-#include <optional>
 #include <thread>
 #include <utility>
 
 #include "order_codec.h"
-#include "time_util.h"  // SteadyMillis
 #include "tw_market.h"
 
 namespace kairos::exec {
