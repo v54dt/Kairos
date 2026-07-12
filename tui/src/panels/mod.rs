@@ -1,4 +1,5 @@
 mod book;
+mod confirm_banner;
 mod data;
 mod feed;
 mod fills;

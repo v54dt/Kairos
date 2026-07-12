@@ -1,6 +1,7 @@
 pub mod age;
 pub mod archive;
 pub mod blacklist;
+pub mod confirm;
 pub mod feed;
 pub mod halt;
 pub mod hub_status;

@@ -150,58 +150,35 @@ pub fn begin(verb: Verb, unit: &str) -> ConfirmPrompt {
 /// Enter with the buffer equal to the unit stem; simple confirm fires only on
 /// 'y'/'Y'. Anything else, or Cancel (Esc), returns to `Idle` without acting.
 pub fn handle_key(prompt: &ConfirmPrompt, key: HaltKey) -> (ConfirmPrompt, Option<Action>) {
+    use crate::sources::confirm::{Transition, simple_step, typed_step};
     match prompt {
         ConfirmPrompt::Idle => (ConfirmPrompt::Idle, None),
-        ConfirmPrompt::TypedConfirm { verb, unit, buf } => match key {
-            HaltKey::Cancel => (ConfirmPrompt::Idle, None),
-            HaltKey::Enter => {
-                if buf == unit_stem(unit) {
-                    (
-                        ConfirmPrompt::Idle,
-                        Some(Action {
-                            verb: *verb,
-                            unit: unit.clone(),
-                        }),
-                    )
-                } else {
-                    (ConfirmPrompt::Idle, None)
-                }
-            }
-            HaltKey::Backspace => {
-                let mut b = buf.clone();
-                b.pop();
-                (
+        ConfirmPrompt::TypedConfirm { verb, unit, buf } => {
+            match typed_step(buf, unit_stem(unit), key) {
+                Transition::Edit(b) => (
                     ConfirmPrompt::TypedConfirm {
                         verb: *verb,
                         unit: unit.clone(),
                         buf: b,
                     },
                     None,
-                )
-            }
-            HaltKey::Char(c) => {
-                let mut b = buf.clone();
-                b.push(c);
-                (
-                    ConfirmPrompt::TypedConfirm {
+                ),
+                Transition::Resolve(fire) => (
+                    ConfirmPrompt::Idle,
+                    fire.then(|| Action {
                         verb: *verb,
                         unit: unit.clone(),
-                        buf: b,
-                    },
-                    None,
-                )
+                    }),
+                ),
             }
-        },
-        ConfirmPrompt::SimpleConfirm { verb, unit } => match key {
-            HaltKey::Char('y') | HaltKey::Char('Y') => (
-                ConfirmPrompt::Idle,
-                Some(Action {
-                    verb: *verb,
-                    unit: unit.clone(),
-                }),
-            ),
-            _ => (ConfirmPrompt::Idle, None),
-        },
+        }
+        ConfirmPrompt::SimpleConfirm { verb, unit } => (
+            ConfirmPrompt::Idle,
+            simple_step(key).then(|| Action {
+                verb: *verb,
+                unit: unit.clone(),
+            }),
+        ),
     }
 }
 

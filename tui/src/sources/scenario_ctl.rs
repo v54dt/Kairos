@@ -88,51 +88,30 @@ pub fn handle_key(
     prompt: &ScenarioPrompt,
     key: HaltKey,
 ) -> (ScenarioPrompt, Option<ScenarioAction>) {
+    use crate::sources::confirm::{Transition, simple_step, typed_step};
     match prompt {
         ScenarioPrompt::Idle => (ScenarioPrompt::Idle, None),
-        ScenarioPrompt::TypedStart { name, buf } => match key {
-            HaltKey::Cancel => (ScenarioPrompt::Idle, None),
-            HaltKey::Enter => {
-                if buf == name && !name.is_empty() {
-                    (
-                        ScenarioPrompt::Idle,
-                        Some(ScenarioAction::Start {
-                            name: name.clone(),
-                            mode: Mode::Live,
-                        }),
-                    )
-                } else {
-                    (ScenarioPrompt::Idle, None)
-                }
-            }
-            HaltKey::Backspace => {
-                let mut b = buf.clone();
-                b.pop();
-                (rebuild_typed(name, b), None)
-            }
-            HaltKey::Char(c) => {
-                let mut b = buf.clone();
-                b.push(c);
-                (rebuild_typed(name, b), None)
-            }
-        },
-        ScenarioPrompt::SimpleStart { name, mode } => match key {
-            HaltKey::Char('y') | HaltKey::Char('Y') => (
+        ScenarioPrompt::TypedStart { name, buf } => match typed_step(buf, name, key) {
+            Transition::Edit(b) => (rebuild_typed(name, b), None),
+            Transition::Resolve(fire) => (
                 ScenarioPrompt::Idle,
-                Some(ScenarioAction::Start {
+                fire.then(|| ScenarioAction::Start {
                     name: name.clone(),
-                    mode: *mode,
+                    mode: Mode::Live,
                 }),
             ),
-            _ => (ScenarioPrompt::Idle, None),
         },
-        ScenarioPrompt::SimpleStop { name, .. } => match key {
-            HaltKey::Char('y') | HaltKey::Char('Y') => (
-                ScenarioPrompt::Idle,
-                Some(ScenarioAction::Stop { name: name.clone() }),
-            ),
-            _ => (ScenarioPrompt::Idle, None),
-        },
+        ScenarioPrompt::SimpleStart { name, mode } => (
+            ScenarioPrompt::Idle,
+            simple_step(key).then(|| ScenarioAction::Start {
+                name: name.clone(),
+                mode: *mode,
+            }),
+        ),
+        ScenarioPrompt::SimpleStop { name, .. } => (
+            ScenarioPrompt::Idle,
+            simple_step(key).then(|| ScenarioAction::Stop { name: name.clone() }),
+        ),
     }
 }
 

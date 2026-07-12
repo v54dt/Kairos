@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::Fetch;
+use crate::panels::confirm_banner;
 use crate::panels::listview;
 use crate::panels::{error_line, loading_line};
 use crate::sources::service::{ConfirmPrompt, ServiceUi};
@@ -45,22 +46,22 @@ fn legend_line() -> Line<'static> {
 }
 
 fn footer_lines(ui: &ServiceUi) -> Vec<Line<'static>> {
-    let cyan = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
-    let mut lines = match &ui.confirm {
+    let lines = match &ui.confirm {
         ConfirmPrompt::Idle => vec![legend_line()],
         ConfirmPrompt::TypedConfirm { verb, unit, buf } => {
             let stem = unit.rsplit_once('.').map(|(s, _)| s).unwrap_or(unit);
             let red = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-            vec![
-                Line::from(Span::styled(format!("{} {unit}", verb.as_str()), red)),
+            confirm_banner::typed_confirm_lines(
+                Some(Line::from(Span::styled(
+                    format!("{} {unit}", verb.as_str()),
+                    red,
+                ))),
                 Line::from(Span::styled(
                     format!("type '{stem}' and Enter to confirm   [Esc] cancel"),
                     red,
                 )),
-                Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
-            ]
+                buf,
+            )
         }
         ConfirmPrompt::SimpleConfirm { verb, unit } => vec![Line::from(Span::styled(
             format!("{} {unit}?  [y/N]", verb.as_str()),
@@ -69,13 +70,7 @@ fn footer_lines(ui: &ServiceUi) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         ))],
     };
-    if let Some(msg) = &ui.last_result {
-        lines.push(Line::from(Span::styled(
-            msg.clone(),
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-    lines
+    confirm_banner::with_result(lines, &ui.last_result)
 }
 
 pub fn render(frame: &mut Frame, area: Rect, state: &Fetch<Vec<UnitStatus>>, ui: &ServiceUi) {

@@ -475,6 +475,77 @@ pub fn tab_for(event: &Event, current: Tab) -> Option<Tab> {
     None
 }
 
+/// Which run-loop handler claims a key event. Encoding the cascade as data makes
+/// the load-bearing priority testable and lifts it out of a nested if/else chain.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Route {
+    Halt,
+    Service,
+    Scenario,
+    Drill,
+    Overview(OverviewKey),
+    Scenarios(ScenariosKey),
+    Fills(FillsKey),
+    Risk(RiskKey),
+    Quit,
+    Tab(Tab),
+    Ignore,
+}
+
+/// Route one key event through the priority cascade, in the exact order the old
+/// `run()` if/else chain used:
+///   1 halt prompt, 2 service confirm, 3 scenario confirm (all claim the key on
+///   the outer `is_active` predicate regardless of which key it is), 4 drill
+///   (quit keys resolve first, else the drill swallows the key), then the tab
+///   key layers 5 overview, 6 scenarios, 7 fills, 8 risk, 9 global quit,
+///   10 tab switch. A confirm layer shadows every lower layer, so e.g. an active
+///   halt prompt swallows overview keys and quit keys alike (Ctrl+C/q become a
+///   buffer char, never a quit) — this preserves today's behavior exactly.
+pub fn route(
+    prompt_active: bool,
+    confirm_active: bool,
+    scen_active: bool,
+    drill_open: bool,
+    tab: Tab,
+    event: &Event,
+    key: &KeyEvent,
+) -> Route {
+    if prompt_active {
+        return Route::Halt;
+    }
+    if confirm_active {
+        return Route::Service;
+    }
+    if scen_active {
+        return Route::Scenario;
+    }
+    if drill_open {
+        if should_quit(event) {
+            return Route::Quit;
+        }
+        return Route::Drill;
+    }
+    if let Some(ok) = overview_key(tab, key) {
+        return Route::Overview(ok);
+    }
+    if let Some(sk) = scenarios_key(tab, key) {
+        return Route::Scenarios(sk);
+    }
+    if let Some(fk) = fills_key(tab, key) {
+        return Route::Fills(fk);
+    }
+    if let Some(rk) = risk_tab_key(tab, key) {
+        return Route::Risk(rk);
+    }
+    if should_quit(event) {
+        return Route::Quit;
+    }
+    if let Some(next) = tab_for(event, tab) {
+        return Route::Tab(next);
+    }
+    Route::Ignore
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,5 +991,228 @@ mod tests {
             mode: supervisor::Mode::Live,
         });
         assert!(live.contains("\"mode\":\"live\""));
+    }
+
+    fn route_key(
+        prompt: bool,
+        confirm: bool,
+        scen: bool,
+        drill: bool,
+        tab: Tab,
+        code: KeyCode,
+        mods: KeyModifiers,
+    ) -> Route {
+        let k = press(code, mods);
+        route(prompt, confirm, scen, drill, tab, &Event::Key(k), &k)
+    }
+
+    #[test]
+    fn halt_prompt_swallows_overview_keys() {
+        // 'r' is an Overview action, but an active halt prompt shadows it.
+        assert_eq!(
+            route_key(
+                true,
+                false,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Char('r'),
+                KeyModifiers::NONE,
+            ),
+            Route::Halt
+        );
+    }
+
+    #[test]
+    fn service_confirm_blocks_journal_drill_open() {
+        // Enter opens the journal drill on Overview, but a service confirm shadows it.
+        assert_eq!(
+            route_key(
+                false,
+                true,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            ),
+            Route::Service
+        );
+    }
+
+    #[test]
+    fn scenario_confirm_blocks_tab_switches() {
+        for code in [KeyCode::Tab, KeyCode::Char('2')] {
+            assert_eq!(
+                route_key(
+                    false,
+                    false,
+                    true,
+                    false,
+                    Tab::Scenarios,
+                    code,
+                    KeyModifiers::NONE,
+                ),
+                Route::Scenario,
+                "{code:?} must be swallowed by the scenario confirm"
+            );
+        }
+    }
+
+    #[test]
+    fn drill_swallows_overview_action_chars() {
+        for c in ['r', 's', 'x', 'f'] {
+            assert_eq!(
+                route_key(
+                    false,
+                    false,
+                    false,
+                    true,
+                    Tab::Overview,
+                    KeyCode::Char(c),
+                    KeyModifiers::NONE,
+                ),
+                Route::Drill,
+                "{c} must route to the drill, not a service action"
+            );
+        }
+    }
+
+    #[test]
+    fn quit_matrix_matches_todays_behavior() {
+        // In a drill the quit keys resolve first.
+        for (code, mods) in [
+            (KeyCode::Char('q'), KeyModifiers::NONE),
+            (KeyCode::Char('Q'), KeyModifiers::NONE),
+            (KeyCode::Char('c'), KeyModifiers::CONTROL),
+        ] {
+            assert_eq!(
+                route_key(false, false, false, true, Tab::Overview, code, mods),
+                Route::Quit,
+                "{code:?} in a drill must quit"
+            );
+        }
+        // With no modal, quit keys reach the global quit layer.
+        assert_eq!(
+            route_key(
+                false,
+                false,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+            ),
+            Route::Quit
+        );
+        assert_eq!(
+            route_key(
+                false,
+                false,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            ),
+            Route::Quit
+        );
+        // Inside a confirm, quit keys are swallowed by the confirm layer (they
+        // become a buffer char via to_halt_key); they never reach the quit layer.
+        assert_eq!(
+            route_key(
+                true,
+                false,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+            ),
+            Route::Halt
+        );
+        assert_eq!(
+            route_key(
+                true,
+                false,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            ),
+            Route::Halt
+        );
+        assert_eq!(
+            route_key(
+                false,
+                true,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+            ),
+            Route::Service
+        );
+        assert_eq!(
+            route_key(
+                false,
+                false,
+                true,
+                false,
+                Tab::Scenarios,
+                KeyCode::Char('q'),
+                KeyModifiers::NONE,
+            ),
+            Route::Scenario
+        );
+    }
+
+    #[test]
+    fn no_modal_passes_through_to_the_tab_key_layers() {
+        assert_eq!(
+            route_key(
+                false,
+                false,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Char('r'),
+                KeyModifiers::NONE,
+            ),
+            Route::Overview(OverviewKey::Act(Verb::Restart))
+        );
+        assert_eq!(
+            route_key(
+                false,
+                false,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Tab,
+                KeyModifiers::NONE,
+            ),
+            Route::Tab(Tab::FeedsBooks)
+        );
+    }
+
+    // Priority-swap canary: if the halt and service layers were reordered, this
+    // would return Route::Service and grow the service buffer instead of the halt
+    // buffer. Halt must win when both prompts are somehow active.
+    #[test]
+    fn route_prefers_halt_over_service_when_both_active() {
+        assert_eq!(
+            route_key(
+                true,
+                true,
+                false,
+                false,
+                Tab::Overview,
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+            ),
+            Route::Halt
+        );
     }
 }

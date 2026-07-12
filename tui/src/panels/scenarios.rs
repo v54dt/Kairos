@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::panels::confirm_banner;
 use crate::panels::listview;
 use crate::sources::age::{format_age, format_fill_age};
 use crate::sources::hub_status::HubReport;
@@ -154,26 +155,23 @@ fn legend_line() -> Line<'static> {
 }
 
 fn actions_lines(ui: &ScenarioUi) -> Vec<Line<'static>> {
-    let cyan = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
     let red = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
     let yellow = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
-    let mut lines = match &ui.confirm {
+    let lines = match &ui.confirm {
         ScenarioPrompt::Idle => vec![legend_line()],
-        ScenarioPrompt::TypedStart { name, buf } => vec![
-            Line::from(Span::styled(
+        ScenarioPrompt::TypedStart { name, buf } => confirm_banner::typed_confirm_lines(
+            Some(Line::from(Span::styled(
                 format!("START LIVE {name} — REAL orders"),
                 red,
-            )),
+            ))),
             Line::from(Span::styled(
                 format!("type '{name}' and Enter to confirm   [Esc] cancel"),
                 red,
             )),
-            Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
-        ],
+            buf,
+        ),
         ScenarioPrompt::SimpleStart { name, mode } => {
             let label = if *mode == crate::sources::supervisor::Mode::Test {
                 "TEST"
@@ -193,13 +191,7 @@ fn actions_lines(ui: &ScenarioUi) -> Vec<Line<'static>> {
             ))]
         }
     };
-    if let Some(msg) = &ui.last_result {
-        lines.push(Line::from(Span::styled(
-            msg.clone(),
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-    lines
+    confirm_banner::with_result(lines, &ui.last_result)
 }
 
 fn age_from_us(now: i64, event_us: i64) -> String {

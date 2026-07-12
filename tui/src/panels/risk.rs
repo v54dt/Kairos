@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, Gauge, Paragraph};
 
 use crate::app::Fetch;
 use crate::format::format_price;
+use crate::panels::confirm_banner;
 use crate::sources::age::format_age;
 use crate::sources::blacklist::BlacklistFreshness;
 use crate::sources::halt::{HaltPrompt, HaltUi};
@@ -222,35 +223,33 @@ fn kill_switch_lines(halt: &HaltUi) -> Vec<Line<'static>> {
     let cyan = Style::default()
         .fg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::DarkGray);
-    let mut lines = match &halt.prompt {
+    let lines = match &halt.prompt {
         HaltPrompt::Idle => vec![Line::from(vec![
             Span::styled("[k]", cyan),
             Span::raw(" HALT (arm adminHalt)   "),
             Span::styled("[c]", cyan),
             Span::raw(" clear (resume)"),
         ])],
-        HaltPrompt::ConfirmHalt(buf) => vec![
+        HaltPrompt::ConfirmHalt(buf) => confirm_banner::typed_confirm_lines(
+            None,
             Line::from(Span::styled(
                 "type HALT and Enter to arm adminHalt   [Esc] cancel",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             )),
-            Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
-        ],
-        HaltPrompt::ConfirmResume(buf) => vec![
+            buf,
+        ),
+        HaltPrompt::ConfirmResume(buf) => confirm_banner::typed_confirm_lines(
+            None,
             Line::from(Span::styled(
                 "type RESUME and Enter to clear the halt   [Esc] cancel",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             )),
-            Line::from(vec![Span::raw("> "), Span::styled(buf.clone(), cyan)]),
-        ],
+            buf,
+        ),
     };
-    if let Some(msg) = &halt.last_result {
-        lines.push(Line::from(Span::styled(msg.clone(), dim)));
-    }
-    lines
+    confirm_banner::with_result(lines, &halt.last_result)
 }
 
 pub fn render(
