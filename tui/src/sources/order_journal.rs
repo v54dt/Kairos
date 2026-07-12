@@ -528,6 +528,73 @@ mod tests {
         assert!(rows >= 10, "fixture shrank: {rows}");
     }
 
+    // Shared cross-language golden: parse every line of journal_corpus.jsonl (the
+    // exact C++ writer output) and assert the decoded fields match journal_expected.txt
+    // plus the hostile-string round-trips. See schema/testdata/README.
+    #[test]
+    fn golden_journal_corpus_decodes() {
+        const CORPUS: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../schema/testdata/journal_corpus.jsonl"
+        ));
+        const EXPECTED: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../schema/testdata/journal_expected.txt"
+        ));
+        let lines: Vec<&str> = CORPUS.lines().filter(|l| !l.is_empty()).collect();
+        let rows: Vec<&str> = EXPECTED
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        assert_eq!(lines.len(), rows.len(), "corpus/expected length mismatch");
+
+        let opt = |v: &str| (v != "-").then(|| v.parse::<i64>().unwrap());
+        for (line, row) in lines.iter().zip(rows.iter()) {
+            let f: Vec<&str> = row.split('|').collect();
+            assert_eq!(f.len(), 4, "bad expected row: {row}");
+            assert!(parse_journal_line(line).is_some(), "unparsable: {line}");
+            assert_eq!(
+                json_str(line, "type").as_deref(),
+                Some(f[0]),
+                "type: {line}"
+            );
+            if let Some(want) = opt(f[1]) {
+                assert_eq!(json_int(line, "shares"), Some(want), "shares: {line}");
+            }
+            if let Some(want) = opt(f[2]) {
+                assert_eq!(json_int(line, "price"), Some(want), "price: {line}");
+            }
+            if let Some(want) = opt(f[3]) {
+                assert_eq!(json_int(line, "ok"), Some(want), "ok: {line}");
+            }
+        }
+
+        // Hostile ack `err` (line 4) round-trips exactly through the C++ escaper and
+        // this parser: newline, tab, quote, backslash, a C0 control (U+001C), CJK.
+        let hostile = "reject:\nline2\ttab \"q\" \\slash \u{1c} sep 台積";
+        assert_eq!(json_str(lines[3], "err").as_deref(), Some(hostile));
+
+        // Truncation cap (line 5): the escaped err ends with the truncation marker.
+        assert!(
+            json_str(lines[4], "err")
+                .unwrap()
+                .ends_with("...(truncated)")
+        );
+
+        // FINDING: OrderJournal::LogAck does NOT JsonEscape `id`, so a quote in the
+        // id produces malformed JSON; the reader silently truncates at the raw quote.
+        // (OrderFlowJournal::AppendAck escapes correctly -- see line 4 above.)
+        assert_eq!(json_str(lines[10], "id").as_deref(), Some("bad"));
+
+        // aggregate_file over the whole corpus: only "fill"/"cancel" types count.
+        let agg = aggregate_file("2330-Buy-20260101", CORPUS);
+        assert_eq!(agg.fills, 2);
+        assert_eq!(agg.filled_shares, 3000);
+        assert_eq!(agg.filled_notional_cents, 174_200_000_i128);
+        assert_eq!(agg.cancels, 1);
+        assert_eq!(agg.other, 8);
+    }
+
     #[test]
     fn fills_one_row_per_fill_with_side_from_sign() {
         let text = "\

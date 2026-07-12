@@ -366,6 +366,15 @@ target_compile_definitions(
     KAIROS_TRADING_DAYS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/trading_days.txt")
 add_test(NAME test_trading_days COMMAND test_trading_days)
 
+add_executable(test_journal_corpus tests/test_journal_corpus.cpp)
+target_link_libraries(test_journal_corpus PRIVATE kairos_order_journal)
+target_compile_definitions(
+  test_journal_corpus
+  PRIVATE
+    KAIROS_JOURNAL_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/journal_corpus.jsonl"
+)
+add_test(NAME test_journal_corpus COMMAND test_journal_corpus)
+
 # Bound every test so a hung child or wedged socket cannot stall CI forever. The process-spawning
 # and opt-in e2e/fault targets fork real binaries, so they get larger-but-still-bounded budgets over
 # the 60s default.
