@@ -334,6 +334,19 @@ add_executable(test_engine tests/test_engine.cpp)
 target_link_libraries(test_engine PRIVATE kairos_engine kairos_sim_backend)
 add_test(NAME test_engine COMMAND test_engine)
 
+add_executable(test_sell_cap_ledger tests/test_sell_cap_ledger.cpp src/engine/sell_cap_ledger.cpp)
+target_include_directories(test_sell_cap_ledger PRIVATE ${KAIROS_INC})
+add_test(NAME test_sell_cap_ledger COMMAND test_sell_cap_ledger)
+
+add_executable(test_failure_halt tests/test_failure_halt.cpp src/engine/failure_halt.cpp)
+target_include_directories(test_failure_halt PRIVATE ${KAIROS_INC})
+add_test(NAME test_failure_halt COMMAND test_failure_halt)
+
+add_executable(test_dashboard_reporter tests/test_dashboard_reporter.cpp
+                                       src/engine/dashboard_reporter.cpp)
+target_link_libraries(test_dashboard_reporter PRIVATE kairos_dashboard)
+add_test(NAME test_dashboard_reporter COMMAND test_dashboard_reporter)
+
 add_executable(test_event tests/test_event.cpp)
 target_include_directories(test_event PRIVATE ${KAIROS_INC})
 add_test(NAME test_event COMMAND test_event)
