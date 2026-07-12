@@ -68,7 +68,7 @@ add_library(kairos_hub_status src/order/hub_status.cpp)
 target_include_directories(kairos_hub_status PUBLIC ${KAIROS_INC})
 
 # Order hub routing core (socket-agnostic): routes client orders <-> one backend.
-add_library(kairos_order_hub src/order/order_hub.cpp)
+add_library(kairos_order_hub src/order/order_hub.cpp src/order/risk_gate.cpp)
 target_include_directories(kairos_order_hub PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_order_hub PUBLIC kairos_order_codec kairos_hub_status
                                               kairos_order_journal kairos_scenario)

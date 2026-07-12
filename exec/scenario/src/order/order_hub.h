@@ -14,6 +14,7 @@
 
 #include "hub_status.h"
 #include "order_backend.h"
+#include "risk_gate.h"  // RiskConfig, Route, DupEntry, RiskGate
 #include "scenario.h"   // Side
 #include "tw_market.h"  // Cents
 
@@ -29,25 +30,9 @@ class OrderHub {
   // Deliver a serialized OrderEnvelope to client `client`.
   using SendFn = std::function<void(int client, const std::vector<std::uint8_t>&)>;
 
-  // Account risk-gate limits. All numeric caps are 0 = disabled; notional caps
-  // are in Cents. self_match_protection defaults on so it is fail-closed by default.
-  struct RiskConfig {
-    long max_account_notional_cents = 0;
-    int max_open_orders_per_client = 0;
-    long max_open_notional_per_client_cents = 0;
-    bool self_match_protection = true;
-    long max_order_shares = 0;     // per-submit share hard cap; 0 = disabled
-    long dup_order_window_ms = 0;  // reject an identical resubmit within this window; 0 = disabled
-    long price_collar_pct = 0;     // reject a price this far from the last fill; 0 = disabled
-    std::string halt_file_path;
-    // Journal dir shared with the traders; a fill the hub cannot route (client
-    // gone) is appended here so a restarted trader replays it. Empty = disabled.
-    std::string journal_dir;
-    // Also write the per-day hub-orders-<day>.jsonl audit stream (every submit/
-    // ack/fill/cancel the hub processes) into journal_dir. On when journal_dir
-    // resolves; a best-effort stream separate from the replayed run-state journal.
-    bool order_flow_journal = true;
-  };
+  // The gate's account risk-gate limits live in risk_gate.h; keep the historic
+  // OrderHub::RiskConfig spelling for every existing construction site.
+  using RiskConfig = kairos::exec::RiskConfig;
 
   OrderHub(OrderBackend* backend, SendFn send);
   OrderHub(OrderBackend* backend, SendFn send, RiskConfig risk);
@@ -84,30 +69,6 @@ class OrderHub {
   static constexpr std::size_t kOrderMetaCap = 8192;
 
  private:
-  // Lifecycle of one live order, derived from the routing the hub already does.
-  struct Route {
-    int client = -1;
-    long shares_remaining = 0;
-    bool acked = false;
-    bool closed = false;  // fully filled or successfully cancelled
-    std::string symbol;
-    Side side = Side::kBuy;
-    Cents price = 0;  // reserved open notional == price * shares_remaining
-  };
-
-  // One admitted-and-still-live submit, kept in a bounded ring so a runaway
-  // strategy that resubmits the same (symbol, side, shares, price) within the
-  // window is caught. Removed when the order reaches a terminal state so a
-  // legitimate sequential re-order after a fill/cancel/reject is not blocked.
-  struct DupEntry {
-    std::string id;
-    std::string symbol;
-    Side side = Side::kBuy;
-    long shares = 0;
-    Cents price = 0;
-    long mono_ms = 0;
-  };
-
   // The (symbol, side) of one order, kept past its route so a fill that arrives
   // after the owning client is gone can still be named for the journal.
   // shares_accounted tracks how many of shares_total already reached the journal
@@ -146,9 +107,6 @@ class OrderHub {
   void ReleaseOpen(Route& r);      // free a route's reserved open notional once; caller holds mu_
   long CurrentTradingDay() const;  // caller holds mu_
   long NowMonoMs() const;          // steady-clock ms, or the test override
-  // Prune the dup ring to the window and report whether an identical admitted
-  // submit is still within it. Caller holds mu_ and has checked the window > 0.
-  bool DuplicateSubmit(const OrderSubmitMsg& o, long now_ms);
   // Drop the dup-ring entry for a now-terminal order id, if present. Caller holds mu_.
   void RemoveDupEntry(const std::string& id);
   // Track/untrack an order's (symbol, side) for post-death fill journaling. Kept
@@ -156,12 +114,6 @@ class OrderHub {
   // Caller holds mu_.
   void RememberOrder(const std::string& id, const std::string& symbol, Side side, long shares);
   void ForgetOrder(const std::string& id);
-  // The account's last fill price for `symbol` if one exists (the collar
-  // reference); false at cold start (no fill yet). Caller holds mu_.
-  bool CollarReference(const std::string& symbol, Cents* ref) const;
-  // True if the submit would cross this account's own open opposite-side order on
-  // the same symbol (證交法 155-1-5); *other_id is the crossed order. Caller holds mu_.
-  bool SelfMatchCross(const OrderSubmitMsg& o, std::string* other_id) const;
 
   OrderBackend* backend_;
   SendFn send_;
@@ -186,6 +138,7 @@ class OrderHub {
   // The hub has no quote feed, so fills are the only price it observes.
   std::unordered_map<std::string, Cents> last_fill_price_cents_;
   RiskConfig risk_;
+  RiskGate gate_{risk_};  // stateless money-guard over the state above; caller holds mu_
   std::atomic<bool> admin_halt_{false};
 };
 
