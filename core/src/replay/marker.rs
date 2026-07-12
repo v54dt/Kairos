@@ -88,7 +88,7 @@ pub fn ensure_no_active_replay(aeron_dir: &str) -> anyhow::Result<()> {
 /// then `getpwuid`, then `"default"` — so the guard still names the real live dir
 /// when `$USER` is unset (systemd/cron/container), where Aeron uses `getpwuid`.
 pub fn default_aeron_dir() -> Option<String> {
-    if let Some(d) = std::env::var("AERON_DIR").ok().filter(|d| !d.is_empty()) {
+    if let Some(d) = crate::config::env_nonempty("AERON_DIR") {
         return Some(d);
     }
     Some(format!("/dev/shm/aeron-{}", current_username()))
@@ -106,7 +106,7 @@ pub fn effective_stack_dir(explicit: Option<&str>) -> Option<String> {
 /// The current user name, matching Aeron's `aeron_username()`: `$USER` first, then
 /// the passwd entry for the real uid, then the literal `"default"`.
 pub fn current_username() -> String {
-    if let Some(u) = std::env::var("USER").ok().filter(|u| !u.is_empty()) {
+    if let Some(u) = crate::config::env_nonempty("USER") {
         return u;
     }
     // SAFETY: getpwuid returns a pointer into a static buffer valid until the next

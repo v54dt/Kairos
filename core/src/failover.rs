@@ -17,8 +17,8 @@
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::time::Instant;
 
-const DEFAULT_STALE_MS: u64 = 2_000;
-const DEFAULT_RECOVER_HOLD_MS: u64 = 5_000;
+pub const DEFAULT_STALE_MS: u64 = 2_000;
+pub const DEFAULT_RECOVER_HOLD_MS: u64 = 5_000;
 
 /// A change of the active serving source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,8 +57,9 @@ impl Selector {
     /// Build from a priority list and the `KAIROS_FAILOVER_STALE_MS` /
     /// `KAIROS_FAILOVER_RECOVER_HOLD_MS` env knobs.
     pub fn from_env(priority: Vec<u16>) -> Self {
-        let stale_ms = env_ms("KAIROS_FAILOVER_STALE_MS", DEFAULT_STALE_MS);
-        let recover_ms = env_ms("KAIROS_FAILOVER_RECOVER_HOLD_MS", DEFAULT_RECOVER_HOLD_MS);
+        let stale_ms = crate::config::env_parsed("KAIROS_FAILOVER_STALE_MS", DEFAULT_STALE_MS);
+        let recover_ms =
+            crate::config::env_parsed("KAIROS_FAILOVER_RECOVER_HOLD_MS", DEFAULT_RECOVER_HOLD_MS);
         Self::new(priority, stale_ms * 1_000, recover_ms * 1_000)
     }
 
@@ -187,14 +188,6 @@ impl Selector {
             None
         }
     }
-}
-
-fn env_ms(key: &str, default: u64) -> u64 {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|&v| v > 0)
-        .unwrap_or(default)
 }
 
 #[cfg(test)]

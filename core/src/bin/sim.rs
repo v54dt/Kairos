@@ -26,6 +26,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use kairos_core::config::env_nonempty;
 use kairos_core::replay::marker::effective_stack_dir;
 use kairos_core::sim::cli::{self, Opts};
 use kairos_core::sim::paths::SimPaths;
@@ -71,10 +72,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn env_opt(key: &str) -> Option<String> {
-    std::env::var(key).ok().filter(|s| !s.is_empty())
-}
-
 /// Resolve the sim namespace and enforce isolation against the live pipeline. A
 /// `--flag` override wins over the matching `KAIROS_SIM_*` env, which wins over the
 /// namespaced default.
@@ -82,15 +79,15 @@ fn resolve_isolated(opts: &Opts) -> anyhow::Result<SimPaths> {
     let aeron = opts
         .aeron_dir
         .clone()
-        .or_else(|| env_opt("KAIROS_SIM_AERON_DIR"));
+        .or_else(|| env_nonempty("KAIROS_SIM_AERON_DIR"));
     let quote = opts
         .quote_sock
         .clone()
-        .or_else(|| env_opt("KAIROS_SIM_QUOTE_SOCK"));
+        .or_else(|| env_nonempty("KAIROS_SIM_QUOTE_SOCK"));
     let order = opts
         .order_sock
         .clone()
-        .or_else(|| env_opt("KAIROS_SIM_ORDER_SOCK"));
+        .or_else(|| env_nonempty("KAIROS_SIM_ORDER_SOCK"));
     let paths = SimPaths::resolve_with(
         aeron.as_deref(),
         quote.as_deref(),
@@ -124,11 +121,10 @@ fn run(opts: &Opts, replay: Option<(Vec<PathBuf>, Option<f64>)>) -> anyhow::Resu
     };
     let driver_bin = locate_bin(&bin_dir, "kairos-driver")?;
     let core_bin = locate_bin(&bin_dir, "kairos-core")?;
-    let hubd_override = opts.hubd.clone().or_else(|| {
-        std::env::var("KAIROS_SIM_HUBD")
-            .ok()
-            .filter(|s| !s.is_empty())
-    });
+    let hubd_override = opts
+        .hubd
+        .clone()
+        .or_else(|| env_nonempty("KAIROS_SIM_HUBD"));
     let hubd_bin = resolve_hubd(hubd_override.as_deref(), &exe)?;
     let replayd_bin = match &replay {
         Some(_) => Some(locate_bin(&bin_dir, "kairos-replayd")?),
