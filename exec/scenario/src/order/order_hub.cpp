@@ -12,6 +12,7 @@
 #include "enum_names.h"  // SideName/BoardName/MarketName
 #include "order_codec.h"
 #include "order_journal.h"  // AppendFill + trading-day helpers (shared journal format)
+#include "time_util.h"      // SystemNowUs / SteadyNowMs
 #include "tw_market.h"      // CentsToString
 
 namespace kairos::exec {
@@ -19,12 +20,6 @@ namespace kairos::exec {
 namespace {
 
 constexpr std::size_t kDupRingCap = 1024;  // hard bound on the dup ring under a burst
-
-long NowUs() {
-  return std::chrono::duration_cast<std::chrono::microseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
 
 // prefix = the "k<pid>" head of a user_defined_id (k<pid>-<seq>); pid its digits.
 void ParseId(const std::string& id, std::string* prefix, long* pid) {
@@ -42,7 +37,7 @@ OrderHub::OrderHub(OrderBackend* backend, SendFn send)
 OrderHub::OrderHub(OrderBackend* backend, SendFn send, RiskConfig risk)
     : backend_(backend),
       send_(std::move(send)),
-      start_epoch_s_(NowUs() / 1000000),
+      start_epoch_s_(SystemNowUs() / 1000000),
       current_trading_day_(TradingDayNumUtc8(std::chrono::system_clock::now())),
       risk_(std::move(risk)) {}
 
@@ -53,9 +48,7 @@ long OrderHub::CurrentTradingDay() const {
 
 long OrderHub::NowMonoMs() const {
   if (forced_mono_ms_ >= 0) return forced_mono_ms_;
-  return std::chrono::duration_cast<std::chrono::milliseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
+  return SteadyNowMs();
 }
 
 void OrderHub::RemoveDupEntry(const std::string& id) {
@@ -120,7 +113,7 @@ void OrderHub::Stop() { backend_->Disconnect(); }
 void OrderHub::OnClientConnect(int client) {
   std::lock_guard<std::mutex> lock(mu_);
   ClientStats& cs = clients_[client];
-  if (cs.last_activity_us == 0) cs.last_activity_us = NowUs();
+  if (cs.last_activity_us == 0) cs.last_activity_us = SystemNowUs();
 }
 
 void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t len) {
@@ -171,7 +164,7 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
         if (cs.prefix.empty()) ParseId(o.id, &cs.prefix, &cs.pid);
         submit_prefix = cs.prefix;
         ++cs.submitted;
-        cs.last_activity_us = NowUs();
+        cs.last_activity_us = SystemNowUs();
         if (risk_.dup_order_window_ms > 0) {
           dup_ring_.push_back({o.id, o.symbol, o.side, o.shares, o.price, now_ms});
           if (dup_ring_.size() > kDupRingCap) dup_ring_.pop_front();
@@ -252,7 +245,7 @@ void OrderHub::OnAck(const std::string& id, bool ok, const std::string& err) {
         ForgetOrder(id);     // rejected: it will never fill, no journaling needed
       }
       auto cs = clients_.find(client);
-      if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
+      if (cs != clients_.end()) cs->second.last_activity_us = SystemNowUs();
     }
   }
   if (client >= 0) {
@@ -305,7 +298,7 @@ void OrderHub::OnFill(const std::string& id, const Fill& f) {
       }
       if (cs != clients_.end()) {
         ++cs->second.filled;
-        cs->second.last_activity_us = NowUs();
+        cs->second.last_activity_us = SystemNowUs();
       }
     } else {
       auto m = order_meta_.find(id);
@@ -381,7 +374,7 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
         // post-cancel fill must stay nameable for the journal if the trader exits.
         if (cs != clients_.end()) ++cs->second.cancelled;
       }
-      if (cs != clients_.end()) cs->second.last_activity_us = NowUs();
+      if (cs != clients_.end()) cs->second.last_activity_us = SystemNowUs();
     }
   }
   if (client >= 0) {
@@ -401,7 +394,7 @@ void OrderHub::OnCancel(const std::string& id, bool ok) {
 HubStatus OrderHub::CaptureStatus() const {
   HubStatus s;
   s.start_epoch_s = start_epoch_s_;
-  s.written_epoch_s = NowUs() / 1000000;
+  s.written_epoch_s = SystemNowUs() / 1000000;
   s.halted = IsHaltedNow();  // read-only access() off the hot path
   std::lock_guard<std::mutex> lock(mu_);
   s.account_open_notional_cents = account_open_notional_cents_;

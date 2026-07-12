@@ -10,15 +10,11 @@
 #include <fstream>
 #include <string>
 
+#include "time_util.h"
+
 namespace kairos::exec {
 
 namespace {
-long NowUs() {
-  return std::chrono::duration_cast<std::chrono::microseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
 // Calendar date of `tp` shifted into fixed UTC+8 (Taipei has no DST), the common
 // basis for every trading-day form below.
 std::chrono::year_month_day Utc8Date(std::chrono::system_clock::time_point tp) {
@@ -177,7 +173,7 @@ bool OrderFlowJournal::AppendSubmit(const std::string& dir, const std::string& i
                                     const std::string& funding_type,
                                     const std::string& time_in_force, long shares, Cents price) {
   return Emit(dir,
-              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"submit\",\"id\":\"" +
+              "{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"submit\",\"id\":\"" +
                   JsonEscape(id) + "\",\"prefix\":\"" + JsonEscape(prefix) + "\",\"symbol\":\"" +
                   JsonEscape(symbol) + "\",\"side\":\"" + side + "\",\"board\":\"" + board +
                   "\",\"market\":\"" + market + "\",\"fund\":\"" + JsonEscape(funding_type) +
@@ -189,8 +185,8 @@ bool OrderFlowJournal::AppendSubmit(const std::string& dir, const std::string& i
 bool OrderFlowJournal::AppendAck(const std::string& dir, const std::string& id, bool ok,
                                  const std::string& err) {
   return Emit(dir,
-              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"ack\",\"id\":\"" + JsonEscape(id) +
-                  "\",\"ok\":" + (ok ? "1" : "0") + ",\"err\":\"" +
+              "{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"ack\",\"id\":\"" +
+                  JsonEscape(id) + "\",\"ok\":" + (ok ? "1" : "0") + ",\"err\":\"" +
                   JsonEscapeCap(err, kErrEscapedCap) + "\"}\n",
               true);
 }
@@ -198,7 +194,7 @@ bool OrderFlowJournal::AppendAck(const std::string& dir, const std::string& id, 
 bool OrderFlowJournal::AppendFill(const std::string& dir, const std::string& id, long shares,
                                   Cents price, bool unroutable) {
   return Emit(dir,
-              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"fill\",\"id\":\"" +
+              "{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"fill\",\"id\":\"" +
                   JsonEscape(id) + "\",\"shares\":" + std::to_string(shares) + ",\"price\":" +
                   std::to_string(price) + ",\"unroutable\":" + (unroutable ? "1" : "0") + "}\n",
               true);
@@ -206,14 +202,14 @@ bool OrderFlowJournal::AppendFill(const std::string& dir, const std::string& id,
 
 bool OrderFlowJournal::AppendCancelReq(const std::string& dir, const std::string& id) {
   return Emit(dir,
-              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"cancel_req\",\"id\":\"" +
+              "{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"cancel_req\",\"id\":\"" +
                   JsonEscape(id) + "\"}\n",
               false);
 }
 
 bool OrderFlowJournal::AppendCancelAck(const std::string& dir, const std::string& id, bool ok) {
   return Emit(dir,
-              "{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"cancel_ack\",\"id\":\"" +
+              "{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"cancel_ack\",\"id\":\"" +
                   JsonEscape(id) + "\",\"ok\":" + (ok ? "1" : "0") + "}\n",
               true);
 }
@@ -236,17 +232,17 @@ void OrderJournal::Write(const std::string& line) {
 }
 
 void OrderJournal::LogFill(const std::string& id, long shares, Cents price) {
-  Write("{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"fill\",\"id\":\"" + id +
+  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"fill\",\"id\":\"" + id +
         "\",\"shares\":" + std::to_string(shares) + ",\"price\":" + std::to_string(price) + "}\n");
 }
 
 void OrderJournal::LogAck(const std::string& id, bool ok) {
-  Write("{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"ack\",\"id\":\"" + id +
+  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"ack\",\"id\":\"" + id +
         "\",\"ok\":" + (ok ? "1" : "0") + "}\n");
 }
 
 void OrderJournal::LogCancel(const std::string& id, bool ok) {
-  Write("{\"t\":" + std::to_string(NowUs()) + ",\"type\":\"cancel\",\"id\":\"" + id +
+  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"cancel\",\"id\":\"" + id +
         "\",\"ok\":" + (ok ? "1" : "0") + "}\n");
 }
 
