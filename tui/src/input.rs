@@ -203,6 +203,14 @@ fn bump(sel: usize, len: usize) -> usize {
     (sel + 1).min(len.saturating_sub(1))
 }
 
+fn page_up(sel: usize, page: usize) -> usize {
+    sel.saturating_sub(page)
+}
+
+fn page_down(sel: usize, page: usize, len: usize) -> usize {
+    (sel + page).min(len.saturating_sub(1))
+}
+
 pub fn apply_scenarios_key(sk: ScenariosKey, snap: &Snapshot, scen: &mut ScenState) {
     let rows = &snap.supervisor.rows;
     let len = rows.len();
@@ -222,8 +230,8 @@ pub fn apply_scenarios_key(sk: ScenariosKey, snap: &Snapshot, scen: &mut ScenSta
     match sk {
         ScenariosKey::Up => scen.sel = scen.sel.saturating_sub(1),
         ScenariosKey::Down => scen.sel = bump(scen.sel, len),
-        ScenariosKey::PageUp => scen.sel = scen.sel.saturating_sub(SCEN_PAGE),
-        ScenariosKey::PageDown => scen.sel = (scen.sel + SCEN_PAGE).min(len.saturating_sub(1)),
+        ScenariosKey::PageUp => scen.sel = page_up(scen.sel, SCEN_PAGE),
+        ScenariosKey::PageDown => scen.sel = page_down(scen.sel, SCEN_PAGE, len),
         ScenariosKey::StartPaper => begin_start(scen, scenario_ctl::begin_start_paper),
         ScenariosKey::StartLive => begin_start(scen, scenario_ctl::begin_start_live),
         ScenariosKey::StartTest => begin_start(scen, scenario_ctl::begin_start_test),
@@ -270,8 +278,8 @@ pub fn apply_fills_key(fk: FillsKey, snap: &Snapshot, sel: &mut usize) {
     match fk {
         FillsKey::Up => *sel = sel.saturating_sub(1),
         FillsKey::Down => *sel = bump(*sel, len),
-        FillsKey::PageUp => *sel = sel.saturating_sub(FILLS_PAGE),
-        FillsKey::PageDown => *sel = (*sel + FILLS_PAGE).min(len.saturating_sub(1)),
+        FillsKey::PageUp => *sel = page_up(*sel, FILLS_PAGE),
+        FillsKey::PageDown => *sel = page_down(*sel, FILLS_PAGE, len),
     }
 }
 

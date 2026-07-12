@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::Fetch;
+use crate::panels::listview;
 use crate::panels::{error_line, loading_line};
 use crate::sources::service::{ConfirmPrompt, ServiceUi};
 use crate::sources::systemd::UnitStatus;
@@ -108,11 +109,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &Fetch<Vec<UnitStatus>>, ui:
     };
 
     let inner_h = rows[0].height.saturating_sub(2) as usize;
-    let offset = if inner_h > 0 && sel >= inner_h {
-        (sel - inner_h + 1) as u16
-    } else {
-        0
-    };
+    let offset = listview::scroll_offset(inner_h, sel);
     frame.render_widget(
         Paragraph::new(lines).block(block).scroll((offset, 0)),
         rows[0],

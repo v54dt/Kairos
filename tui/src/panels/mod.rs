@@ -3,6 +3,7 @@ mod data;
 mod feed;
 mod fills;
 mod journal;
+mod listview;
 mod recorder;
 mod risk;
 mod scenarios;

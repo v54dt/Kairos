@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
+use crate::panels::listview;
 use crate::sources::age::{format_age, format_fill_age};
 use crate::sources::hub_status::HubReport;
 use crate::sources::order_journal::{ScenarioJournal, ScenariosView};
@@ -17,17 +18,6 @@ const ACTIONS_HEIGHT: u16 = 5;
 const TODAY_WIDTH: u16 = 50;
 const NAME_WIDTH: usize = 18;
 const STATE_WIDTH: usize = 14;
-
-/// Vertical scroll so the 0-indexed selected data row stays visible inside a
-/// `view_h`-tall list area (header rendered separately, so no border/header
-/// adjustment here).
-fn scroll_offset(view_h: usize, sel: usize) -> u16 {
-    if view_h > 0 && sel >= view_h {
-        (sel - view_h + 1) as u16
-    } else {
-        0
-    }
-}
 
 fn now_us() -> i64 {
     SystemTime::now()
@@ -154,15 +144,6 @@ fn data_lines(sup: &SupervisorState, sel: usize, now: i64) -> Vec<Line<'static>>
         .enumerate()
         .map(|(i, r)| row_line(r, i == sel, now))
         .collect()
-}
-
-fn footer_line(total: usize, offset: usize, view_h: usize) -> Line<'static> {
-    if total == 0 {
-        return dim("showing 0\u{2013}0 of 0");
-    }
-    let first = offset + 1;
-    let last = (offset + view_h.max(1)).min(total);
-    dim(&format!("showing {first}\u{2013}{last} of {total}"))
 }
 
 fn legend_line() -> Line<'static> {
@@ -348,13 +329,13 @@ pub fn render(
         .split(inner);
     frame.render_widget(Paragraph::new(header_line()), parts[0]);
     let view_h = parts[1].height as usize;
-    let offset = scroll_offset(view_h, sel);
+    let offset = listview::scroll_offset(view_h, sel);
     frame.render_widget(
         Paragraph::new(data_lines(sup, sel, now_us())).scroll((offset, 0)),
         parts[1],
     );
     frame.render_widget(
-        Paragraph::new(footer_line(total, offset as usize, view_h)),
+        Paragraph::new(listview::footer_line(total, offset as usize, view_h)),
         parts[2],
     );
 

@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::format::format_price;
+use crate::panels::listview;
 use crate::sources::order_journal::{self, FeeParams, Fill, Settlement};
 
 const SETTLE_HEIGHT: u16 = 6;
@@ -15,16 +16,6 @@ fn dim(text: &str) -> Line<'static> {
         text.to_string(),
         Style::default().fg(Color::DarkGray),
     ))
-}
-
-/// Vertical scroll so the 0-indexed selected data row stays visible inside a
-/// `view_h`-tall list area.
-fn scroll_offset(view_h: usize, sel: usize) -> u16 {
-    if view_h > 0 && sel >= view_h {
-        (sel - view_h + 1) as u16
-    } else {
-        0
-    }
 }
 
 /// `YYYYMMDD` -> `YYYY-MM-DD` for the panel title; anything else passes through.
@@ -127,15 +118,6 @@ fn data_lines(fills: &[Fill], sel: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn footer_line(total: usize, offset: usize, view_h: usize) -> Line<'static> {
-    if total == 0 {
-        return dim("showing 0\u{2013}0 of 0");
-    }
-    let first = offset + 1;
-    let last = (offset + view_h.max(1)).min(total);
-    dim(&format!("showing {first}\u{2013}{last} of {total}"))
-}
-
 fn settlement_lines(s: &Settlement) -> Vec<Line<'static>> {
     let red = Style::default().fg(Color::Red);
     let green = Style::default().fg(Color::Green);
@@ -199,13 +181,13 @@ pub fn render(frame: &mut Frame, area: Rect, fills: &[Fill], date: &str, sel: us
         .split(inner);
     frame.render_widget(Paragraph::new(header_line()), parts[0]);
     let view_h = parts[1].height as usize;
-    let offset = scroll_offset(view_h, sel);
+    let offset = listview::scroll_offset(view_h, sel);
     frame.render_widget(
         Paragraph::new(data_lines(fills, sel)).scroll((offset, 0)),
         parts[1],
     );
     frame.render_widget(
-        Paragraph::new(footer_line(fills.len(), offset as usize, view_h)),
+        Paragraph::new(listview::footer_line(fills.len(), offset as usize, view_h)),
         parts[2],
     );
 
