@@ -54,15 +54,6 @@ impl Selector {
         }
     }
 
-    /// Build from a priority list and the `KAIROS_FAILOVER_STALE_MS` /
-    /// `KAIROS_FAILOVER_RECOVER_HOLD_MS` env knobs.
-    pub fn from_env(priority: Vec<u16>) -> Self {
-        let stale_ms = crate::config::env_parsed("KAIROS_FAILOVER_STALE_MS", DEFAULT_STALE_MS);
-        let recover_ms =
-            crate::config::env_parsed("KAIROS_FAILOVER_RECOVER_HOLD_MS", DEFAULT_RECOVER_HOLD_MS);
-        Self::new(priority, stale_ms * 1_000, recover_ms * 1_000)
-    }
-
     /// Whether more than one source participates (failover is active).
     pub fn is_multi(&self) -> bool {
         !self.single
