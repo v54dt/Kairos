@@ -68,6 +68,30 @@ class ScenarioEngine {
   void SdkGate();
   std::string NextOrderId();
 
+  // Run() loop steps, each a verbatim block move from the original inline loop.
+  // The mu_ precondition per step is load-bearing.
+  enum class PaceDecision { kBreak, kContinue, kProceed };
+  // Window/TWAP pacing for one tick. Call outside mu_ (locks internally only for
+  // the wait-for-open cv wait); sets window_progress and may signal break/continue.
+  PaceDecision PaceWindow(double& window_progress);
+  // Quote staleness check + quote-stall alert. Call outside mu_.
+  bool CheckStaleAndStall(const TopOfBook& tob, long age);
+  // Ack-timeout watchdog: reason event -> dashboard -> AbandonResting ->
+  // ClearResting -> RegisterFailure. Call under mu_; outputs the possibly-live id
+  // to cancel outside the lock.
+  void RunAckWatchdog(std::string& timed_out_id, int& timed_out_seq);
+  // Place / re-peg dispatch. Call outside mu_ (re-takes mu_ at the mutation
+  // sites). Returns true if the loop should break (done with no resting order).
+  bool DispatchAction(const TopOfBook& tob, const RestingOrder& resting, long remaining,
+                      double window_progress, long sell_cap_remaining, const std::string& rid,
+                      int rid_seq, bool acked, bool cancelling);
+  // Cancel the acked working order (if any) and drain the feed/backend. Call
+  // outside mu_.
+  void WindDown();
+  // Terminal classification + stdout summary + terminal event. Takes mu_ once and
+  // holds through the whole body. Returns the process exit code.
+  int EmitTerminal();
+
   Scenario s_;
   OrderBackend* backend_;
   EventSink* sink_;

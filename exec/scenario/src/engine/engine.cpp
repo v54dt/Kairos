@@ -239,211 +239,135 @@ void ScenarioEngine::OnFill(const std::string& id, const Fill& f) {
   cv_.notify_all();
 }
 
-int ScenarioEngine::Run() {
-  // Fail-closed: a live trader with no run-state journal has no fill record and no
-  // restart no-double-buy protection (7/6 ran 39 scenarios this way). Refuse.
-  if (!journal_ok_) {
-    if (s_.live) {
-      std::fprintf(stderr,
-                   "kairos-exec: FATAL live run requires a journal but '%s' could not be opened "
-                   "for append\n",
-                   s_.journal_dir.empty() ? "<unset>" : s_.journal_dir.c_str());
-      return kNoJournalExit;
+ScenarioEngine::PaceDecision ScenarioEngine::PaceWindow(double& window_progress) {
+  window_progress = 1.0;  // ignore-window => no twap throttle
+  if (!ignore_window_) {
+    LocalNow n = LocalFromUtc(clock_.wall());
+    WindowPhase phase = ClassifyWindow(n.hhmm, !s_.weekdays_only || n.weekday, s_.window_start_hhmm,
+                                       s_.window_end_hhmm, kMarketCloseHhmm);
+    if (phase == WindowPhase::kClosed)
+      return PaceDecision::kBreak;  // hard stop at close (budget may be unfilled)
+    if (phase == WindowPhase::kWaitForOpen) {
+      std::unique_lock<std::mutex> lock(mu_);
+      cv_.wait_for(lock, std::chrono::seconds(1));
+      return PaceDecision::kContinue;
     }
-    std::fprintf(stderr, "kairos-exec: WARNING no journal (%s); no restart-safe fill record\n",
-                 s_.journal_dir.empty() ? "<unset>" : s_.journal_dir.c_str());
-  }
-  // Wire callbacks before Connect: a backend may start its reader thread inside
-  // Connect (HubOrderBackend), so the callbacks must already be in place.
-  backend_->SetCallbacks(
-      [this](const std::string& id, bool ok, const std::string& e) { OnAck(id, ok, e); },
-      [this](const std::string& id, const Fill& f) { OnFill(id, f); },
-      [this](const std::string& id, bool ok) { OnCancel(id, ok); }, [this] { OnDisconnect(); });
-  if (!backend_->Connect()) {
-    std::fprintf(stderr, "kairos-exec: order backend connect failed\n");
-    return kConnectFailExit;
-  }
-  quotes_->Start();
-  if (s_.budget_shares > 0) {
-    std::printf("kairos-exec: %s %s %ld shares, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
-                s_.budget_shares, PricePolicyName(s_.price_policy),
-                s_.live ? "*** LIVE ***" : "PAPER");
-  } else {
-    std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
-                s_.budget_twd, PricePolicyName(s_.price_policy),
-                s_.live ? "*** LIVE ***" : "PAPER");
-  }
-  std::fflush(stdout);
-  sink_->Emit(
-      {EventCategory::kStart,
-       Severity::kInfo,
-       s_.symbol,
-       "",
-       {{"side", SideName(s_.side)},
-        {"budget", std::to_string(s_.budget_shares > 0 ? s_.budget_shares : s_.budget_twd)}}});
-
-  while (!stop_) {
-    double window_progress = 1.0;  // ignore-window => no twap throttle
-    if (!ignore_window_) {
-      LocalNow n = LocalFromUtc(clock_.wall());
-      WindowPhase phase =
-          ClassifyWindow(n.hhmm, !s_.weekdays_only || n.weekday, s_.window_start_hhmm,
-                         s_.window_end_hhmm, kMarketCloseHhmm);
-      if (phase == WindowPhase::kClosed) break;  // hard stop at close (budget may be unfilled)
-      if (phase == WindowPhase::kWaitForOpen) {
-        std::unique_lock<std::mutex> lock(mu_);
-        cv_.wait_for(lock, std::chrono::seconds(1));
-        continue;
-      }
-      // kInWindow: twap-pace by progress. kFillRemainder (past end_time, pre-close):
-      // leave window_progress at 1.0 so the remainder fills at full pace.
-      if (phase == WindowPhase::kInWindow) {
-        int now_min = HhmmToMin(n.hhmm);
-        if (schedule_start_min_ < 0)
-          schedule_start_min_ = now_min;  // spread from first in-window tick
-        int end_min = HhmmToMin(s_.window_end_hhmm);
-        window_progress = end_min > schedule_start_min_
-                              ? static_cast<double>(now_min - schedule_start_min_) /
-                                    (end_min - schedule_start_min_)
-                              : 1.0;
-        if (window_progress < 0.0) window_progress = 0.0;
-        if (window_progress > 1.0) window_progress = 1.0;
-      }
+    // kInWindow: twap-pace by progress. kFillRemainder (past end_time, pre-close):
+    // leave window_progress at 1.0 so the remainder fills at full pace.
+    if (phase == WindowPhase::kInWindow) {
+      int now_min = HhmmToMin(n.hhmm);
+      if (schedule_start_min_ < 0)
+        schedule_start_min_ = now_min;  // spread from first in-window tick
+      int end_min = HhmmToMin(s_.window_end_hhmm);
+      window_progress =
+          end_min > schedule_start_min_
+              ? static_cast<double>(now_min - schedule_start_min_) / (end_min - schedule_start_min_)
+              : 1.0;
+      if (window_progress < 0.0) window_progress = 0.0;
+      if (window_progress > 1.0) window_progress = 1.0;
     }
+  }
+  return PaceDecision::kProceed;
+}
 
-    TopOfBook tob = book_.Snapshot();
-    long age = book_.AgeMs();
-    bool stale = !tob.valid || (s_.quote_max_age_ms > 0 && age >= 0 && age > s_.quote_max_age_ms);
-    // quote-stall alert: emit once when quotes go silent past the threshold in the
-    // active window, and re-arm when a fresh quote arrives.
-    if (s_.quote_stall_alert_ms > 0 && age > s_.quote_stall_alert_ms) {
-      if (!quote_stalled_) {
-        quote_stalled_ = true;
-        sink_->Emit({EventCategory::kQuoteStall,
-                     Severity::kWarning,
-                     s_.symbol,
-                     "quote_stall:" + s_.symbol,
-                     {{"age_ms", std::to_string(age)}}});
-      }
-    } else if (age >= 0) {
-      quote_stalled_ = false;
+bool ScenarioEngine::CheckStaleAndStall(const TopOfBook& tob, long age) {
+  bool stale = !tob.valid || (s_.quote_max_age_ms > 0 && age >= 0 && age > s_.quote_max_age_ms);
+  // quote-stall alert: emit once when quotes go silent past the threshold in the
+  // active window, and re-arm when a fresh quote arrives.
+  if (s_.quote_stall_alert_ms > 0 && age > s_.quote_stall_alert_ms) {
+    if (!quote_stalled_) {
+      quote_stalled_ = true;
+      sink_->Emit({EventCategory::kQuoteStall,
+                   Severity::kWarning,
+                   s_.symbol,
+                   "quote_stall:" + s_.symbol,
+                   {{"age_ms", std::to_string(age)}}});
     }
+  } else if (age >= 0) {
+    quote_stalled_ = false;
+  }
+  return stale;
+}
 
-    long remaining;
-    long sell_cap_remaining = -1;  // -1 = no cap (buy)
-    RestingOrder resting;
-    std::string rid;
-    bool acked, cancelling, halted_now = false;
-    std::string timed_out_id;  // possibly-live order to cancel outside the lock
-    int timed_out_seq = 0;
-    int rid_seq = 0;
+void ScenarioEngine::RunAckWatchdog(std::string& timed_out_id, int& timed_out_seq) {
+  // ack-timeout watchdog: an un-acked order that never got a response is dead
+  // to us — but it may be LIVE at the broker (7/6 proved every timed-out order
+  // was accepted), so cancel it before forgetting and count the failure.
+  long since_submit =
+      std::chrono::duration_cast<std::chrono::milliseconds>(clock_.mono() - resting_t_submit_)
+          .count();
+  if (AckTimedOut(resting_.active, resting_acked_, since_submit, s_.ack_timeout_ms)) {
+    timed_out_id = resting_id_;
+    timed_out_seq = resting_seq_;
+    std::fprintf(stderr, "kairos-exec: order %s ack timeout (%ldms); local reject\n",
+                 resting_id_.c_str(), since_submit);
+    sink_->Emit({EventCategory::kError,
+                 Severity::kWarning,
+                 s_.symbol,
+                 "ack_timeout:" + resting_id_,
+                 {{"reason", "ack timeout after " + std::to_string(since_submit) +
+                                 "ms (order may be live at broker)"}}});
+    if (dashboard_ && s_.live) {
+      dashboard_->ReportOrder(
+          resting_seq_, "ack_timeout", "ack timeout after " + std::to_string(since_submit) + "ms",
+          SteadyMillis(clock_.mono() - resting_t_start_),
+          SteadyMillis(resting_t_submit_ - resting_t_start_), static_cast<double>(since_submit));
+    }
+    AbandonResting();  // keep the possibly-live order counted against the sell cap
+    ClearResting();
+    RegisterFailure("ack timeout");
+  }
+}
+
+bool ScenarioEngine::DispatchAction(const TopOfBook& tob, const RestingOrder& resting,
+                                    long remaining, double window_progress, long sell_cap_remaining,
+                                    const std::string& rid, int rid_seq, bool acked,
+                                    bool cancelling) {
+  Action act = DecideAction(s_, tob, resting, remaining, window_progress, sell_cap_remaining);
+  if (act.done && !resting.active) {
+    std::lock_guard<std::mutex> lock(mu_);
+    complete_ = true;
+    return true;
+  }
+  if (act.kind == ActionKind::kPlace) {
+    std::string id = NextOrderId();
+    int seq = order_seq_;
     {
       std::lock_guard<std::mutex> lock(mu_);
-      if (complete_ || halted_) break;
-      // ack-timeout watchdog: an un-acked order that never got a response is dead
-      // to us — but it may be LIVE at the broker (7/6 proved every timed-out order
-      // was accepted), so cancel it before forgetting and count the failure.
-      long since_submit =
-          std::chrono::duration_cast<std::chrono::milliseconds>(clock_.mono() - resting_t_submit_)
-              .count();
-      if (AckTimedOut(resting_.active, resting_acked_, since_submit, s_.ack_timeout_ms)) {
-        timed_out_id = resting_id_;
-        timed_out_seq = resting_seq_;
-        std::fprintf(stderr, "kairos-exec: order %s ack timeout (%ldms); local reject\n",
-                     resting_id_.c_str(), since_submit);
-        sink_->Emit({EventCategory::kError,
-                     Severity::kWarning,
-                     s_.symbol,
-                     "ack_timeout:" + resting_id_,
-                     {{"reason", "ack timeout after " + std::to_string(since_submit) +
-                                     "ms (order may be live at broker)"}}});
-        if (dashboard_ && s_.live) {
-          dashboard_->ReportOrder(resting_seq_, "ack_timeout",
-                                  "ack timeout after " + std::to_string(since_submit) + "ms",
-                                  SteadyMillis(clock_.mono() - resting_t_start_),
-                                  SteadyMillis(resting_t_submit_ - resting_t_start_),
-                                  static_cast<double>(since_submit));
-        }
-        AbandonResting();  // keep the possibly-live order counted against the sell cap
-        ClearResting();
-        RegisterFailure("ack timeout");
-      }
-      remaining = acct_.Remaining(s_);
-      if (s_.side == Side::kSell) {
-        // Count in-flight (resting minus its partial fills) plus any abandoned
-        // orders still live at the broker as already committed, so a resting order
-        // plus a new one can never oversell the held position.
-        long inflight = resting_.active ? resting_.shares - resting_filled_ : 0;
-        for (const auto& entry : inflight_lost_) inflight += entry.second;
-        long committed = acct_.filled_shares + inflight;
-        sell_cap_remaining = s_.position_shares - committed;
-        if (sell_cap_remaining < 0) sell_cap_remaining = 0;
-      }
-      resting = resting_;
-      rid = resting_id_;
-      rid_seq = resting_seq_;
-      acked = resting_acked_;
-      cancelling = cancelling_;
-      halted_now = halted_;
+      resting_ = RestingOrder{true, act.price, act.shares};
+      resting_id_ = id;
+      resting_filled_ = 0;
+      resting_acked_ = false;
+      cancelling_ = false;
+      resting_seq_ = seq;
     }
-    // Best-effort cancel of the timed-out (possibly-live) order before re-placing.
-    if (!timed_out_id.empty()) {
-      SdkGate();
-      StampCancel(timed_out_id, timed_out_seq);
-      backend_->Cancel(timed_out_id);
-    }
-    if (halted_now) break;
-    if (remaining <= 0) break;
-
-    if (!stale) {
-      Action act = DecideAction(s_, tob, resting, remaining, window_progress, sell_cap_remaining);
-      if (act.done && !resting.active) {
-        std::lock_guard<std::mutex> lock(mu_);
-        complete_ = true;
-        break;
-      }
-      if (act.kind == ActionKind::kPlace) {
-        std::string id = NextOrderId();
-        int seq = order_seq_;
-        {
-          std::lock_guard<std::mutex> lock(mu_);
-          resting_ = RestingOrder{true, act.price, act.shares};
-          resting_id_ = id;
-          resting_filled_ = 0;
-          resting_acked_ = false;
-          cancelling_ = false;
-          resting_seq_ = seq;
-        }
-        OrderSubmitMsg om{id,        s_.symbol,       s_.market,        s_.board,
-                          s_.side,   s_.funding_type, s_.time_in_force, act.price,
-                          act.shares};
-        SdkGate();  // before t_start so the rate-limit sleep isn't counted as RTT
-        auto t0 = clock_.mono();
-        backend_->Submit(om);
-        auto t1 = clock_.mono();
-        {
-          std::lock_guard<std::mutex> lock(mu_);
-          if (resting_id_ == id) {
-            resting_t_start_ = t0;
-            resting_t_submit_ = t1;
-          }
-        }
-      } else if (act.kind == ActionKind::kRepeg && acked && !cancelling) {
-        // Re-peg = cancel the (acked) working order; next tick re-places at the
-        // new peg. Clearing waits for OnCancel/full-fill so racing fills count.
-        SdkGate();
-        StampCancel(rid, rid_seq);
-        backend_->Cancel(rid);
-        std::lock_guard<std::mutex> lock(mu_);
-        if (resting_id_ == rid) cancelling_ = true;
+    OrderSubmitMsg om{id,        s_.symbol,       s_.market,        s_.board,
+                      s_.side,   s_.funding_type, s_.time_in_force, act.price,
+                      act.shares};
+    SdkGate();  // before t_start so the rate-limit sleep isn't counted as RTT
+    auto t0 = clock_.mono();
+    backend_->Submit(om);
+    auto t1 = clock_.mono();
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (resting_id_ == id) {
+        resting_t_start_ = t0;
+        resting_t_submit_ = t1;
       }
     }
-
-    std::unique_lock<std::mutex> lock(mu_);
-    cv_.wait_for(lock, std::chrono::milliseconds(200),
-                 [this] { return stop_.load() || complete_ || halted_; });
+  } else if (act.kind == ActionKind::kRepeg && acked && !cancelling) {
+    // Re-peg = cancel the (acked) working order; next tick re-places at the
+    // new peg. Clearing waits for OnCancel/full-fill so racing fills count.
+    SdkGate();
+    StampCancel(rid, rid_seq);
+    backend_->Cancel(rid);
+    std::lock_guard<std::mutex> lock(mu_);
+    if (resting_id_ == rid) cancelling_ = true;
   }
+  return false;
+}
 
+void ScenarioEngine::WindDown() {
   // Wind down: cancel the working order only if the broker acked it.
   std::string rid;
   int rid_seq = 0;
@@ -461,7 +385,9 @@ int ScenarioEngine::Run() {
   }
   quotes_->Stop();
   backend_->Disconnect();
+}
 
+int ScenarioEngine::EmitTerminal() {
   std::lock_guard<std::mutex> lock(mu_);
   if (s_.budget_shares > 0) {
     std::printf("kairos-exec: end - filled %ld sh of %ld, NT$ %ld, fee NT$ %ld, tax NT$ %ld\n",
@@ -510,6 +436,113 @@ int ScenarioEngine::Run() {
                 {"fee", std::to_string(acct_.total_fee_twd)},
                 {"tax", std::to_string(acct_.total_tax_twd)}}});
   return 0;
+}
+
+int ScenarioEngine::Run() {
+  // Fail-closed: a live trader with no run-state journal has no fill record and no
+  // restart no-double-buy protection (7/6 ran 39 scenarios this way). Refuse.
+  if (!journal_ok_) {
+    if (s_.live) {
+      std::fprintf(stderr,
+                   "kairos-exec: FATAL live run requires a journal but '%s' could not be opened "
+                   "for append\n",
+                   s_.journal_dir.empty() ? "<unset>" : s_.journal_dir.c_str());
+      return kNoJournalExit;
+    }
+    std::fprintf(stderr, "kairos-exec: WARNING no journal (%s); no restart-safe fill record\n",
+                 s_.journal_dir.empty() ? "<unset>" : s_.journal_dir.c_str());
+  }
+  // Wire callbacks before Connect: a backend may start its reader thread inside
+  // Connect (HubOrderBackend), so the callbacks must already be in place.
+  backend_->SetCallbacks(
+      [this](const std::string& id, bool ok, const std::string& e) { OnAck(id, ok, e); },
+      [this](const std::string& id, const Fill& f) { OnFill(id, f); },
+      [this](const std::string& id, bool ok) { OnCancel(id, ok); }, [this] { OnDisconnect(); });
+  if (!backend_->Connect()) {
+    std::fprintf(stderr, "kairos-exec: order backend connect failed\n");
+    return kConnectFailExit;
+  }
+  quotes_->Start();
+  if (s_.budget_shares > 0) {
+    std::printf("kairos-exec: %s %s %ld shares, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
+                s_.budget_shares, PricePolicyName(s_.price_policy),
+                s_.live ? "*** LIVE ***" : "PAPER");
+  } else {
+    std::printf("kairos-exec: %s %s NT$ %ld, %s, %s\n", SideName(s_.side), s_.symbol.c_str(),
+                s_.budget_twd, PricePolicyName(s_.price_policy),
+                s_.live ? "*** LIVE ***" : "PAPER");
+  }
+  std::fflush(stdout);
+  sink_->Emit(
+      {EventCategory::kStart,
+       Severity::kInfo,
+       s_.symbol,
+       "",
+       {{"side", SideName(s_.side)},
+        {"budget", std::to_string(s_.budget_shares > 0 ? s_.budget_shares : s_.budget_twd)}}});
+
+  while (!stop_) {
+    double window_progress = 1.0;
+    PaceDecision pace = PaceWindow(window_progress);
+    if (pace == PaceDecision::kBreak) break;
+    if (pace == PaceDecision::kContinue) continue;
+
+    TopOfBook tob = book_.Snapshot();
+    long age = book_.AgeMs();
+    bool stale = CheckStaleAndStall(tob, age);
+
+    long remaining;
+    long sell_cap_remaining = -1;  // -1 = no cap (buy)
+    RestingOrder resting;
+    std::string rid;
+    bool acked, cancelling, halted_now = false;
+    std::string timed_out_id;  // possibly-live order to cancel outside the lock
+    int timed_out_seq = 0;
+    int rid_seq = 0;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (complete_ || halted_) break;
+      RunAckWatchdog(timed_out_id, timed_out_seq);
+      remaining = acct_.Remaining(s_);
+      if (s_.side == Side::kSell) {
+        // Count in-flight (resting minus its partial fills) plus any abandoned
+        // orders still live at the broker as already committed, so a resting order
+        // plus a new one can never oversell the held position.
+        long inflight = resting_.active ? resting_.shares - resting_filled_ : 0;
+        for (const auto& entry : inflight_lost_) inflight += entry.second;
+        long committed = acct_.filled_shares + inflight;
+        sell_cap_remaining = s_.position_shares - committed;
+        if (sell_cap_remaining < 0) sell_cap_remaining = 0;
+      }
+      resting = resting_;
+      rid = resting_id_;
+      rid_seq = resting_seq_;
+      acked = resting_acked_;
+      cancelling = cancelling_;
+      halted_now = halted_;
+    }
+    // Best-effort cancel of the timed-out (possibly-live) order before re-placing.
+    if (!timed_out_id.empty()) {
+      SdkGate();
+      StampCancel(timed_out_id, timed_out_seq);
+      backend_->Cancel(timed_out_id);
+    }
+    if (halted_now) break;
+    if (remaining <= 0) break;
+
+    if (!stale) {
+      if (DispatchAction(tob, resting, remaining, window_progress, sell_cap_remaining, rid, rid_seq,
+                         acked, cancelling))
+        break;
+    }
+
+    std::unique_lock<std::mutex> lock(mu_);
+    cv_.wait_for(lock, std::chrono::milliseconds(200),
+                 [this] { return stop_.load() || complete_ || halted_; });
+  }
+
+  WindDown();
+  return EmitTerminal();
 }
 
 void ScenarioEngine::RequestStop() {
