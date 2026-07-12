@@ -39,8 +39,14 @@ impl Shutdown {
     }
 
     /// A fresh async receiver whose `changed()` fires when `set()` is called.
+    /// If the signal is already set, mark the receiver changed so a subscriber
+    /// created after `set()` still observes the shutdown instead of blocking.
     pub fn subscribe(&self) -> watch::Receiver<bool> {
-        self.tx.subscribe()
+        let mut rx = self.tx.subscribe();
+        if self.is_set() {
+            rx.mark_changed();
+        }
+        rx
     }
 }
 
