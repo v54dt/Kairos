@@ -8,4 +8,4 @@
 {"t":0,"type":"ack","id":"k2-1","ok":1}
 {"t":0,"type":"fill","id":"k2-1","shares":1000,"price":58100}
 {"t":0,"type":"cancel","id":"k2-1","ok":1}
-{"t":0,"type":"ack","id":"bad"id","ok":0}
+{"t":0,"type":"ack","id":"bad\"id","ok":0}

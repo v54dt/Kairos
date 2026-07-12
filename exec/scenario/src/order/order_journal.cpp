@@ -232,18 +232,19 @@ void OrderJournal::Write(const std::string& line) {
 }
 
 void OrderJournal::LogFill(const std::string& id, long shares, Cents price) {
-  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"fill\",\"id\":\"" + id +
-        "\",\"shares\":" + std::to_string(shares) + ",\"price\":" + std::to_string(price) + "}\n");
+  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"fill\",\"id\":\"" +
+        JsonEscape(id) + "\",\"shares\":" + std::to_string(shares) +
+        ",\"price\":" + std::to_string(price) + "}\n");
 }
 
 void OrderJournal::LogAck(const std::string& id, bool ok) {
-  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"ack\",\"id\":\"" + id +
+  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"ack\",\"id\":\"" + JsonEscape(id) +
         "\",\"ok\":" + (ok ? "1" : "0") + "}\n");
 }
 
 void OrderJournal::LogCancel(const std::string& id, bool ok) {
-  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"cancel\",\"id\":\"" + id +
-        "\",\"ok\":" + (ok ? "1" : "0") + "}\n");
+  Write("{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"cancel\",\"id\":\"" +
+        JsonEscape(id) + "\",\"ok\":" + (ok ? "1" : "0") + "}\n");
 }
 
 long JournalJsonInt(const std::string& line, const std::string& key, long dflt) {

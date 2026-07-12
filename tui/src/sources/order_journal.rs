@@ -532,10 +532,9 @@ mod tests {
                 .ends_with("...(truncated)")
         );
 
-        // FINDING: OrderJournal::LogAck does NOT JsonEscape `id`, so a quote in the
-        // id produces malformed JSON; the reader silently truncates at the raw quote.
-        // (OrderFlowJournal::AppendAck escapes correctly -- see line 4 above.)
-        assert_eq!(json_str(lines[10], "id").as_deref(), Some("bad"));
+        // A hostile id with a quote (line 11) is JsonEscaped by OrderJournal::LogAck,
+        // so the line stays valid JSON and the id round-trips through this parser.
+        assert_eq!(json_str(lines[10], "id").as_deref(), Some("bad\"id"));
 
         // aggregate_file over the whole corpus: only "fill"/"cancel" types count.
         let agg = aggregate_file("2330-Buy-20260101", CORPUS);
