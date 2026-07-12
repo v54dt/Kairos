@@ -9,17 +9,16 @@ use futures::StreamExt;
 
 use kairos_tui::app::{self, Cli, Config, Shared, Snapshot, Tab};
 use kairos_tui::input::{
-    JournalDrill, OverviewKey, RiskKey, ScenState, apply_drill_key, apply_fills_key, apply_halt,
-    apply_overview_key, apply_scenarios_key, fills_key, halt_ui, journal_drill_key, open_target,
-    overview_key, risk_tab_key, scenarios_key, service_ui, should_quit, spawn_scenario_action,
-    tab_for, to_halt_key,
+    JournalDrill, OverviewKey, RiskKey, Route, ScenState, apply_drill_key, apply_fills_key,
+    apply_halt, apply_overview_key, apply_scenarios_key, halt_ui, journal_drill_key, open_target,
+    route, service_ui, spawn_scenario_action, to_halt_key,
 };
 use kairos_tui::panels;
 use kairos_tui::sources;
 use kairos_tui::sources::feed::{self, FeedState};
-use kairos_tui::sources::halt::{self, HaltPrompt};
-use kairos_tui::sources::scenario_ctl;
-use kairos_tui::sources::service::{self, ConfirmPrompt};
+use kairos_tui::sources::halt::{self, HaltPrompt, HaltUi};
+use kairos_tui::sources::scenario_ctl::{self, ScenarioUi};
+use kairos_tui::sources::service::{self, ConfirmPrompt, ServiceUi};
 use kairos_tui::terminal;
 
 const TICK: Duration = Duration::from_millis(750);
@@ -111,17 +110,7 @@ async fn run(
                 let ui = halt_ui(&halt_path, &prompt, &halt_result);
                 let service = service_ui(sel, &confirm, &action_result);
                 let scenario = scen.ui();
-                let drill_view = drill.as_ref().map(|d| d.view());
-                let mut clamped_rev: Option<usize> = None;
-                term.draw(|frame| {
-                    panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario, fills_sel);
-                    if tab == Tab::Overview && let Some(v) = &drill_view {
-                        clamped_rev = Some(panels::render_drill_overlay(frame, v));
-                    }
-                })?;
-                if let (Some(d), Some(r)) = (drill.as_mut(), clamped_rev) {
-                    d.rev = r;
-                }
+                draw_frame(term, &snap, cfg, tab, &ui, &service, &scenario, fills_sel, &mut drill)?;
             }
             Some(Ok(event)) = events.next() => {
                 let key = match &event {
@@ -130,101 +119,137 @@ async fn run(
                 };
                 let snap = Snapshot::capture(shared, feed_state);
                 let mut redraw = false;
-                if prompt.is_active() {
-                    if let Some(hk) = to_halt_key(&key) {
-                        let (next, action) = halt::handle_key(&prompt, hk);
-                        prompt = next;
-                        if let Some(a) = action {
-                            halt_result = Some(apply_halt(a, halt_path.as_deref()));
+                match route(
+                    prompt.is_active(),
+                    confirm.is_active(),
+                    scen.confirm.is_active(),
+                    drill.is_some(),
+                    tab,
+                    &event,
+                    &key,
+                ) {
+                    Route::Halt => {
+                        if let Some(hk) = to_halt_key(&key) {
+                            let (next, action) = halt::handle_key(&prompt, hk);
+                            prompt = next;
+                            if let Some(a) = action {
+                                halt_result = Some(apply_halt(a, halt_path.as_deref()));
+                            }
+                            redraw = true;
+                        }
+                    }
+                    Route::Service => {
+                        if let Some(hk) = to_halt_key(&key) {
+                            let (next, action) = service::handle_key(&confirm, hk);
+                            confirm = next;
+                            if let Some(a) = action {
+                                let slot = action_result.clone();
+                                *slot.lock().unwrap() =
+                                    Some(format!("{} {} ...", a.verb.as_str(), a.unit));
+                                tokio::spawn(async move {
+                                    let msg = service::run_action(a.verb, &a.unit).await;
+                                    *slot.lock().unwrap() = Some(msg);
+                                });
+                            }
+                            redraw = true;
+                        }
+                    }
+                    Route::Scenario => {
+                        if let Some(hk) = to_halt_key(&key) {
+                            let (next, action) = scenario_ctl::handle_key(&scen.confirm, hk);
+                            scen.confirm = next;
+                            if let Some(a) = action {
+                                spawn_scenario_action(a, cfg.supervisor_sock.clone(), scen.result.clone());
+                            }
+                            redraw = true;
+                        }
+                    }
+                    Route::Drill => {
+                        if let Some(dk) = journal_drill_key(&key) {
+                            if apply_drill_key(dk, drill.as_mut().unwrap()) {
+                                drill = None;
+                            }
+                            redraw = true;
+                        }
+                    }
+                    Route::Overview(ok) => {
+                        if ok == OverviewKey::OpenJournal {
+                            if let Some(unit) =
+                                open_target(&prompt, &confirm, &scen.confirm, &snap, sel)
+                            {
+                                let mut d = JournalDrill::new(unit);
+                                d.spawn_tail();
+                                drill = Some(d);
+                            }
+                        } else {
+                            apply_overview_key(ok, &mut sel, &mut confirm, &snap);
                         }
                         redraw = true;
                     }
-                } else if confirm.is_active() {
-                    if let Some(hk) = to_halt_key(&key) {
-                        let (next, action) = service::handle_key(&confirm, hk);
-                        confirm = next;
-                        if let Some(a) = action {
-                            let slot = action_result.clone();
-                            *slot.lock().unwrap() =
-                                Some(format!("{} {} ...", a.verb.as_str(), a.unit));
-                            tokio::spawn(async move {
-                                let msg = service::run_action(a.verb, &a.unit).await;
-                                *slot.lock().unwrap() = Some(msg);
-                            });
+                    Route::Scenarios(sk) => {
+                        apply_scenarios_key(sk, &snap, &mut scen);
+                        redraw = true;
+                    }
+                    Route::Fills(fk) => {
+                        apply_fills_key(fk, &snap, &mut fills_sel);
+                        redraw = true;
+                    }
+                    Route::Risk(rk) => {
+                        if halt_path.is_some() {
+                            prompt = match rk {
+                                RiskKey::Halt => HaltPrompt::ConfirmHalt(String::new()),
+                                RiskKey::Resume => HaltPrompt::ConfirmResume(String::new()),
+                            };
+                        } else {
+                            halt_result = Some("kill switch unavailable (no runtime dir)".to_string());
                         }
                         redraw = true;
                     }
-                } else if scen.confirm.is_active() {
-                    if let Some(hk) = to_halt_key(&key) {
-                        let (next, action) = scenario_ctl::handle_key(&scen.confirm, hk);
-                        scen.confirm = next;
-                        if let Some(a) = action {
-                            spawn_scenario_action(a, cfg.supervisor_sock.clone(), scen.result.clone());
-                        }
+                    Route::Quit => return Ok(()),
+                    Route::Tab(next) => {
+                        tab = next;
                         redraw = true;
                     }
-                } else if drill.is_some() {
-                    if should_quit(&event) {
-                        return Ok(());
-                    }
-                    if let Some(dk) = journal_drill_key(&key) {
-                        if apply_drill_key(dk, drill.as_mut().unwrap()) {
-                            drill = None;
-                        }
-                        redraw = true;
-                    }
-                } else if let Some(ok) = overview_key(tab, &key) {
-                    if ok == OverviewKey::OpenJournal {
-                        if let Some(unit) =
-                            open_target(&prompt, &confirm, &scen.confirm, &snap, sel)
-                        {
-                            let mut d = JournalDrill::new(unit);
-                            d.spawn_tail();
-                            drill = Some(d);
-                        }
-                    } else {
-                        apply_overview_key(ok, &mut sel, &mut confirm, &snap);
-                    }
-                    redraw = true;
-                } else if let Some(sk) = scenarios_key(tab, &key) {
-                    apply_scenarios_key(sk, &snap, &mut scen);
-                    redraw = true;
-                } else if let Some(fk) = fills_key(tab, &key) {
-                    apply_fills_key(fk, &snap, &mut fills_sel);
-                    redraw = true;
-                } else if let Some(rk) = risk_tab_key(tab, &key) {
-                    if halt_path.is_some() {
-                        prompt = match rk {
-                            RiskKey::Halt => HaltPrompt::ConfirmHalt(String::new()),
-                            RiskKey::Resume => HaltPrompt::ConfirmResume(String::new()),
-                        };
-                    } else {
-                        halt_result = Some("kill switch unavailable (no runtime dir)".to_string());
-                    }
-                    redraw = true;
-                } else if should_quit(&event) {
-                    return Ok(());
-                } else if let Some(next) = tab_for(&event, tab) {
-                    tab = next;
-                    redraw = true;
+                    Route::Ignore => {}
                 }
                 if redraw {
                     let ui = halt_ui(&halt_path, &prompt, &halt_result);
                     let service = service_ui(sel, &confirm, &action_result);
                     let scenario = scen.ui();
-                    let drill_view = drill.as_ref().map(|d| d.view());
-                    let mut clamped_rev: Option<usize> = None;
-                    term.draw(|frame| {
-                        panels::render(frame, &snap, cfg, tab, &ui, &service, &scenario, fills_sel);
-                        if tab == Tab::Overview && let Some(v) = &drill_view {
-                            clamped_rev = Some(panels::render_drill_overlay(frame, v));
-                        }
-                    })?;
-                    if let (Some(d), Some(r)) = (drill.as_mut(), clamped_rev) {
-                        d.rev = r;
-                    }
+                    draw_frame(term, &snap, cfg, tab, &ui, &service, &scenario, fills_sel, &mut drill)?;
                 }
             }
         }
     }
+}
+
+/// Render one frame: the panels plus, on Overview, the journal drill overlay,
+/// threading the overlay's clamped scroll position back into the drill. Shared
+/// by the tick and key-event arms so the draw path lives in one place.
+#[allow(clippy::too_many_arguments)]
+fn draw_frame(
+    term: &mut terminal::Tui,
+    snap: &Snapshot,
+    cfg: &Config,
+    tab: Tab,
+    halt: &HaltUi,
+    service: &ServiceUi,
+    scenario: &ScenarioUi,
+    fills_sel: usize,
+    drill: &mut Option<JournalDrill>,
+) -> Result<()> {
+    let drill_view = drill.as_ref().map(|d| d.view());
+    let mut clamped_rev: Option<usize> = None;
+    term.draw(|frame| {
+        panels::render(frame, snap, cfg, tab, halt, service, scenario, fills_sel);
+        if tab == Tab::Overview
+            && let Some(v) = &drill_view
+        {
+            clamped_rev = Some(panels::render_drill_overlay(frame, v));
+        }
+    })?;
+    if let (Some(d), Some(r)) = (drill.as_mut(), clamped_rev) {
+        d.rev = r;
+    }
+    Ok(())
 }
