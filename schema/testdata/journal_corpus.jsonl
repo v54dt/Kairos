@@ -1,0 +1,11 @@
+{"t":0,"type":"submit","id":"k1-1","prefix":"PFX","symbol":"2330","side":"B","board":"0","market":"0","fund":"cash","tif":"ROD","shares":2000,"price":58050}
+{"t":0,"type":"ack","id":"k1-1","ok":1,"err":""}
+{"t":0,"type":"fill","id":"k1-1","shares":2000,"price":58050,"unroutable":0}
+{"t":0,"type":"ack","id":"k1-2","ok":0,"err":"reject:\nline2\ttab \"q\" \\slash \u001c sep 台積"}
+{"t":0,"type":"ack","id":"k1-3","ok":0,"err":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx...(truncated)"}
+{"t":0,"type":"cancel_req","id":"k1-1"}
+{"t":0,"type":"cancel_ack","id":"k1-1","ok":1}
+{"t":0,"type":"ack","id":"k2-1","ok":1}
+{"t":0,"type":"fill","id":"k2-1","shares":1000,"price":58100}
+{"t":0,"type":"cancel","id":"k2-1","ok":1}
+{"t":0,"type":"ack","id":"bad"id","ok":0}

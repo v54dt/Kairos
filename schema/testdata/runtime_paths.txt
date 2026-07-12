@@ -1,0 +1,82 @@
+# runtime_paths.txt -- env>XDG>run-user UDS/sentinel path resolution golden (Track RF1 A).
+#
+# Contract: pins the shared resolver behavior implemented ~7x across languages:
+#   core/src/uds/path.rs::resolve, exec/scenario/src/quote/socket_path.h::ResolveSock,
+#   tui halt.rs/hub_status.rs/supervisor.rs::resolve. explicit env (non-empty) wins and
+#   is returned verbatim (never joined with base); else $XDG_RUNTIME_DIR (non-empty)
+#   joined "dir/base"; else /run/user/<uid> when it exists; else FATAL (None / "" / exit).
+#
+# Regeneration: hand-maintained table (no generator). Add rows here; every consumer
+# test parses this same file. Consumers: core uds::path tests (all bases),
+# exec test_socket_path (all bases), tui halt/hub_status/supervisor tests (own base only).
+#
+# Columns: env|xdg|run_user|base|expected
+#   env,xdg : a literal value, or UNSET (var absent), or EMPTY (var present but "").
+#   run_user: yes -> harness supplies /run/user/1000 (never stats the real dir); no -> none.
+#   expected: the resolved path, or FATAL when nothing resolves.
+
+# --- base kairos-quotes.sock ---
+/exp/custom.path|/run/user/1000|yes|kairos-quotes.sock|/exp/custom.path
+EMPTY|/run/user/1000|yes|kairos-quotes.sock|/run/user/1000/kairos-quotes.sock
+UNSET|/run/user/1000|yes|kairos-quotes.sock|/run/user/1000/kairos-quotes.sock
+UNSET|EMPTY|yes|kairos-quotes.sock|/run/user/1000/kairos-quotes.sock
+UNSET|UNSET|yes|kairos-quotes.sock|/run/user/1000/kairos-quotes.sock
+UNSET|UNSET|no|kairos-quotes.sock|FATAL
+EMPTY|EMPTY|no|kairos-quotes.sock|FATAL
+/exp/trail/|UNSET|no|kairos-quotes.sock|/exp/trail/
+UNSET|/run/user/1000/|yes|kairos-quotes.sock|/run/user/1000//kairos-quotes.sock
+rel/sock|UNSET|no|kairos-quotes.sock|rel/sock
+UNSET|reldir|yes|kairos-quotes.sock|reldir/kairos-quotes.sock
+EMPTY|UNSET|yes|kairos-quotes.sock|/run/user/1000/kairos-quotes.sock
+# --- base kairos-orders.sock ---
+/exp/custom.path|/run/user/1000|yes|kairos-orders.sock|/exp/custom.path
+EMPTY|/run/user/1000|yes|kairos-orders.sock|/run/user/1000/kairos-orders.sock
+UNSET|/run/user/1000|yes|kairos-orders.sock|/run/user/1000/kairos-orders.sock
+UNSET|EMPTY|yes|kairos-orders.sock|/run/user/1000/kairos-orders.sock
+UNSET|UNSET|yes|kairos-orders.sock|/run/user/1000/kairos-orders.sock
+UNSET|UNSET|no|kairos-orders.sock|FATAL
+EMPTY|EMPTY|no|kairos-orders.sock|FATAL
+/exp/trail/|UNSET|no|kairos-orders.sock|/exp/trail/
+UNSET|/run/user/1000/|yes|kairos-orders.sock|/run/user/1000//kairos-orders.sock
+rel/sock|UNSET|no|kairos-orders.sock|rel/sock
+UNSET|reldir|yes|kairos-orders.sock|reldir/kairos-orders.sock
+EMPTY|UNSET|yes|kairos-orders.sock|/run/user/1000/kairos-orders.sock
+# --- base kairos-hub-halt ---
+/exp/custom.path|/run/user/1000|yes|kairos-hub-halt|/exp/custom.path
+EMPTY|/run/user/1000|yes|kairos-hub-halt|/run/user/1000/kairos-hub-halt
+UNSET|/run/user/1000|yes|kairos-hub-halt|/run/user/1000/kairos-hub-halt
+UNSET|EMPTY|yes|kairos-hub-halt|/run/user/1000/kairos-hub-halt
+UNSET|UNSET|yes|kairos-hub-halt|/run/user/1000/kairos-hub-halt
+UNSET|UNSET|no|kairos-hub-halt|FATAL
+EMPTY|EMPTY|no|kairos-hub-halt|FATAL
+/exp/trail/|UNSET|no|kairos-hub-halt|/exp/trail/
+UNSET|/run/user/1000/|yes|kairos-hub-halt|/run/user/1000//kairos-hub-halt
+rel/sock|UNSET|no|kairos-hub-halt|rel/sock
+UNSET|reldir|yes|kairos-hub-halt|reldir/kairos-hub-halt
+EMPTY|UNSET|yes|kairos-hub-halt|/run/user/1000/kairos-hub-halt
+# --- base kairos-hub-status.json ---
+/exp/custom.path|/run/user/1000|yes|kairos-hub-status.json|/exp/custom.path
+EMPTY|/run/user/1000|yes|kairos-hub-status.json|/run/user/1000/kairos-hub-status.json
+UNSET|/run/user/1000|yes|kairos-hub-status.json|/run/user/1000/kairos-hub-status.json
+UNSET|EMPTY|yes|kairos-hub-status.json|/run/user/1000/kairos-hub-status.json
+UNSET|UNSET|yes|kairos-hub-status.json|/run/user/1000/kairos-hub-status.json
+UNSET|UNSET|no|kairos-hub-status.json|FATAL
+EMPTY|EMPTY|no|kairos-hub-status.json|FATAL
+/exp/trail/|UNSET|no|kairos-hub-status.json|/exp/trail/
+UNSET|/run/user/1000/|yes|kairos-hub-status.json|/run/user/1000//kairos-hub-status.json
+rel/sock|UNSET|no|kairos-hub-status.json|rel/sock
+UNSET|reldir|yes|kairos-hub-status.json|reldir/kairos-hub-status.json
+EMPTY|UNSET|yes|kairos-hub-status.json|/run/user/1000/kairos-hub-status.json
+# --- base kairos-scenario-ctl.sock ---
+/exp/custom.path|/run/user/1000|yes|kairos-scenario-ctl.sock|/exp/custom.path
+EMPTY|/run/user/1000|yes|kairos-scenario-ctl.sock|/run/user/1000/kairos-scenario-ctl.sock
+UNSET|/run/user/1000|yes|kairos-scenario-ctl.sock|/run/user/1000/kairos-scenario-ctl.sock
+UNSET|EMPTY|yes|kairos-scenario-ctl.sock|/run/user/1000/kairos-scenario-ctl.sock
+UNSET|UNSET|yes|kairos-scenario-ctl.sock|/run/user/1000/kairos-scenario-ctl.sock
+UNSET|UNSET|no|kairos-scenario-ctl.sock|FATAL
+EMPTY|EMPTY|no|kairos-scenario-ctl.sock|FATAL
+/exp/trail/|UNSET|no|kairos-scenario-ctl.sock|/exp/trail/
+UNSET|/run/user/1000/|yes|kairos-scenario-ctl.sock|/run/user/1000//kairos-scenario-ctl.sock
+rel/sock|UNSET|no|kairos-scenario-ctl.sock|rel/sock
+UNSET|reldir|yes|kairos-scenario-ctl.sock|reldir/kairos-scenario-ctl.sock
+EMPTY|UNSET|yes|kairos-scenario-ctl.sock|/run/user/1000/kairos-scenario-ctl.sock

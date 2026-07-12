@@ -130,4 +130,43 @@ mod tests {
             Some("/run/user/1001/kairos-quotes.sock".to_string())
         );
     }
+
+    // Shared cross-language golden: every row of schema/testdata/runtime_paths.txt
+    // must resolve identically here, in exec ResolveSock, and in the tui resolvers.
+    const RUNTIME_PATHS: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../schema/testdata/runtime_paths.txt"
+    ));
+
+    fn env_token(tok: &str) -> Option<&str> {
+        match tok {
+            "UNSET" => None,
+            "EMPTY" => Some(""),
+            v => Some(v),
+        }
+    }
+
+    #[test]
+    fn golden_runtime_paths_all_rows_match() {
+        let mut rows = 0;
+        for line in RUNTIME_PATHS.lines() {
+            let line = line.trim_end();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split('|').collect();
+            assert_eq!(f.len(), 5, "bad row: {line}");
+            let (env, xdg, run_user, base, expected) = (f[0], f[1], f[2], f[3], f[4]);
+            let ru = match run_user {
+                "yes" => Some("/run/user/1000"),
+                "no" => None,
+                other => panic!("bad run_user: {other}"),
+            };
+            let got = resolve(env_token(env), env_token(xdg), ru, base);
+            let want = (expected != "FATAL").then(|| expected.to_string());
+            assert_eq!(got, want, "row: {line}");
+            rows += 1;
+        }
+        assert!(rows >= 40, "fixture shrank unexpectedly: {rows} rows");
+    }
 }

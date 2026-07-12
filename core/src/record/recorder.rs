@@ -309,6 +309,33 @@ mod tests {
         assert_eq!(yyyymmdd_utc8(ts_utc8(2026, 7, 3, 23)), "20260703"); // just before the roll
     }
 
+    // Shared cross-language golden generated from the C++ canonical helper; core
+    // yyyymmdd_utc8 + tapegen::hhmm_from_us must agree with every row.
+    #[test]
+    fn golden_trading_days_match() {
+        const F: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../schema/testdata/trading_days.txt"
+        ));
+        let mut rows = 0;
+        for line in F.lines() {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split('|').collect();
+            assert_eq!(f.len(), 3, "bad row: {line}");
+            let ts: i64 = f[0].parse().unwrap();
+            assert_eq!(yyyymmdd_utc8(ts), f[1], "row: {line}");
+            assert_eq!(
+                crate::tapegen::hhmm_from_us(ts),
+                f[2].parse::<i32>().unwrap(),
+                "row: {line}"
+            );
+            rows += 1;
+        }
+        assert!(rows >= 10, "fixture shrank: {rows}");
+    }
+
     fn tmp_dir(tag: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!("kairos-rec-{}-{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&p);

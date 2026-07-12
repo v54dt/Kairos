@@ -1,0 +1,18 @@
+# journal_expected.txt -- per-line decoded-value table for journal_corpus.jsonl (Track RF1 C).
+#
+# One row per corpus line, in the same order. The tui parser (json_str/json_int) must
+# reproduce these semantic fields. Hostile-string round-trip (err/id) is asserted
+# separately in the tui test against exact literals; here only the numeric/type axis.
+#
+# Columns: type|shares|price|ok   ('-' = field absent on that line)
+submit|2000|58050|-
+ack|-|-|1
+fill|2000|58050|-
+ack|-|-|0
+ack|-|-|0
+cancel_req|-|-|-
+cancel_ack|-|-|1
+ack|-|-|1
+fill|1000|58100|-
+cancel|-|-|1
+ack|-|-|0
