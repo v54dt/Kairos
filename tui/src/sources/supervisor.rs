@@ -10,6 +10,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
+use super::json::{self, boolean as json_bool, int as json_int, string as json_str};
+
 /// Bound every control IO so a wedged daemon can only stall this task, never the
 /// render loop.
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -194,102 +196,6 @@ pub fn stop_request(name: &str) -> String {
     format!("{{\"cmd\":\"stop\",\"name\":\"{}\"}}\n", json_escape(name))
 }
 
-fn json_int(s: &str, key: &str) -> Option<i64> {
-    let needle = format!("\"{key}\":");
-    let start = s.find(&needle)? + needle.len();
-    let rest = &s[start..];
-    let end = rest
-        .find(|c: char| c != '-' && !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
-
-fn json_bool(s: &str, key: &str) -> Option<bool> {
-    let needle = format!("\"{key}\":");
-    let start = s.find(&needle)? + needle.len();
-    let rest = s[start..].trim_start();
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
-// Read the JSON string value of `"key":"..."`, decoding every escape the exec
-// emitters produce (\" \\ \/ \b \f \n \r \t \uXXXX) and stopping at the first
-// UNescaped quote. Unknown/short escapes are kept verbatim (fail-soft: at worst
-// a garbled display char, never a panic) so a new-server payload degrades safely.
-fn json_str(s: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\":\"");
-    let start = s.find(&needle)? + needle.len();
-    let mut out = String::new();
-    let mut chars = s[start..].chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next() {
-                Some('"') => out.push('"'),
-                Some('\\') => out.push('\\'),
-                Some('/') => out.push('/'),
-                Some('b') => out.push('\u{08}'),
-                Some('f') => out.push('\u{0c}'),
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
-                Some('u') => {
-                    let hex: String = (&mut chars).take(4).collect();
-                    let cp = (hex.len() == 4)
-                        .then(|| u32::from_str_radix(&hex, 16).ok())
-                        .flatten();
-                    out.push(cp.and_then(char::from_u32).unwrap_or('\u{fffd}'));
-                }
-                Some(other) => {
-                    out.push('\\');
-                    out.push(other);
-                }
-                None => break,
-            },
-            c => out.push(c),
-        }
-    }
-    Some(out)
-}
-
-/// Split the `"scenarios":[ {..}, {..} ]` array into its top-level `{..}` objects.
-fn scenario_objects(s: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let arr_start = match s.find("\"scenarios\":[") {
-        Some(i) => i + "\"scenarios\":[".len(),
-        None => return out,
-    };
-    let bytes = s.as_bytes();
-    let mut depth = 0i32;
-    let mut obj_start = None;
-    for i in arr_start..bytes.len() {
-        match bytes[i] {
-            b'{' => {
-                if depth == 0 {
-                    obj_start = Some(i);
-                }
-                depth += 1;
-            }
-            b'}' => {
-                depth -= 1;
-                if depth == 0
-                    && let Some(st) = obj_start.take()
-                {
-                    out.push(&s[st..=i]);
-                }
-            }
-            b']' if depth == 0 => break,
-            _ => {}
-        }
-    }
-    out
-}
-
 fn parse_row(obj: &str) -> SupervisorRow {
     SupervisorRow {
         name: json_str(obj, "name").unwrap_or_default(),
@@ -312,7 +218,10 @@ pub fn parse_snapshot(line: &str) -> Result<(bool, String, Vec<SupervisorRow>), 
     }
     let ok = json_bool(t, "ok").unwrap_or(false);
     let err = json_str(t, "err").unwrap_or_default();
-    let rows = scenario_objects(t).iter().map(|o| parse_row(o)).collect();
+    let rows = json::objects(t, "scenarios")
+        .iter()
+        .map(|o| parse_row(o))
+        .collect();
     Ok((ok, err, rows))
 }
 

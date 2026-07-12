@@ -5,6 +5,7 @@ pub mod feed;
 pub mod halt;
 pub mod hub_status;
 pub mod journald;
+mod json;
 pub mod order_journal;
 pub mod recorder;
 pub mod scenario_ctl;
