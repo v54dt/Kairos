@@ -8,6 +8,7 @@ pub mod journald;
 mod json;
 pub mod order_journal;
 pub mod recorder;
+mod runtime_path;
 pub mod scenario_ctl;
 pub mod service;
 pub mod supervisor;

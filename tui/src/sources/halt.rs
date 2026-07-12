@@ -7,42 +7,12 @@ use std::path::{Path, PathBuf};
 // and removes that file. Its path MUST match the hub's `HubHaltPath()` exactly,
 // or the switch writes a file the hub never reads.
 
-fn resolve(explicit: Option<&str>, xdg: Option<&str>, run_user: Option<&str>) -> Option<String> {
-    if let Some(p) = explicit
-        && !p.is_empty()
-    {
-        return Some(p.to_string());
-    }
-    if let Some(dir) = xdg
-        && !dir.is_empty()
-    {
-        return Some(format!("{dir}/kairos-hub-halt"));
-    }
-    if let Some(dir) = run_user
-        && !dir.is_empty()
-    {
-        return Some(format!("{dir}/kairos-hub-halt"));
-    }
-    None
-}
-
-fn run_user_dir() -> Option<String> {
-    // SAFETY: getuid() is infallible and has no preconditions.
-    let dir = format!("/run/user/{}", unsafe { libc::getuid() });
-    Path::new(&dir).is_dir().then_some(dir)
-}
-
 /// Halt sentinel path, mirroring the C++ `HubHaltPath()` resolution byte-for-byte:
 /// `$KAIROS_HUB_HALT`, else `$XDG_RUNTIME_DIR/kairos-hub-halt`, else
 /// `/run/user/<uid>/kairos-hub-halt` (only if that dir exists), else `None`
 /// (kill switch unavailable).
 pub fn hub_halt_path() -> Option<PathBuf> {
-    resolve(
-        std::env::var("KAIROS_HUB_HALT").ok().as_deref(),
-        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
-        run_user_dir().as_deref(),
-    )
-    .map(PathBuf::from)
+    super::runtime_path::path("KAIROS_HUB_HALT", "kairos-hub-halt")
 }
 
 /// Atomically create the halt sentinel (O_CREAT|O_EXCL, no partial-file window).
@@ -156,6 +126,10 @@ mod tests {
         std::env::temp_dir().join(format!("kairos-halt-{}-{}", std::process::id(), tag))
     }
 
+    use crate::sources::runtime_path::resolve;
+
+    const BASE: &str = "kairos-hub-halt";
+
     #[test]
     fn resolver_matches_hub_halt_path() {
         // Explicit env wins verbatim (the hub returns the same string).
@@ -163,23 +137,24 @@ mod tests {
             resolve(
                 Some("/scratch/kairos-hub-halt"),
                 Some("/run/user/1001"),
-                None
+                None,
+                BASE
             ),
             Some("/scratch/kairos-hub-halt".to_string())
         );
         // Only $XDG_RUNTIME_DIR -> $XDG/kairos-hub-halt.
         assert_eq!(
-            resolve(None, Some("/run/user/1001"), Some("/run/user/1001")),
+            resolve(None, Some("/run/user/1001"), Some("/run/user/1001"), BASE),
             Some("/run/user/1001/kairos-hub-halt".to_string())
         );
         // /run/user/<uid> fallback.
         assert_eq!(
-            resolve(None, None, Some("/run/user/1001")),
+            resolve(None, None, Some("/run/user/1001"), BASE),
             Some("/run/user/1001/kairos-hub-halt".to_string())
         );
         // Disabled: no runtime dir.
-        assert_eq!(resolve(None, None, None), None);
-        assert_eq!(resolve(Some(""), Some(""), Some("")), None);
+        assert_eq!(resolve(None, None, None, BASE), None);
+        assert_eq!(resolve(Some(""), Some(""), Some(""), BASE), None);
     }
 
     // Shared cross-language golden: rows for this module's base must resolve the
@@ -212,7 +187,7 @@ mod tests {
                 "no" => None,
                 other => panic!("bad run_user: {other}"),
             };
-            let got = resolve(token(f[0]), token(f[1]), ru);
+            let got = resolve(token(f[0]), token(f[1]), ru, BASE);
             let want = (f[4] != "FATAL").then(|| f[4].to_string());
             assert_eq!(got, want, "row: {line}");
             rows += 1;
@@ -303,7 +278,7 @@ mod tests {
         // the hub's existence check would use.
         let dir = std::env::temp_dir().join(format!("kairos-halt-e2e-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let resolved = resolve(None, Some(dir.to_str().unwrap()), None).unwrap();
+        let resolved = resolve(None, Some(dir.to_str().unwrap()), None, BASE).unwrap();
         let path = PathBuf::from(&resolved);
         assert_eq!(path, dir.join("kairos-hub-halt"));
         let _ = std::fs::remove_file(&path);

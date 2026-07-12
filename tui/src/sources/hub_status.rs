@@ -43,40 +43,10 @@ impl HubReport {
 
 const STALE_AFTER: Duration = Duration::from_secs(10);
 
-fn resolve(explicit: Option<&str>, xdg: Option<&str>, run_user: Option<&str>) -> Option<String> {
-    if let Some(p) = explicit
-        && !p.is_empty()
-    {
-        return Some(p.to_string());
-    }
-    if let Some(dir) = xdg
-        && !dir.is_empty()
-    {
-        return Some(format!("{dir}/kairos-hub-status.json"));
-    }
-    if let Some(dir) = run_user
-        && !dir.is_empty()
-    {
-        return Some(format!("{dir}/kairos-hub-status.json"));
-    }
-    None
-}
-
-fn run_user_dir() -> Option<String> {
-    // SAFETY: getuid() is infallible and has no preconditions.
-    let dir = format!("/run/user/{}", unsafe { libc::getuid() });
-    Path::new(&dir).is_dir().then_some(dir)
-}
-
 /// Hub status file path, mirroring the C++ `HubStatusPath()` resolution:
 /// `$KAIROS_HUB_STATUS`, else `$XDG_RUNTIME_DIR`, else `/run/user/<uid>`.
 pub fn hub_status_path() -> Option<PathBuf> {
-    resolve(
-        std::env::var("KAIROS_HUB_STATUS").ok().as_deref(),
-        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
-        run_user_dir().as_deref(),
-    )
-    .map(PathBuf::from)
+    super::runtime_path::path("KAIROS_HUB_STATUS", "kairos-hub-status.json")
 }
 
 fn parse_client(obj: &str) -> ClientStatus {
@@ -236,22 +206,26 @@ mod tests {
         assert!(r.is_stale());
     }
 
+    use crate::sources::runtime_path::resolve;
+
+    const BASE: &str = "kairos-hub-status.json";
+
     #[test]
     fn resolver_matches_socket_convention() {
         assert_eq!(
-            resolve(Some("/run/hub.json"), Some("/run/user/1001"), None),
+            resolve(Some("/run/hub.json"), Some("/run/user/1001"), None, BASE),
             Some("/run/hub.json".to_string())
         );
         assert_eq!(
-            resolve(None, Some("/run/user/1001"), Some("/run/user/1001")),
+            resolve(None, Some("/run/user/1001"), Some("/run/user/1001"), BASE),
             Some("/run/user/1001/kairos-hub-status.json".to_string())
         );
         assert_eq!(
-            resolve(None, None, Some("/run/user/1001")),
+            resolve(None, None, Some("/run/user/1001"), BASE),
             Some("/run/user/1001/kairos-hub-status.json".to_string())
         );
-        assert_eq!(resolve(None, None, None), None);
-        assert_eq!(resolve(Some(""), Some(""), Some("")), None);
+        assert_eq!(resolve(None, None, None, BASE), None);
+        assert_eq!(resolve(Some(""), Some(""), Some(""), BASE), None);
     }
 
     // Shared cross-language golden: rows for this module's base must resolve the
@@ -284,7 +258,7 @@ mod tests {
                 "no" => None,
                 other => panic!("bad run_user: {other}"),
             };
-            let got = resolve(token(f[0]), token(f[1]), ru);
+            let got = resolve(token(f[0]), token(f[1]), ru, BASE);
             let want = (f[4] != "FATAL").then(|| f[4].to_string());
             assert_eq!(got, want, "row: {line}");
             rows += 1;
