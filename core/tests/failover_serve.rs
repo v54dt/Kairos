@@ -17,6 +17,7 @@ use kairos_core::failover::Selector;
 use kairos_core::metrics::Metrics;
 use kairos_core::model::{Exchange, PriceLevel, Quote, QuoteBoard, Session};
 use kairos_core::poll::{PollDeps, handle_event};
+use kairos_core::shutdown::Shutdown;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::frame::{read_frame, write_frame};
 use kairos_core::uds::server::{ServerHandles, run_server};
@@ -107,10 +108,10 @@ async fn snapshot_follows_the_active_source_across_a_failover() {
     assert_eq!(selector.eval(0), None);
 
     let srv_socket = socket.clone();
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown = Shutdown::new();
     let srv = handles(book.clone(), tx.clone(), selector.clone());
     tokio::spawn(async move {
-        let _ = run_server(&srv_socket, srv, shutdown_rx).await;
+        let _ = run_server(&srv_socket, srv, shutdown).await;
     });
     wait_for_socket(&socket).await;
 
@@ -159,10 +160,10 @@ async fn live_stream_serves_only_the_active_source_across_a_failover() {
     };
 
     let srv_socket = socket.clone();
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown = Shutdown::new();
     let srv = handles(book.clone(), tx.clone(), selector.clone());
     tokio::spawn(async move {
-        let _ = run_server(&srv_socket, srv, shutdown_rx).await;
+        let _ = run_server(&srv_socket, srv, shutdown).await;
     });
     wait_for_socket(&socket).await;
 

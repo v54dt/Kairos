@@ -13,6 +13,7 @@ use crate::encode::{encode_error, encode_quote, encode_sub_ack, encode_trade};
 use crate::failover::Selector;
 use crate::metrics::Metrics;
 use crate::model::Quote;
+use crate::shutdown::Shutdown;
 use crate::subreg::SubRegistry;
 use crate::uds::frame::{read_frame, write_frame};
 
@@ -33,21 +34,22 @@ pub struct ServerHandles {
 pub async fn run_server(
     socket_path: &str,
     handles: ServerHandles,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: Shutdown,
 ) -> std::io::Result<()> {
     let _ = std::fs::remove_file(socket_path);
     let listener = UnixListener::bind(socket_path)?;
+    let mut shutdown_rx = shutdown.subscribe();
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
             biased;
             // A shutdown signal (or a dropped sender) stops new intake immediately.
-            _ = shutdown.changed() => break,
+            _ = shutdown_rx.changed() => break,
             // Reap completed clients so the JoinSet does not retain finished tasks.
             Some(_) = clients.join_next() => {}
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                clients.spawn(handle_client(stream, handles.clone(), shutdown.clone()));
+                clients.spawn(handle_client(stream, handles.clone(), shutdown.subscribe()));
             }
         }
     }

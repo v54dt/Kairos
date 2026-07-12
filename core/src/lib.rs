@@ -17,6 +17,7 @@ pub mod model;
 pub mod poll;
 pub mod record;
 pub mod replay;
+pub mod shutdown;
 pub mod sim;
 pub mod streams;
 pub mod subreg;

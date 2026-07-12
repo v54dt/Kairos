@@ -5,7 +5,6 @@
 //! fragment polling, watchdogs and idle backoff around it; the process exits it
 //! takes are hard-failure restart signals for the supervisor.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -17,6 +16,7 @@ use crate::failover::Selector;
 use crate::ipc::aeron::AeronSub;
 use crate::ipc::idle_backoff;
 use crate::metrics::Metrics;
+use crate::shutdown::Shutdown;
 use crate::watchdog::{
     DRIVER_DEAD_GRACE, DriverLivenessWatchdog, PollErrorWatchdog, driver_timeout_ms_from_env,
     max_poll_errors_from_env,
@@ -92,7 +92,7 @@ pub fn handle_event(deps: &PollDeps, data: &[u8], now_us: u64) -> Outcome {
 
 /// Connect the stream and poll it until shutdown, driving `handle_event` per
 /// fragment. The FATAL exits are the restart contract with the supervisor.
-pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
+pub fn run(stream_id: i32, deps: PollDeps, shutdown: Shutdown) {
     let sub = match AeronSub::connect(None, stream_id) {
         Ok(s) => s,
         Err(e) => {
@@ -107,13 +107,13 @@ pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
     let driver_timeout_ms = driver_timeout_ms_from_env();
     let mut last_liveness = Instant::now();
     loop {
-        if shutting_down.load(Ordering::SeqCst) {
+        if shutdown.is_set() {
             return;
         }
         if last_liveness.elapsed() >= LIVENESS_CHECK_INTERVAL {
             last_liveness = Instant::now();
             if live_wd.observe(sub.driver_active(driver_timeout_ms), Instant::now())
-                && !shutting_down.load(Ordering::SeqCst)
+                && !shutdown.is_set()
             {
                 eprintln!(
                     "kairos-core: FATAL media driver inactive (no CnC heartbeat for >{driver_timeout_ms}ms); exiting for restart"
@@ -141,7 +141,7 @@ pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
                 idle_backoff(&mut idle);
             }
             Err(e) => {
-                if poll_wd.on_err() && !shutting_down.load(Ordering::SeqCst) {
+                if poll_wd.on_err() && !shutdown.is_set() {
                     eprintln!(
                         "kairos-core: FATAL aeron poll errored {} times consecutively ({e:?}); exiting for restart",
                         poll_wd.threshold()
@@ -161,7 +161,7 @@ pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::encode::{encode_quote, encode_subscribe};
     use crate::model::{Exchange, PriceLevel, Quote, QuoteBoard, Session};
