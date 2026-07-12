@@ -15,6 +15,7 @@ use crate::book::{Admit, Book};
 use crate::decode::{DecodeError, FeedEvent, decode_feed_event};
 use crate::failover::Selector;
 use crate::ipc::aeron::AeronSub;
+use crate::ipc::idle_backoff;
 use crate::metrics::Metrics;
 use crate::watchdog::{
     DRIVER_DEAD_GRACE, DriverLivenessWatchdog, PollErrorWatchdog, driver_timeout_ms_from_env,
@@ -154,18 +155,6 @@ pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
                 idle_backoff(&mut idle);
             }
         }
-    }
-}
-
-// Spin → yield → park so an idle feed doesn't burn a core.
-fn idle_backoff(idle: &mut u32) {
-    *idle = idle.saturating_add(1);
-    if *idle < 10 {
-        std::hint::spin_loop();
-    } else if *idle < 20 {
-        std::thread::yield_now();
-    } else {
-        std::thread::sleep(Duration::from_micros(50));
     }
 }
 

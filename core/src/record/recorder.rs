@@ -12,6 +12,7 @@ use std::sync::mpsc::{Receiver, TrySendError, sync_channel};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::ipc::aeron::AeronSub;
+use crate::ipc::idle_backoff;
 use crate::record::{FileHeader, RECORD_HEADER_LEN, RecordWriter, record_path, recover_file};
 
 /// Bounded queue between the poll thread and the writer thread. ~seconds of
@@ -204,17 +205,6 @@ fn write_loop(rx: Receiver<(i64, Vec<u8>)>, out_dir: PathBuf, stream_id: i32, st
     }
     if let Err(e) = rot.sync() {
         eprintln!("kairos-recordd: final sync error (stream {stream_id}): {e}");
-    }
-}
-
-fn idle_backoff(idle: &mut u32) {
-    *idle = idle.saturating_add(1);
-    if *idle < 10 {
-        std::hint::spin_loop();
-    } else if *idle < 20 {
-        std::thread::yield_now();
-    } else {
-        std::thread::sleep(Duration::from_micros(50));
     }
 }
 
