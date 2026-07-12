@@ -9,9 +9,9 @@
 #include <optional>
 #include <utility>
 
+#include "enum_names.h"  // SideName/BoardName/MarketName
 #include "order_codec.h"
 #include "order_journal.h"  // AppendFill + trading-day helpers (shared journal format)
-#include "scenario.h"       // SideName
 #include "tw_market.h"      // CentsToString
 
 namespace kairos::exec {

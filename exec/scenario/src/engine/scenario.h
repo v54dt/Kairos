@@ -8,17 +8,12 @@
 #include <vector>
 
 #include "dashboard_metrics.h"
+#include "enum_names.h"  // Board/Side/Market/Pacing/PricePolicy + *Name
 #include "notify_config.h"
 #include "tw_fees.h"
 #include "tw_market.h"
 
 namespace kairos::exec {
-
-enum class Board { kOddLot, kRoundLot };
-enum class Side { kBuy, kSell };
-enum class Market { kTse, kOtc };
-enum class Pacing { kAsap, kTwap };
-enum class PricePolicy { kCross, kJoin, kMid, kLast };
 
 struct UserCreds {
   std::string user_id;
@@ -95,13 +90,6 @@ std::vector<std::string> ValidateScenario(const Scenario& s);  // empty == valid
 // budget_twd/budget_shares XOR check with an unhelpful message.
 bool ApplyBudgetOverride(long override_twd, Scenario* s, std::string* err);
 std::string SummarizeScenario(const Scenario& s);
-
-const char* BoardName(Board b);
-const char* PacingName(Pacing p);
-const char* SideName(Side s);
-const char* MarketName(Market m);
-const char* PricePolicyName(PricePolicy p);
-const char* ProductName(Product p);
 
 }  // namespace kairos::exec
 
