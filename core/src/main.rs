@@ -89,14 +89,12 @@ async fn main() -> anyhow::Result<()> {
 
     let socket_path = cfg.quote_sock;
     eprintln!("kairos-core: UDS quote server on {socket_path}");
-    let handles = ServerHandles {
-        book,
-        quotes: tx,
-        registry,
-        change_tx,
-        metrics,
-        selector,
-    };
+    let handles = ServerHandles::builder(book, tx)
+        .registry(registry)
+        .change_tx(change_tx)
+        .metrics(metrics)
+        .selector(selector)
+        .build();
     run_server(&socket_path, handles, shutdown).await?;
     Ok(())
 }

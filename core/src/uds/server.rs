@@ -31,6 +31,67 @@ pub struct ServerHandles {
     pub selector: Arc<Selector>,
 }
 
+impl ServerHandles {
+    /// Start from the two handles every caller supplies; the ancillary fields default
+    /// so adding one touches only the builder, not every construction site.
+    pub fn builder(
+        book: Arc<RwLock<Book>>,
+        quotes: broadcast::Sender<FeedEvent>,
+    ) -> ServerHandlesBuilder {
+        ServerHandlesBuilder {
+            book,
+            quotes,
+            registry: Arc::new(Mutex::new(SubRegistry::new())),
+            change_tx: std::sync::mpsc::channel().0,
+            metrics: Arc::new(Metrics::default()),
+            selector: Arc::new(Selector::new(vec![0], 0, 0)),
+        }
+    }
+}
+
+/// Builder for [`ServerHandles`]; overrides only the fields a caller cares about.
+pub struct ServerHandlesBuilder {
+    book: Arc<RwLock<Book>>,
+    quotes: broadcast::Sender<FeedEvent>,
+    registry: Arc<Mutex<SubRegistry>>,
+    change_tx: std::sync::mpsc::Sender<()>,
+    metrics: Arc<Metrics>,
+    selector: Arc<Selector>,
+}
+
+impl ServerHandlesBuilder {
+    pub fn registry(mut self, registry: Arc<Mutex<SubRegistry>>) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    pub fn change_tx(mut self, change_tx: std::sync::mpsc::Sender<()>) -> Self {
+        self.change_tx = change_tx;
+        self
+    }
+
+    pub fn metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    pub fn selector(mut self, selector: Arc<Selector>) -> Self {
+        self.selector = selector;
+        self
+    }
+
+    pub fn build(self) -> ServerHandles {
+        ServerHandles {
+            book: self.book,
+            quotes: self.quotes,
+            registry: self.registry,
+            change_tx: self.change_tx,
+            metrics: self.metrics,
+            selector: self.selector,
+        }
+    }
+}
+
 pub async fn run_server(
     socket_path: &str,
     handles: ServerHandles,

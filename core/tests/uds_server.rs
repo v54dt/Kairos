@@ -5,7 +5,6 @@ use kairos_core::book::Book;
 use kairos_core::decode::{FeedEvent, decode_quote_bytes};
 use kairos_core::encode::encode_subscribe;
 use kairos_core::failover::Selector;
-use kairos_core::metrics::Metrics;
 use kairos_core::model::{Exchange, PriceLevel, Quote, QuoteBoard, Session, Trade};
 use kairos_core::shutdown::Shutdown;
 use kairos_core::subreg::SubRegistry;
@@ -108,14 +107,15 @@ async fn uds_snapshot_then_live_push_with_filtering() {
     let srv_socket = socket.clone();
     let shutdown = Shutdown::new();
     tokio::spawn(async move {
-        let handles = ServerHandles {
-            book: srv_book,
-            quotes: srv_tx,
-            registry,
-            change_tx,
-            metrics: std::sync::Arc::new(Metrics::default()),
-            selector: std::sync::Arc::new(Selector::new(vec![0], 2_000_000, 5_000_000)),
-        };
+        let handles = ServerHandles::builder(srv_book, srv_tx)
+            .registry(registry)
+            .change_tx(change_tx)
+            .selector(std::sync::Arc::new(Selector::new(
+                vec![0],
+                2_000_000,
+                5_000_000,
+            )))
+            .build();
         let _ = run_server(&srv_socket, handles, shutdown).await;
     });
 
@@ -171,14 +171,15 @@ async fn subscribe_refcounts_and_disconnect_releases() {
     let srv_reg = registry.clone();
     let shutdown = Shutdown::new();
     tokio::spawn(async move {
-        let handles = ServerHandles {
-            book: srv_book,
-            quotes: srv_tx,
-            registry: srv_reg,
-            change_tx,
-            metrics: std::sync::Arc::new(Metrics::default()),
-            selector: std::sync::Arc::new(Selector::new(vec![0], 2_000_000, 5_000_000)),
-        };
+        let handles = ServerHandles::builder(srv_book, srv_tx)
+            .registry(srv_reg)
+            .change_tx(change_tx)
+            .selector(std::sync::Arc::new(Selector::new(
+                vec![0],
+                2_000_000,
+                5_000_000,
+            )))
+            .build();
         let _ = run_server(&srv_socket, handles, shutdown).await;
     });
 
@@ -240,14 +241,15 @@ async fn shutdown_delivers_whole_frames_then_eof_to_a_slow_reader() {
     let srv_tx = tx.clone();
     let srv_socket = socket.clone();
     let server = tokio::spawn(async move {
-        let handles = ServerHandles {
-            book: srv_book,
-            quotes: srv_tx,
-            registry,
-            change_tx,
-            metrics: std::sync::Arc::new(Metrics::default()),
-            selector: std::sync::Arc::new(Selector::new(vec![0], 2_000_000, 5_000_000)),
-        };
+        let handles = ServerHandles::builder(srv_book, srv_tx)
+            .registry(registry)
+            .change_tx(change_tx)
+            .selector(std::sync::Arc::new(Selector::new(
+                vec![0],
+                2_000_000,
+                5_000_000,
+            )))
+            .build();
         let _ = run_server(&srv_socket, handles, srv_shutdown).await;
     });
 
@@ -329,14 +331,15 @@ async fn shutdown_is_bounded_even_with_a_wedged_non_reading_client() {
     let srv_tx = tx.clone();
     let srv_socket = socket.clone();
     let server = tokio::spawn(async move {
-        let handles = ServerHandles {
-            book: srv_book,
-            quotes: srv_tx,
-            registry,
-            change_tx,
-            metrics: std::sync::Arc::new(Metrics::default()),
-            selector: std::sync::Arc::new(Selector::new(vec![0], 2_000_000, 5_000_000)),
-        };
+        let handles = ServerHandles::builder(srv_book, srv_tx)
+            .registry(registry)
+            .change_tx(change_tx)
+            .selector(std::sync::Arc::new(Selector::new(
+                vec![0],
+                2_000_000,
+                5_000_000,
+            )))
+            .build();
         let _ = run_server(&srv_socket, handles, srv_shutdown).await;
     });
 

@@ -7,7 +7,7 @@
 //! only remaps the stream id; tapegen hardcodes source 0), so the second source is
 //! injected directly, exactly as the poll loop would after decoding it.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use kairos_core::book::Book;
@@ -18,7 +18,6 @@ use kairos_core::metrics::Metrics;
 use kairos_core::model::{Exchange, PriceLevel, Quote, QuoteBoard, Session};
 use kairos_core::poll::{PollDeps, handle_event};
 use kairos_core::shutdown::Shutdown;
-use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::frame::{read_frame, write_frame};
 use kairos_core::uds::server::{ServerHandles, run_server};
 use tokio::net::UnixStream;
@@ -60,14 +59,7 @@ fn handles(
     tx: broadcast::Sender<FeedEvent>,
     selector: Arc<Selector>,
 ) -> ServerHandles {
-    ServerHandles {
-        book,
-        quotes: tx,
-        registry: Arc::new(Mutex::new(SubRegistry::new())),
-        change_tx: std::sync::mpsc::channel::<()>().0,
-        metrics: Arc::new(Metrics::default()),
-        selector,
-    }
+    ServerHandles::builder(book, tx).selector(selector).build()
 }
 
 async fn wait_for_socket(socket: &str) {
