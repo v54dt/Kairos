@@ -9,6 +9,7 @@
 #include <string>
 
 #include "dashboard_metrics.h"
+#include "dashboard_reporter.h"
 #include "engine_logic.h"
 #include "event_sink.h"
 #include "failure_halt.h"
@@ -48,7 +49,7 @@ class ScenarioEngine {
   int Run();
   void RequestStop();
   void set_ignore_window(bool v) { ignore_window_ = v; }
-  void set_dashboard(DashboardMetrics* d) { dashboard_ = d; }
+  void set_dashboard(DashboardMetrics* d) { dash_.SetDashboard(d, s_.live); }
 
  private:
   void OnAck(const std::string& id, bool ok, const std::string& err);
@@ -96,7 +97,7 @@ class ScenarioEngine {
   Scenario s_;
   OrderBackend* backend_;
   EventSink* sink_;
-  DashboardMetrics* dashboard_ = nullptr;
+  DashboardReporter dash_;
   QuoteBook book_;
   QuoteSource* quotes_;
   EngineClock clock_;
@@ -117,9 +118,6 @@ class ScenarioEngine {
   int resting_seq_ = 0;         // order id's sequence number (dashboard iteration_id)
   std::chrono::steady_clock::time_point resting_t_start_;   // before Submit (post-gate)
   std::chrono::steady_clock::time_point resting_t_submit_;  // after Submit returns
-  std::chrono::steady_clock::time_point cancel_t_sent_;     // RTT start of the pending cancel
-  std::string cancel_pending_id_;  // order whose cancel RTT is outstanding (one at a time)
-  int cancel_seq_ = 0;             // that order's dashboard iteration_id
   bool complete_ = false;
   FailureHalt failure_halt_;    // fail-closed order-failure streak; guarded by mu_
   bool journal_ok_ = false;     // a usable run-state journal is open
