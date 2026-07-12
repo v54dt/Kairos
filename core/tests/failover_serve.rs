@@ -7,7 +7,7 @@
 //! only remaps the stream id; tapegen hardcodes source 0), so the second source is
 //! injected directly, exactly as the poll loop would after decoding it.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use kairos_core::book::Book;
@@ -17,7 +17,7 @@ use kairos_core::failover::Selector;
 use kairos_core::metrics::Metrics;
 use kairos_core::model::{Exchange, PriceLevel, Quote, QuoteBoard, Session};
 use kairos_core::poll::{PollDeps, handle_event};
-use kairos_core::subreg::SubRegistry;
+use kairos_core::shutdown::Shutdown;
 use kairos_core::uds::frame::{read_frame, write_frame};
 use kairos_core::uds::server::{ServerHandles, run_server};
 use tokio::net::UnixStream;
@@ -59,14 +59,7 @@ fn handles(
     tx: broadcast::Sender<FeedEvent>,
     selector: Arc<Selector>,
 ) -> ServerHandles {
-    ServerHandles {
-        book,
-        quotes: tx,
-        registry: Arc::new(Mutex::new(SubRegistry::new())),
-        change_tx: std::sync::mpsc::channel::<()>().0,
-        metrics: Arc::new(Metrics::default()),
-        selector,
-    }
+    ServerHandles::builder(book, tx).selector(selector).build()
 }
 
 async fn wait_for_socket(socket: &str) {
@@ -107,10 +100,10 @@ async fn snapshot_follows_the_active_source_across_a_failover() {
     assert_eq!(selector.eval(0), None);
 
     let srv_socket = socket.clone();
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown = Shutdown::new();
     let srv = handles(book.clone(), tx.clone(), selector.clone());
     tokio::spawn(async move {
-        let _ = run_server(&srv_socket, srv, shutdown_rx).await;
+        let _ = run_server(&srv_socket, srv, shutdown).await;
     });
     wait_for_socket(&socket).await;
 
@@ -159,10 +152,10 @@ async fn live_stream_serves_only_the_active_source_across_a_failover() {
     };
 
     let srv_socket = socket.clone();
-    let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown = Shutdown::new();
     let srv = handles(book.clone(), tx.clone(), selector.clone());
     tokio::spawn(async move {
-        let _ = run_server(&srv_socket, srv, shutdown_rx).await;
+        let _ = run_server(&srv_socket, srv, shutdown).await;
     });
     wait_for_socket(&socket).await;
 
@@ -189,6 +182,70 @@ async fn live_stream_serves_only_the_active_source_across_a_failover() {
     let f = decode_quote_bytes(&next_frame(&mut c).await).unwrap();
     assert_eq!(f.source, 1);
     assert_eq!(f.last_price, 59_200);
+
+    let _ = std::fs::remove_file(&socket);
+}
+
+// Contract pin for the documented two-layer serve-gate consequence (see the design
+// notes in poll::handle_event and uds::server::reader_loop): a switch is invisible to
+// an already-connected client until the symbol next ticks — the switch alone pushes
+// nothing, and only the next served tick (now from the new source) updates the client.
+#[tokio::test]
+async fn a_connected_client_sees_the_old_source_until_the_next_tick_after_a_switch() {
+    let socket = format!("/tmp/kairos-failover-pin-{}.sock", std::process::id());
+    let book = Arc::new(RwLock::new(Book::new()));
+    let (tx, _rx) = broadcast::channel::<FeedEvent>(64);
+    let selector = Arc::new(Selector::new(vec![0, 1], 50_000, 200_000));
+    book.write().unwrap().update(quote("2330", 0, 1, 58_000));
+    book.write().unwrap().update(quote("2330", 1, 1, 59_000));
+    selector.note(0, 0);
+    selector.note(1, 0);
+    assert_eq!(selector.eval(0), None);
+    let deps = PollDeps {
+        book: book.clone(),
+        tx: tx.clone(),
+        metrics: Arc::new(Metrics::default()),
+        selector: selector.clone(),
+    };
+
+    let srv_socket = socket.clone();
+    let shutdown = Shutdown::new();
+    let srv = handles(book.clone(), tx.clone(), selector.clone());
+    tokio::spawn(async move {
+        let _ = run_server(&srv_socket, srv, shutdown).await;
+    });
+    wait_for_socket(&socket).await;
+
+    // Connect against the primary and read its snapshot (source 0).
+    let mut c = UnixStream::connect(&socket).await.unwrap();
+    write_frame(&mut c, &encode_subscribe(&["2330"]))
+        .await
+        .unwrap();
+    let _ack = next_frame(&mut c).await;
+    let snap = decode_quote_bytes(&next_frame(&mut c).await).unwrap();
+    assert_eq!(snap.source, 0);
+
+    // A live source-0 tick reaches the connected client.
+    forward(&deps, quote("2330", 0, 2, 58_100));
+    let f = decode_quote_bytes(&next_frame(&mut c).await).unwrap();
+    assert_eq!(f.source, 0);
+
+    // Fail over to source 1. The switch alone must push NOTHING to the connected
+    // client: with no producer running, a bounded read has to time out.
+    selector.note(1, 100_000);
+    assert!(selector.eval(100_000).is_some());
+    assert_eq!(selector.active_source(), 1);
+    let stale = tokio::time::timeout(Duration::from_millis(300), read_frame(&mut c)).await;
+    assert!(
+        stale.is_err(),
+        "a failover switch must not re-push to an already-connected client"
+    );
+
+    // Only the symbol's NEXT tick (now from source 1) updates the client.
+    forward(&deps, quote("2330", 1, 2, 59_100));
+    let f = decode_quote_bytes(&next_frame(&mut c).await).unwrap();
+    assert_eq!(f.source, 1);
+    assert_eq!(f.last_price, 59_100);
 
     let _ = std::fs::remove_file(&socket);
 }

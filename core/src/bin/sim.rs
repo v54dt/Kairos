@@ -22,11 +22,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use kairos_core::config::env_nonempty;
+use kairos_core::daemon::install_stop_flag;
 use kairos_core::replay::marker::effective_stack_dir;
 use kairos_core::sim::cli::{self, Opts};
 use kairos_core::sim::paths::SimPaths;
@@ -134,11 +134,7 @@ fn run(opts: &Opts, replay: Option<(Vec<PathBuf>, Option<f64>)>) -> anyhow::Resu
     // Install the signal handler BEFORE spawning any child, so a Ctrl-C/SIGTERM
     // during bring-up unwinds through ChildGuard::drop instead of killing kairos-sim
     // by default disposition and orphaning the daemons.
-    let stop = Arc::new(AtomicBool::new(false));
-    ctrlc::set_handler({
-        let stop = stop.clone();
-        move || stop.store(true, Ordering::SeqCst)
-    })?;
+    let stop = install_stop_flag()?;
 
     let mut guard = ChildGuard::new();
 

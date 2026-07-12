@@ -21,10 +21,11 @@ static GLOBAL: MiMalloc = MiMalloc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use kairos_core::daemon::{install_stop_flag, stats_loop};
 use kairos_core::ipc::aeron::AeronPub;
 use kairos_core::replay::{
     KqrSource, OfferOutcome, Pace, Pacer, ReplayRecord, ReplayStats, SystemClock, drive_replay,
@@ -133,46 +134,35 @@ fn open_source(args: &Args) -> anyhow::Result<KqrSource> {
     }
 }
 
-fn stats_loop(
-    stats: Arc<ReplayStats>,
-    remap: HashMap<u32, u32>,
-    start: Instant,
-    stop: Arc<AtomicBool>,
-) {
-    while !stop.load(Ordering::Relaxed) {
-        let until = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
-            thread::sleep(Duration::from_millis(200));
-        }
-        let replayed_us = stats
-            .replay_span_us()
-            .map(|(a, b)| b - a)
-            .unwrap_or(0)
-            .max(0);
-        let wall_us = start.elapsed().as_micros() as i64;
-        let ratio = if wall_us > 0 {
-            replayed_us as f64 / wall_us as f64
-        } else {
-            0.0
-        };
-        let per_stream: Vec<String> = stats
-            .per_stream()
-            .iter()
-            .map(|(s, c)| {
-                let out = remap.get(s).copied().unwrap_or(*s);
-                format!("{out}={c}")
-            })
-            .collect();
-        eprintln!(
-            "kairos-replayd: offered={} dropped={} bytes={} replayed={}ms wall={}ms ratio={ratio:.2}x streams[{}]",
-            stats.offered.load(Ordering::Relaxed),
-            stats.dropped.load(Ordering::Relaxed),
-            stats.bytes.load(Ordering::Relaxed),
-            replayed_us / 1000,
-            wall_us / 1000,
-            per_stream.join(" "),
-        );
-    }
+fn render_stats(stats: &ReplayStats, remap: &HashMap<u32, u32>, start: Instant) -> String {
+    let replayed_us = stats
+        .replay_span_us()
+        .map(|(a, b)| b - a)
+        .unwrap_or(0)
+        .max(0);
+    let wall_us = start.elapsed().as_micros() as i64;
+    let ratio = if wall_us > 0 {
+        replayed_us as f64 / wall_us as f64
+    } else {
+        0.0
+    };
+    let per_stream: Vec<String> = stats
+        .per_stream()
+        .iter()
+        .map(|(s, c)| {
+            let out = remap.get(s).copied().unwrap_or(*s);
+            format!("{out}={c}")
+        })
+        .collect();
+    format!(
+        "kairos-replayd: offered={} dropped={} bytes={} replayed={}ms wall={}ms ratio={ratio:.2}x streams[{}]",
+        stats.offered.load(Ordering::Relaxed),
+        stats.dropped.load(Ordering::Relaxed),
+        stats.bytes.load(Ordering::Relaxed),
+        replayed_us / 1000,
+        wall_us / 1000,
+        per_stream.join(" "),
+    )
 }
 
 fn main() -> anyhow::Result<()> {
@@ -215,11 +205,7 @@ fn main() -> anyhow::Result<()> {
         pubs.insert(s, publication);
     }
 
-    let stop = Arc::new(AtomicBool::new(false));
-    ctrlc::set_handler({
-        let stop = stop.clone();
-        move || stop.store(true, Ordering::SeqCst)
-    })?;
+    let stop = install_stop_flag()?;
 
     let _marker = write_marker(&aeron_dir)?;
     eprintln!(
@@ -232,7 +218,7 @@ fn main() -> anyhow::Result<()> {
     let stats_thread = thread::spawn({
         let (stats, stop) = (stats.clone(), stop.clone());
         let remap = args.remap.clone();
-        move || stats_loop(stats, remap, start, stop)
+        move || stats_loop(&stop, || render_stats(&stats, &remap, start))
     });
 
     let remap = args.remap.clone();
@@ -271,4 +257,25 @@ fn main() -> anyhow::Result<()> {
         stats.bytes.load(Ordering::Relaxed),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The wall integer is the only timing-dependent field; the rest of the line is
+    // pinned byte-for-byte so the user-facing stats format cannot drift.
+    #[test]
+    fn render_stats_format_is_byte_identical() {
+        let stats = ReplayStats::new(&[1001]);
+        stats.offered.store(5, Ordering::Relaxed);
+        stats.dropped.store(1, Ordering::Relaxed);
+        stats.bytes.store(100, Ordering::Relaxed);
+        let line = render_stats(&stats, &HashMap::new(), Instant::now());
+        assert!(
+            line.starts_with("kairos-replayd: offered=5 dropped=1 bytes=100 replayed=0ms wall="),
+            "{line}"
+        );
+        assert!(line.ends_with("ms ratio=0.00x streams[1001=0]"), "{line}");
+    }
 }

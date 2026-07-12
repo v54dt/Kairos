@@ -3,7 +3,6 @@ use mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -17,10 +16,11 @@ use kairos_core::failover::Selector;
 use kairos_core::ipc::aeron::AeronPub;
 use kairos_core::metrics::Metrics;
 use kairos_core::poll::{PollDeps, run as run_poll};
+use kairos_core::shutdown::Shutdown;
 use kairos_core::subreg::SubRegistry;
 use kairos_core::uds::server::{ServerHandles, run_server};
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 
 /// Re-publish the desired set at least this often (also the upstream heartbeat
 /// that recovers a sidecar restart/reconnect).
@@ -38,12 +38,11 @@ async fn main() -> anyhow::Result<()> {
     let metrics = Arc::new(Metrics::default());
     metrics.clone().spawn_logger();
 
-    // On SIGTERM/SIGINT: flip the async watch (server stops accepting and drains
-    // in-flight frames) and the sync flag the poll thread reads (so a driver-timeout
-    // race during teardown cannot turn a clean stop into exit 1).
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let shutting_down = Arc::new(AtomicBool::new(false));
-    let signal_flag = shutting_down.clone();
+    // On SIGTERM/SIGINT: `Shutdown::set` flips the sync flag the poll thread reads and
+    // then the async watch the server selects on, so a driver-timeout race during
+    // teardown cannot turn a clean stop into exit 1.
+    let shutdown = Shutdown::new();
+    let signal_shutdown = shutdown.clone();
     tokio::spawn(async move {
         let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
         let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
@@ -52,8 +51,7 @@ async fn main() -> anyhow::Result<()> {
             _ = sigint.recv() => {}
         }
         eprintln!("kairos-core: shutdown signal received; draining and exiting");
-        signal_flag.store(true, Ordering::SeqCst);
-        let _ = shutdown_tx.send(true);
+        signal_shutdown.set();
     });
 
     let cfg = Config::from_env().unwrap_or_else(|m| fatal(&m));
@@ -69,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
         eprintln!("kairos-core: multi-source failover active, priority {priority:?}");
         let eval_selector = selector.clone();
         let eval_metrics = metrics.clone();
-        let eval_shutdown = shutting_down.clone();
+        let eval_shutdown = shutdown.clone();
         thread::spawn(move || failover_eval_loop(eval_selector, eval_metrics, eval_shutdown));
     }
 
@@ -81,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
             metrics: metrics.clone(),
             selector: selector.clone(),
         };
-        let poll_shutdown = shutting_down.clone();
+        let poll_shutdown = shutdown.clone();
         thread::spawn(move || run_poll(stream_id, deps, poll_shutdown));
     }
 
@@ -91,27 +89,21 @@ async fn main() -> anyhow::Result<()> {
 
     let socket_path = cfg.quote_sock;
     eprintln!("kairos-core: UDS quote server on {socket_path}");
-    let handles = ServerHandles {
-        book,
-        quotes: tx,
-        registry,
-        change_tx,
-        metrics,
-        selector,
-    };
-    run_server(&socket_path, handles, shutdown_rx).await?;
+    let handles = ServerHandles::builder(book, tx)
+        .registry(registry)
+        .change_tx(change_tx)
+        .metrics(metrics)
+        .selector(selector)
+        .build();
+    run_server(&socket_path, handles, shutdown).await?;
     Ok(())
 }
 
 /// Periodically recompute the active source and loudly log every switch.
-fn failover_eval_loop(
-    selector: Arc<Selector>,
-    metrics: Arc<Metrics>,
-    shutting_down: Arc<AtomicBool>,
-) {
+fn failover_eval_loop(selector: Arc<Selector>, metrics: Arc<Metrics>, shutdown: Shutdown) {
     let primary = selector.active_source();
     loop {
-        if shutting_down.load(Ordering::SeqCst) {
+        if shutdown.is_set() {
             return;
         }
         thread::sleep(FAILOVER_EVAL_INTERVAL);

@@ -5,7 +5,6 @@
 //! fragment polling, watchdogs and idle backoff around it; the process exits it
 //! takes are hard-failure restart signals for the supervisor.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -17,6 +16,7 @@ use crate::failover::Selector;
 use crate::ipc::aeron::AeronSub;
 use crate::ipc::idle_backoff;
 use crate::metrics::Metrics;
+use crate::shutdown::Shutdown;
 use crate::watchdog::{
     DRIVER_DEAD_GRACE, DriverLivenessWatchdog, PollErrorWatchdog, driver_timeout_ms_from_env,
     max_poll_errors_from_env,
@@ -56,6 +56,15 @@ pub fn handle_event(deps: &PollDeps, data: &[u8], now_us: u64) -> Outcome {
             deps.metrics
                 .observe_latency(q.source, q.quote_ts_us, q.recv_ts_us);
             deps.selector.note(q.source, now_us);
+            // Failover serve-gate, layer 1 of 2 (live broadcast). Only the active
+            // source's ticks reach connected clients; the subscribe-snapshot path
+            // re-derives the same gate in uds::server::reader_loop via
+            // serve_order/get_preferred. Consequence accepted in the D4 review: a
+            // failover switch is invisible to already-connected clients until the
+            // symbol next ticks, when this gate delivers the new source (pinned by
+            // failover_serve.rs). Moving the gate to the writer layer (re-snapshot
+            // every client on switch) is deferred until a second live feed (D2) can
+            // exercise it.
             match deps.book.write().unwrap().update(q.clone()) {
                 Admit::Admitted if deps.selector.serves(q.source) => {
                     let _ = deps.tx.send(FeedEvent::Quote(q));
@@ -92,7 +101,7 @@ pub fn handle_event(deps: &PollDeps, data: &[u8], now_us: u64) -> Outcome {
 
 /// Connect the stream and poll it until shutdown, driving `handle_event` per
 /// fragment. The FATAL exits are the restart contract with the supervisor.
-pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
+pub fn run(stream_id: i32, deps: PollDeps, shutdown: Shutdown) {
     let sub = match AeronSub::connect(None, stream_id) {
         Ok(s) => s,
         Err(e) => {
@@ -107,13 +116,13 @@ pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
     let driver_timeout_ms = driver_timeout_ms_from_env();
     let mut last_liveness = Instant::now();
     loop {
-        if shutting_down.load(Ordering::SeqCst) {
+        if shutdown.is_set() {
             return;
         }
         if last_liveness.elapsed() >= LIVENESS_CHECK_INTERVAL {
             last_liveness = Instant::now();
             if live_wd.observe(sub.driver_active(driver_timeout_ms), Instant::now())
-                && !shutting_down.load(Ordering::SeqCst)
+                && !shutdown.is_set()
             {
                 eprintln!(
                     "kairos-core: FATAL media driver inactive (no CnC heartbeat for >{driver_timeout_ms}ms); exiting for restart"
@@ -141,7 +150,7 @@ pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
                 idle_backoff(&mut idle);
             }
             Err(e) => {
-                if poll_wd.on_err() && !shutting_down.load(Ordering::SeqCst) {
+                if poll_wd.on_err() && !shutdown.is_set() {
                     eprintln!(
                         "kairos-core: FATAL aeron poll errored {} times consecutively ({e:?}); exiting for restart",
                         poll_wd.threshold()
@@ -161,7 +170,7 @@ pub fn run(stream_id: i32, deps: PollDeps, shutting_down: Arc<AtomicBool>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::AtomicU64;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     use crate::encode::{encode_quote, encode_subscribe};
     use crate::model::{Exchange, PriceLevel, Quote, QuoteBoard, Session};

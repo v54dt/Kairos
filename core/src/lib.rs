@@ -5,6 +5,7 @@ pub mod kairos_capnp {
 pub mod book;
 pub mod compare;
 pub mod config;
+pub mod daemon;
 pub mod decode;
 pub mod encode;
 pub mod export;
@@ -16,6 +17,7 @@ pub mod model;
 pub mod poll;
 pub mod record;
 pub mod replay;
+pub mod shutdown;
 pub mod sim;
 pub mod streams;
 pub mod subreg;

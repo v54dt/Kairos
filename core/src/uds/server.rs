@@ -13,6 +13,7 @@ use crate::encode::{encode_error, encode_quote, encode_sub_ack, encode_trade};
 use crate::failover::Selector;
 use crate::metrics::Metrics;
 use crate::model::Quote;
+use crate::shutdown::Shutdown;
 use crate::subreg::SubRegistry;
 use crate::uds::frame::{read_frame, write_frame};
 
@@ -30,24 +31,86 @@ pub struct ServerHandles {
     pub selector: Arc<Selector>,
 }
 
+impl ServerHandles {
+    /// Start from the two handles every caller supplies; the ancillary fields default
+    /// so adding one touches only the builder, not every construction site.
+    pub fn builder(
+        book: Arc<RwLock<Book>>,
+        quotes: broadcast::Sender<FeedEvent>,
+    ) -> ServerHandlesBuilder {
+        ServerHandlesBuilder {
+            book,
+            quotes,
+            registry: Arc::new(Mutex::new(SubRegistry::new())),
+            change_tx: std::sync::mpsc::channel().0,
+            metrics: Arc::new(Metrics::default()),
+            selector: Arc::new(Selector::new(vec![0], 0, 0)),
+        }
+    }
+}
+
+/// Builder for [`ServerHandles`]; overrides only the fields a caller cares about.
+pub struct ServerHandlesBuilder {
+    book: Arc<RwLock<Book>>,
+    quotes: broadcast::Sender<FeedEvent>,
+    registry: Arc<Mutex<SubRegistry>>,
+    change_tx: std::sync::mpsc::Sender<()>,
+    metrics: Arc<Metrics>,
+    selector: Arc<Selector>,
+}
+
+impl ServerHandlesBuilder {
+    pub fn registry(mut self, registry: Arc<Mutex<SubRegistry>>) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    pub fn change_tx(mut self, change_tx: std::sync::mpsc::Sender<()>) -> Self {
+        self.change_tx = change_tx;
+        self
+    }
+
+    pub fn metrics(mut self, metrics: Arc<Metrics>) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    pub fn selector(mut self, selector: Arc<Selector>) -> Self {
+        self.selector = selector;
+        self
+    }
+
+    pub fn build(self) -> ServerHandles {
+        ServerHandles {
+            book: self.book,
+            quotes: self.quotes,
+            registry: self.registry,
+            change_tx: self.change_tx,
+            metrics: self.metrics,
+            selector: self.selector,
+        }
+    }
+}
+
 pub async fn run_server(
     socket_path: &str,
     handles: ServerHandles,
-    mut shutdown: watch::Receiver<bool>,
+    shutdown: Shutdown,
 ) -> std::io::Result<()> {
     let _ = std::fs::remove_file(socket_path);
     let listener = UnixListener::bind(socket_path)?;
+    let mut shutdown_rx = shutdown.subscribe();
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
             biased;
             // A shutdown signal (or a dropped sender) stops new intake immediately.
-            _ = shutdown.changed() => break,
+            _ = shutdown_rx.changed() => break,
             // Reap completed clients so the JoinSet does not retain finished tasks.
             Some(_) = clients.join_next() => {}
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
-                clients.spawn(handle_client(stream, handles.clone(), shutdown.clone()));
+                clients.spawn(handle_client(stream, handles.clone(), shutdown.subscribe()));
             }
         }
     }
@@ -133,6 +196,12 @@ async fn reader_loop(
                 }
                 // Ack the subscription, then push the current snapshot per symbol.
                 let _ = snap_tx.try_send(encode_sub_ack(&syms, true));
+                // Failover serve-gate, layer 2 of 2 (subscribe snapshot). The snapshot
+                // is drawn from the currently-preferred source, mirroring the live gate
+                // in poll::handle_event. Because each layer re-derives the gate (there is
+                // no shared re-push on switch), a failover switch does NOT re-snapshot
+                // already-connected clients: they keep the old source until the symbol
+                // next ticks. Deferred to D2 — see the note in poll::handle_event.
                 let order = selector.serve_order();
                 let snapshots: Vec<Quote> = {
                     let b = book.read().unwrap();
