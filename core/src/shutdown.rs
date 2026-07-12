@@ -26,9 +26,11 @@ impl Shutdown {
     }
 
     /// Flip the signal: sync flag first, then wake every async watcher.
+    /// `send_replace` stores the value even with zero receivers, so a signal that
+    /// fires before any task subscribes is not lost.
     pub fn set(&self) {
         self.flag.store(true, Ordering::SeqCst);
-        let _ = self.tx.send(true);
+        self.tx.send_replace(true);
     }
 
     /// Sync read for the poll/failover threads.
