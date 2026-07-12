@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::Fetch;
+use crate::panels::listview;
 use crate::panels::{error_line, loading_line};
 use crate::sources::service::{ConfirmPrompt, ServiceUi};
 use crate::sources::systemd::UnitStatus;
@@ -108,11 +109,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &Fetch<Vec<UnitStatus>>, ui:
     };
 
     let inner_h = rows[0].height.saturating_sub(2) as usize;
-    let offset = if inner_h > 0 && sel >= inner_h {
-        (sel - inner_h + 1) as u16
-    } else {
-        0
-    };
+    let offset = listview::scroll_offset(inner_h, sel);
     frame.render_widget(
         Paragraph::new(lines).block(block).scroll((offset, 0)),
         rows[0],
@@ -127,9 +124,8 @@ pub fn render(frame: &mut Frame, area: Rect, state: &Fetch<Vec<UnitStatus>>, ui:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panels::test_util::buffer_text;
     use crate::sources::service::Verb;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
 
     fn unit(name: &str, active: &str) -> UnitStatus {
         UnitStatus {
@@ -141,24 +137,15 @@ mod tests {
         }
     }
 
-    fn draw(state: &Fetch<Vec<UnitStatus>>, ui: &ServiceUi) {
-        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
-        term.draw(|f| render(f, f.area(), state, ui)).unwrap();
+    fn draw_units<'a>(
+        state: &'a Fetch<Vec<UnitStatus>>,
+        ui: &'a ServiceUi,
+    ) -> impl FnOnce(&mut ratatui::Frame) + 'a {
+        move |f| render(f, f.area(), state, ui)
     }
 
-    fn buffer_text(w: u16, h: u16, state: &Fetch<Vec<UnitStatus>>, ui: &ServiceUi) -> String {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(f, f.area(), state, ui)).unwrap();
-        let buf = term.backend().buffer().clone();
-        let area = buf.area;
-        let mut s = String::new();
-        for y in 0..area.height {
-            for x in 0..area.width {
-                s.push_str(buf[(x, y)].symbol());
-            }
-            s.push('\n');
-        }
-        s
+    fn draw(state: &Fetch<Vec<UnitStatus>>, ui: &ServiceUi) {
+        buffer_text(100, 30, draw_units(state, ui));
     }
 
     #[test]
@@ -229,7 +216,7 @@ mod tests {
             },
             last_result: Some("stop kairos-core.service failed: boom".to_string()),
         };
-        let text = buffer_text(40, 9, &Fetch::Ok(units), &ui);
+        let text = buffer_text(40, 9, draw_units(&Fetch::Ok(units), &ui));
         assert!(
             text.contains("stop kairos-core.service"),
             "verb+unit clipped:\n{text}"
@@ -257,7 +244,7 @@ mod tests {
             selected: 16,
             ..Default::default()
         };
-        let text = buffer_text(40, 9, &Fetch::Ok(units), &ui);
+        let text = buffer_text(40, 9, draw_units(&Fetch::Ok(units), &ui));
         assert!(
             text.contains("kairos-unit-16"),
             "selected unit scrolled off-screen:\n{text}"

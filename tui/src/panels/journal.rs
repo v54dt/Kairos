@@ -114,6 +114,7 @@ pub fn render_drilldown(frame: &mut Frame, area: Rect, view: &DrillView) -> usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::panels::test_util::buffer_text;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -125,21 +126,10 @@ mod tests {
         }
     }
 
-    fn buffer_text(w: u16, h: u16, view: &DrillView) -> String {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| {
+    fn draw_view(view: &DrillView) -> impl FnOnce(&mut ratatui::Frame) + '_ {
+        move |f| {
             render_drilldown(f, f.area(), view);
-        })
-        .unwrap();
-        let buf = term.backend().buffer().clone();
-        let mut s = String::new();
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                s.push_str(buf[(x, y)].symbol());
-            }
-            s.push('\n');
         }
-        s
     }
 
     fn view(state: Fetch<Vec<LogLine>>, rev: usize) -> DrillView {
@@ -152,18 +142,18 @@ mod tests {
 
     #[test]
     fn renders_all_states_without_panic() {
-        buffer_text(100, 30, &view(Fetch::Loading, 0));
-        buffer_text(100, 30, &view(Fetch::Err("boom".to_string()), 0));
-        buffer_text(100, 30, &view(Fetch::Ok(vec![]), 0));
+        buffer_text(100, 30, draw_view(&view(Fetch::Loading, 0)));
+        buffer_text(100, 30, draw_view(&view(Fetch::Err("boom".to_string()), 0)));
+        buffer_text(100, 30, draw_view(&view(Fetch::Ok(vec![]), 0)));
         let many: Vec<_> = (0..500)
             .map(|i| log("2026-07-04T00:00:00", &format!("line {i}")))
             .collect();
-        buffer_text(100, 30, &view(Fetch::Ok(many), 9_999));
+        buffer_text(100, 30, draw_view(&view(Fetch::Ok(many), 9_999)));
     }
 
     #[test]
     fn header_names_the_unit() {
-        let text = buffer_text(100, 30, &view(Fetch::Loading, 0));
+        let text = buffer_text(100, 30, draw_view(&view(Fetch::Loading, 0)));
         assert!(
             text.contains("journal: kairos-orderhub.service"),
             "header missing:\n{text}"
@@ -172,7 +162,7 @@ mod tests {
 
     #[test]
     fn empty_state_line_shown() {
-        let text = buffer_text(100, 30, &view(Fetch::Ok(vec![]), 0));
+        let text = buffer_text(100, 30, draw_view(&view(Fetch::Ok(vec![]), 0)));
         assert!(
             text.contains("no journal entries for kairos-orderhub.service"),
             "empty-state missing:\n{text}"
@@ -184,7 +174,7 @@ mod tests {
         let text = buffer_text(
             100,
             30,
-            &view(Fetch::Err("journalctl exited".to_string()), 0),
+            draw_view(&view(Fetch::Err("journalctl exited".to_string()), 0)),
         );
         assert!(text.contains("[stale]"), "stale badge missing:\n{text}");
         assert!(
@@ -209,7 +199,7 @@ mod tests {
         let logs: Vec<_> = (0..40)
             .map(|i| log("2026-07-04T00:00:00", &format!("entry-{i}")))
             .collect();
-        let text = buffer_text(80, 12, &view(Fetch::Ok(logs), 0));
+        let text = buffer_text(80, 12, draw_view(&view(Fetch::Ok(logs), 0)));
         assert!(text.contains("entry-39"), "newest line clipped:\n{text}");
     }
 
@@ -244,7 +234,7 @@ mod tests {
         let logs: Vec<_> = (0..40)
             .map(|i| log("2026-07-04T00:00:00", &format!("entry-{i}")))
             .collect();
-        let text = buffer_text(80, 12, &view(Fetch::Ok(logs), 9_999));
+        let text = buffer_text(80, 12, draw_view(&view(Fetch::Ok(logs), 9_999)));
         assert!(text.contains("entry-0"), "oldest line clipped:\n{text}");
     }
 }

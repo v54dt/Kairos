@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::json::{self, boolean as json_bool, int as json_int, string as json_str};
+
 /// One scenario client the order hub is serving, as written to its status file.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClientStatus {
@@ -41,103 +43,10 @@ impl HubReport {
 
 const STALE_AFTER: Duration = Duration::from_secs(10);
 
-fn resolve(explicit: Option<&str>, xdg: Option<&str>, run_user: Option<&str>) -> Option<String> {
-    if let Some(p) = explicit
-        && !p.is_empty()
-    {
-        return Some(p.to_string());
-    }
-    if let Some(dir) = xdg
-        && !dir.is_empty()
-    {
-        return Some(format!("{dir}/kairos-hub-status.json"));
-    }
-    if let Some(dir) = run_user
-        && !dir.is_empty()
-    {
-        return Some(format!("{dir}/kairos-hub-status.json"));
-    }
-    None
-}
-
-fn run_user_dir() -> Option<String> {
-    // SAFETY: getuid() is infallible and has no preconditions.
-    let dir = format!("/run/user/{}", unsafe { libc::getuid() });
-    Path::new(&dir).is_dir().then_some(dir)
-}
-
 /// Hub status file path, mirroring the C++ `HubStatusPath()` resolution:
 /// `$KAIROS_HUB_STATUS`, else `$XDG_RUNTIME_DIR`, else `/run/user/<uid>`.
 pub fn hub_status_path() -> Option<PathBuf> {
-    resolve(
-        std::env::var("KAIROS_HUB_STATUS").ok().as_deref(),
-        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
-        run_user_dir().as_deref(),
-    )
-    .map(PathBuf::from)
-}
-
-fn json_int(s: &str, key: &str) -> Option<i64> {
-    let needle = format!("\"{key}\":");
-    let start = s.find(&needle)? + needle.len();
-    let rest = &s[start..];
-    let end = rest
-        .find(|c: char| c != '-' && !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    rest[..end].parse().ok()
-}
-
-fn json_bool(s: &str, key: &str) -> Option<bool> {
-    let needle = format!("\"{key}\":");
-    let start = s.find(&needle)? + needle.len();
-    let rest = s[start..].trim_start();
-    if rest.starts_with("true") {
-        Some(true)
-    } else if rest.starts_with("false") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
-// Read the JSON string value of `"key":"..."`, decoding every escape the exec
-// emitters produce (\" \\ \/ \b \f \n \r \t \uXXXX) and stopping at the first
-// UNescaped quote. Unknown/short escapes are kept verbatim (fail-soft: at worst
-// a garbled display char, never a panic) so a new-server payload degrades safely.
-fn json_str(s: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\":\"");
-    let start = s.find(&needle)? + needle.len();
-    let mut out = String::new();
-    let mut chars = s[start..].chars();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => return Some(out),
-            '\\' => match chars.next() {
-                Some('"') => out.push('"'),
-                Some('\\') => out.push('\\'),
-                Some('/') => out.push('/'),
-                Some('b') => out.push('\u{08}'),
-                Some('f') => out.push('\u{0c}'),
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some('t') => out.push('\t'),
-                Some('u') => {
-                    let hex: String = (&mut chars).take(4).collect();
-                    let cp = (hex.len() == 4)
-                        .then(|| u32::from_str_radix(&hex, 16).ok())
-                        .flatten();
-                    out.push(cp.and_then(char::from_u32).unwrap_or('\u{fffd}'));
-                }
-                Some(other) => {
-                    out.push('\\');
-                    out.push(other);
-                }
-                None => break,
-            },
-            c => out.push(c),
-        }
-    }
-    Some(out)
+    super::runtime_path::path("KAIROS_HUB_STATUS", "kairos-hub-status.json")
 }
 
 fn parse_client(obj: &str) -> ClientStatus {
@@ -152,39 +61,6 @@ fn parse_client(obj: &str) -> ClientStatus {
     }
 }
 
-/// Split the `"clients":[ {..}, {..} ]` array into its top-level `{..}` objects.
-fn client_objects(s: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let arr_start = match s.find("\"clients\":[") {
-        Some(i) => i + "\"clients\":[".len(),
-        None => return out,
-    };
-    let bytes = s.as_bytes();
-    let mut depth = 0i32;
-    let mut obj_start = None;
-    for i in arr_start..bytes.len() {
-        match bytes[i] {
-            b'{' => {
-                if depth == 0 {
-                    obj_start = Some(i);
-                }
-                depth += 1;
-            }
-            b'}' => {
-                depth -= 1;
-                if depth == 0
-                    && let Some(st) = obj_start.take()
-                {
-                    out.push(&s[st..=i]);
-                }
-            }
-            b']' if depth == 0 => break,
-            _ => {}
-        }
-    }
-    out
-}
-
 /// Parse the hub status JSON. Missing scalar fields default to 0; a payload that
 /// is not a JSON object (garbage/empty) is an error rather than a panic.
 pub fn parse_hub_status(text: &str) -> Result<HubStatus, String> {
@@ -196,7 +72,10 @@ pub fn parse_hub_status(text: &str) -> Result<HubStatus, String> {
         start_epoch_s: json_int(t, "start_epoch_s").unwrap_or(0),
         written_epoch_s: json_int(t, "written_epoch_s").unwrap_or(0),
         client_count: json_int(t, "client_count").unwrap_or(0),
-        clients: client_objects(t).iter().map(|o| parse_client(o)).collect(),
+        clients: json::objects(t, "clients")
+            .iter()
+            .map(|o| parse_client(o))
+            .collect(),
         account_open_notional_cents: json_int(t, "account_open_notional_cents").unwrap_or(0),
         account_day_realized_cents: json_int(t, "account_day_realized_cents").unwrap_or(0),
         max_account_notional_cents: json_int(t, "max_account_notional_cents").unwrap_or(0),
@@ -327,22 +206,26 @@ mod tests {
         assert!(r.is_stale());
     }
 
+    use crate::sources::runtime_path::resolve;
+
+    const BASE: &str = "kairos-hub-status.json";
+
     #[test]
     fn resolver_matches_socket_convention() {
         assert_eq!(
-            resolve(Some("/run/hub.json"), Some("/run/user/1001"), None),
+            resolve(Some("/run/hub.json"), Some("/run/user/1001"), None, BASE),
             Some("/run/hub.json".to_string())
         );
         assert_eq!(
-            resolve(None, Some("/run/user/1001"), Some("/run/user/1001")),
+            resolve(None, Some("/run/user/1001"), Some("/run/user/1001"), BASE),
             Some("/run/user/1001/kairos-hub-status.json".to_string())
         );
         assert_eq!(
-            resolve(None, None, Some("/run/user/1001")),
+            resolve(None, None, Some("/run/user/1001"), BASE),
             Some("/run/user/1001/kairos-hub-status.json".to_string())
         );
-        assert_eq!(resolve(None, None, None), None);
-        assert_eq!(resolve(Some(""), Some(""), Some("")), None);
+        assert_eq!(resolve(None, None, None, BASE), None);
+        assert_eq!(resolve(Some(""), Some(""), Some(""), BASE), None);
     }
 
     // Shared cross-language golden: rows for this module's base must resolve the
@@ -375,7 +258,7 @@ mod tests {
                 "no" => None,
                 other => panic!("bad run_user: {other}"),
             };
-            let got = resolve(token(f[0]), token(f[1]), ru);
+            let got = resolve(token(f[0]), token(f[1]), ru, BASE);
             let want = (f[4] != "FATAL").then(|| f[4].to_string());
             assert_eq!(got, want, "row: {line}");
             rows += 1;

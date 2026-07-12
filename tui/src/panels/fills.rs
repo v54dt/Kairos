@@ -5,6 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::format::format_price;
+use crate::panels::listview;
 use crate::sources::order_journal::{self, FeeParams, Fill, Settlement};
 
 const SETTLE_HEIGHT: u16 = 6;
@@ -15,16 +16,6 @@ fn dim(text: &str) -> Line<'static> {
         text.to_string(),
         Style::default().fg(Color::DarkGray),
     ))
-}
-
-/// Vertical scroll so the 0-indexed selected data row stays visible inside a
-/// `view_h`-tall list area.
-fn scroll_offset(view_h: usize, sel: usize) -> u16 {
-    if view_h > 0 && sel >= view_h {
-        (sel - view_h + 1) as u16
-    } else {
-        0
-    }
 }
 
 /// `YYYYMMDD` -> `YYYY-MM-DD` for the panel title; anything else passes through.
@@ -127,15 +118,6 @@ fn data_lines(fills: &[Fill], sel: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn footer_line(total: usize, offset: usize, view_h: usize) -> Line<'static> {
-    if total == 0 {
-        return dim("showing 0\u{2013}0 of 0");
-    }
-    let first = offset + 1;
-    let last = (offset + view_h.max(1)).min(total);
-    dim(&format!("showing {first}\u{2013}{last} of {total}"))
-}
-
 fn settlement_lines(s: &Settlement) -> Vec<Line<'static>> {
     let red = Style::default().fg(Color::Red);
     let green = Style::default().fg(Color::Green);
@@ -199,13 +181,13 @@ pub fn render(frame: &mut Frame, area: Rect, fills: &[Fill], date: &str, sel: us
         .split(inner);
     frame.render_widget(Paragraph::new(header_line()), parts[0]);
     let view_h = parts[1].height as usize;
-    let offset = scroll_offset(view_h, sel);
+    let offset = listview::scroll_offset(view_h, sel);
     frame.render_widget(
         Paragraph::new(data_lines(fills, sel)).scroll((offset, 0)),
         parts[1],
     );
     frame.render_widget(
-        Paragraph::new(footer_line(fills.len(), offset as usize, view_h)),
+        Paragraph::new(listview::footer_line(fills.len(), offset as usize, view_h)),
         parts[2],
     );
 
@@ -223,23 +205,14 @@ pub fn render(frame: &mut Frame, area: Rect, fills: &[Fill], date: &str, sel: us
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
+    use crate::panels::test_util::buffer_text;
 
-    fn buffer_text(w: u16, h: u16, fills: &[Fill], date: &str, sel: usize) -> String {
-        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| render(f, f.area(), fills, date, sel))
-            .unwrap();
-        let buf = term.backend().buffer().clone();
-        let area = buf.area;
-        let mut s = String::new();
-        for y in 0..area.height {
-            for x in 0..area.width {
-                s.push_str(buf[(x, y)].symbol());
-            }
-            s.push('\n');
-        }
-        s
+    fn draw_fills<'a>(
+        fills: &'a [Fill],
+        date: &'a str,
+        sel: usize,
+    ) -> impl FnOnce(&mut ratatui::Frame) + 'a {
+        move |f| render(f, f.area(), fills, date, sel)
     }
 
     fn buy(t: i64, shares: i64, price: i64) -> Fill {
@@ -264,7 +237,7 @@ mod tests {
 
     #[test]
     fn renders_empty_without_panic() {
-        buffer_text(100, 30, &[], "20260705", 0);
+        buffer_text(100, 30, draw_fills(&[], "20260705", 0));
     }
 
     #[test]
@@ -273,7 +246,7 @@ mod tests {
         let t_buy = (9 * 3600 + 4 * 60 + 12 - 8 * 3600) as i64 * 1_000_000;
         let t_sell = (9 * 3600 + 5 * 60 + 20 - 8 * 3600) as i64 * 1_000_000;
         let fills = vec![buy(t_buy, 3000, 58500), sell(t_sell, 1000, 41250)];
-        let text = buffer_text(100, 30, &fills, "20260705", 0);
+        let text = buffer_text(100, 30, draw_fills(&fills, "20260705", 0));
         assert!(
             text.contains("today's fills (2026-07-05)"),
             "title:\n{text}"
@@ -309,7 +282,7 @@ mod tests {
     #[test]
     fn footer_shows_range_of_total_for_many_fills() {
         let fills: Vec<Fill> = (0..60).map(|i| buy(i, 1000, 58500)).collect();
-        let text = buffer_text(100, 20, &fills, "20260705", 0);
+        let text = buffer_text(100, 20, draw_fills(&fills, "20260705", 0));
         assert!(text.contains("of 60"), "total:\n{text}");
         assert!(text.contains("60 fills"), "count:\n{text}");
     }
@@ -364,7 +337,7 @@ mod tests {
         .unwrap();
         let fills = scan_fills(&dir, &date);
         std::fs::remove_dir_all(&dir).ok();
-        let text = buffer_text(100, 30, &fills, &date, 0);
+        let text = buffer_text(100, 30, draw_fills(&fills, &date, 0));
         assert!(text.contains("2 fills"), "count:\n{text}");
         assert!(text.contains("-1,757,500"), "payable:\n{text}");
         assert!(text.contains("+410,676"), "receivable:\n{text}");

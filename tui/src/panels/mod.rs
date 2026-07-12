@@ -3,10 +3,14 @@ mod data;
 mod feed;
 mod fills;
 mod journal;
+mod listview;
 mod recorder;
 mod risk;
 mod scenarios;
 mod systemd;
+
+#[cfg(test)]
+pub(crate) mod test_util;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
