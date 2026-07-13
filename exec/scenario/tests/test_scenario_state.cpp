@@ -93,9 +93,30 @@ int main() {
     ExitOutcome o = ClassifyExit(false, ExitStatus(1), false, "blacklist gate refused");
     CHECK(o.state == ScenarioState::kCrashed);
     CHECK(o.reason == "blacklist gate refused");
+    // Exit 3 (connect fail) is transient and stays crashed (restart-eligible).
     ExitOutcome o2 = ClassifyExit(false, ExitStatus(3), false, "");
     CHECK(o2.state == ScenarioState::kCrashed);
     CHECK(o2.reason == "exited with code 3");
+    ExitOutcome o3 = ClassifyExit(false, ExitStatus(3), false, "order backend connect failed");
+    CHECK(o3.state == ScenarioState::kCrashed);
+    CHECK(o3.reason == "order backend connect failed");
+  }
+  // Exit 17 (fail-closed order-failure halt) -> halted (terminal), never a crash.
+  {
+    ExitOutcome o = ClassifyExit(false, ExitStatus(17), false,
+                                 "halted: 3 consecutive order failures (ack timeout)");
+    CHECK(o.state == ScenarioState::kHalted);
+    CHECK(o.reason == "halted: 3 consecutive order failures (ack timeout)");
+    // Empty captured reason falls back to a never-blank label.
+    ExitOutcome o2 = ClassifyExit(false, ExitStatus(17), false, "");
+    CHECK(o2.state == ScenarioState::kHalted);
+    CHECK(o2.reason == "halted (fail-closed)");
+  }
+  // Exit 2 (live run with no journal) is also a deliberate fail-closed halt.
+  {
+    ExitOutcome o = ClassifyExit(false, ExitStatus(2), false, "");
+    CHECK(o.state == ScenarioState::kHalted);
+    CHECK(o.reason == "halted (fail-closed)");
   }
   // Killed by a signal -> crashed.
   {

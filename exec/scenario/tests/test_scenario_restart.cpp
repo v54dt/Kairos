@@ -4,8 +4,8 @@
 // proves: a crash auto-restarts with the SAME mode; a clean close / operator stop
 // never restarts; a stop or a daemon shutdown DURING the backoff cancels the
 // pending restart with no orphan; the backoff grows and is capped; the retry cap
-// gives up into a terminal crashed state; a healthy run resets the counter; and no
-// double-spawn.
+// gives up into a terminal crashed state even after long uptimes (no time-based
+// reset); and no double-spawn.
 
 #include <errno.h>
 #include <signal.h>
@@ -74,7 +74,6 @@ int main() {
     p.base_delay = std::chrono::milliseconds(20);
     p.max_delay = std::chrono::milliseconds(80);
     p.max_retries = 10;
-    p.healthy_reset = std::chrono::milliseconds(100000);
     ProcessManager pm(p);
     CHECK(pm.Spawn("a", Crasher(marker), /*live=*/true));
     // At least two runs means the crash was auto-restarted.
@@ -166,7 +165,6 @@ int main() {
     p.base_delay = std::chrono::milliseconds(80);
     p.max_delay = std::chrono::milliseconds(200);  // caps the 4th gap at 200ms, not 640ms
     p.max_retries = 10;
-    p.healthy_reset = std::chrono::milliseconds(100000);
     ProcessManager pm(p);
     CHECK(pm.Spawn("f", Crasher(marker), false));
     CHECK(WaitFor([&] { return CountLines(marker) >= 5; }, 5000));
@@ -193,7 +191,6 @@ int main() {
     p.base_delay = std::chrono::milliseconds(15);
     p.max_delay = std::chrono::milliseconds(60);
     p.max_retries = 3;
-    p.healthy_reset = std::chrono::milliseconds(100000);
     ProcessManager pm(p);
     CHECK(pm.Spawn("g", Crasher(marker), false));
     CHECK(WaitFor([&] { return pm.StatusOf("g").gave_up; }, 4000));
@@ -208,8 +205,9 @@ int main() {
     ::unlink(marker.c_str());
   }
 
-  // (h) A run that survives the healthy_reset cooldown resets the counter, so an
-  // occasional crash after a healthy uptime never gives up.
+  // (h) No time-based reset: crashes count toward the cap even when every run has a
+  // long uptime (the 2026-07-13 halt-loop outlived any cooldown), so the cap always
+  // fires; only an operator start clears the counter.
   {
     std::string marker = TempPath("h");
     ::unlink(marker.c_str());
@@ -217,22 +215,22 @@ int main() {
     p.base_delay = std::chrono::milliseconds(15);
     p.max_delay = std::chrono::milliseconds(30);
     p.max_retries = 3;
-    p.healthy_reset = std::chrono::milliseconds(60);  // each run outlives the cooldown
     ProcessManager pm(p);
-    // Sleeps past the cooldown (healthy uptime) then crashes; the reset keeps the cap away.
     CHECK(pm.Spawn("h", Sh("date +%s >> '" + marker + "'; sleep 0.12; exit 9"), false));
-    // Let it churn several restarts; because each run survives the cooldown, it keeps resetting.
-    CHECK(WaitFor([&] { return CountLines(marker) >= 5; }, 5000));
+    CHECK(WaitFor([&] { return pm.StatusOf("h").gave_up; }, 8000));
     ProcessManager::ChildStatus s = pm.StatusOf("h");
-    CHECK(!s.gave_up);            // never gave up despite >max_retries crashes
-    CHECK(s.restart_count <= 1);  // reset by each cooldown-surviving run
-    pm.StopChild("h");
+    CHECK(s.state == ScenarioState::kCrashed);
+    CHECK(s.restart_count == 3);  // exactly max_retries despite the long uptimes
+    int runs = CountLines(marker);
+    CHECK(runs == 4);  // original + max_retries restarts
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    CHECK(CountLines(marker) == runs);  // no restart after giving up
     ::unlink(marker.c_str());
   }
 
-  // (h2) A trader that reaches in-window but crashes BEFORE the cooldown still hits
-  // the cap and gives up: an instantaneous in-window signal must not reset the counter
-  // (else a live crash-loop after the first fill would re-enter the market forever).
+  // (h2) A trader that reaches in-window then crashes still hits the cap and gives
+  // up: an in-window signal must not reset the counter (else a live crash-loop after
+  // the first fill would re-enter the market forever).
   {
     std::string marker = TempPath("h2");
     ::unlink(marker.c_str());
@@ -240,9 +238,8 @@ int main() {
     p.base_delay = std::chrono::milliseconds(15);
     p.max_delay = std::chrono::milliseconds(60);
     p.max_retries = 3;
-    p.healthy_reset = std::chrono::milliseconds(100000);  // no run gets near the cooldown
     ProcessManager pm(p);
-    // Reaches in-window (banner + fill) then crashes immediately -- zero healthy uptime.
+    // Reaches in-window (banner + fill) then crashes immediately.
     std::string script = "date +%s >> '" + marker +
                          "'; printf 'kairos-exec: Buy 2330 NT$ 300000, cross, PAPER\\n';"
                          "printf 'kairos-exec: fill k-1 1000 @ 925.00  (cum 1000 sh)\\n'; exit 9";
@@ -266,7 +263,6 @@ int main() {
     p.base_delay = std::chrono::milliseconds(30);
     p.max_delay = std::chrono::milliseconds(60);
     p.max_retries = 10;
-    p.healthy_reset = std::chrono::milliseconds(100000);
     ProcessManager pm(p);
     // Sleeps briefly so a live window is observable, then crashes.
     CHECK(pm.Spawn("i", Sh("date +%s >> '" + marker + "'; sleep 0.15; exit 4"), false));
@@ -281,6 +277,37 @@ int main() {
     // Each run corresponds to exactly one restart increment (+the original run).
     CHECK(runs == last + 1);
     pm.StopChild("i");
+    ::unlink(marker.c_str());
+  }
+
+  // (j) A fail-closed halt (exit 17) is terminal: never respawned no matter how many
+  // backoff windows pass (the 2026-07-13 incident: a respawned trader re-orders).
+  // Only an operator start clears it.
+  {
+    std::string marker = TempPath("j");
+    ::unlink(marker.c_str());
+    RestartPolicy p;
+    p.base_delay = std::chrono::milliseconds(15);
+    p.max_delay = std::chrono::milliseconds(30);
+    p.max_retries = 10;
+    ProcessManager pm(p);
+    std::string script =
+        "date +%s >> '" + marker +
+        "'; printf 'kairos-exec: FATAL halted: 3 consecutive order failures (ack timeout)\\n';"
+        " exit 17";
+    CHECK(pm.Spawn("j", Sh(script), /*live=*/true));
+    CHECK(WaitFor([&] { return pm.StatusOf("j").state == ScenarioState::kHalted; }, 4000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));  // many backoff windows
+    CHECK(CountLines(marker) == 1);  // exactly one run: never respawned
+    ProcessManager::ChildStatus s = pm.StatusOf("j");
+    CHECK(s.state == ScenarioState::kHalted);
+    CHECK(s.restart_count == 0);
+    CHECK(!s.gave_up);
+    CHECK(s.last_exit_reason == "halted: 3 consecutive order failures (ack timeout)");
+    // An operator start clears the terminal halt and spawns a fresh run.
+    CHECK(pm.Spawn("j", Sh("date +%s >> '" + marker + "'; sleep 0.05"), false));
+    CHECK(WaitFor([&] { return CountLines(marker) == 2; }, 3000));
+    pm.StopChild("j");
     ::unlink(marker.c_str());
   }
 

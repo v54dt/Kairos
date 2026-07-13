@@ -51,7 +51,7 @@ fn req_lines_match_tui_builders() {
 #[test]
 fn snap_lines_parse_via_real_parser() {
     let snaps = tagged("SNAP");
-    assert_eq!(snaps.len(), 4, "SNAP line count");
+    assert_eq!(snaps.len(), 5, "SNAP line count");
 
     // Empty ok snapshot.
     let (ok, err, rows) = parse_snapshot(snaps[0]).unwrap();
@@ -99,4 +99,17 @@ fn snap_lines_parse_via_real_parser() {
     assert!(!ok);
     assert_eq!(err, "unknown cmd");
     assert!(rows.is_empty());
+
+    // Terminal halted state (fail-closed exit): typed variant, never running.
+    let (ok, _err, rows) = parse_snapshot(snaps[4]).unwrap();
+    assert!(ok);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "s-halted");
+    assert_eq!(rows[0].state, ScenarioState::Halted);
+    assert!(!rows[0].state.is_running());
+    assert_eq!(
+        rows[0].last_exit_reason,
+        "halted: 3 consecutive order failures (ack timeout)"
+    );
+    assert!(rows[0].live);
 }

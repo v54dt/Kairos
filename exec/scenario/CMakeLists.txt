@@ -183,7 +183,8 @@ target_link_libraries(kairos_scenario_supervisord PRIVATE kairos_scenario_ctl_se
 # --- tests ---
 enable_testing()
 add_executable(test_scenario_ctl_proto tests/test_scenario_ctl_proto.cpp)
-target_link_libraries(test_scenario_ctl_proto PRIVATE kairos_scenario_ctl_proto)
+target_link_libraries(test_scenario_ctl_proto PRIVATE kairos_scenario_ctl_proto
+                                                      kairos_scenario_state)
 add_test(NAME test_scenario_ctl_proto COMMAND test_scenario_ctl_proto)
 
 add_executable(test_scenario_state tests/test_scenario_state.cpp)

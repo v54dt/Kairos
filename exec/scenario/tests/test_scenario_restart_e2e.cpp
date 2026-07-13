@@ -170,8 +170,7 @@ int main() {
         bin, {"--scenario-dir", scenario_dir, "--trader-bin", crasher, "--ctl-sock", ctl},
         {{"KAIROS_RESTART_BASE_MS", "60"},
          {"KAIROS_RESTART_MAX_MS", "120"},
-         {"KAIROS_RESTART_MAX_RETRIES", "3"},
-         {"KAIROS_RESTART_HEALTHY_MS", "100000"}});
+         {"KAIROS_RESTART_MAX_RETRIES", "3"}});
     std::printf("e2e: supervisor(1) pid=%d pgid=%d\n", sup, sup);
     if (!WaitForPath(ctl, 5000)) {
       std::printf("test_scenario_restart_e2e: FAIL (ctl1 never appeared)\n");
@@ -235,8 +234,7 @@ int main() {
         bin, {"--scenario-dir", scenario_dir, "--trader-bin", crasher, "--ctl-sock", ctl},
         {{"KAIROS_RESTART_BASE_MS", "1500"},  // long backoff to stop within
          {"KAIROS_RESTART_MAX_MS", "1500"},
-         {"KAIROS_RESTART_MAX_RETRIES", "5"},
-         {"KAIROS_RESTART_HEALTHY_MS", "100000"}});
+         {"KAIROS_RESTART_MAX_RETRIES", "5"}});
     std::printf("e2e: supervisor(2) pid=%d\n", sup);
     if (!WaitForPath(ctl, 5000)) {
       std::printf("test_scenario_restart_e2e: FAIL (ctl2 never appeared)\n");
@@ -298,8 +296,7 @@ int main() {
         bin, {"--scenario-dir", scenario_dir, "--trader-bin", crasher, "--ctl-sock", ctl},
         {{"KAIROS_RESTART_BASE_MS", "60"},
          {"KAIROS_RESTART_MAX_MS", "120"},
-         {"KAIROS_RESTART_MAX_RETRIES", "3"},
-         {"KAIROS_RESTART_HEALTHY_MS", "100000"}});
+         {"KAIROS_RESTART_MAX_RETRIES", "3"}});
     std::printf("e2e: supervisor(3) pid=%d\n", sup);
     if (!WaitForPath(ctl, 5000)) {
       std::printf("test_scenario_restart_e2e: FAIL (ctl3 never appeared)\n");

@@ -39,8 +39,6 @@ RestartPolicy RestartPolicyFromEnv() {
     p.max_delay = std::chrono::milliseconds(std::atol(v));
   if (const char* v = std::getenv("KAIROS_RESTART_MAX_RETRIES"); v != nullptr && v[0] != '\0')
     p.max_retries = std::atoi(v);
-  if (const char* v = std::getenv("KAIROS_RESTART_HEALTHY_MS"); v != nullptr && v[0] != '\0')
-    p.healthy_reset = std::chrono::milliseconds(std::atol(v));
   return p;
 }
 }  // namespace

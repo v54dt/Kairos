@@ -7,6 +7,7 @@
 #include <thread>
 #include <utility>
 
+#include "engine_exit_codes.h"
 #include "order_codec.h"
 #include "tw_market.h"
 
@@ -32,12 +33,6 @@ LocalNow LocalFromUtc(std::chrono::system_clock::time_point tp) {
 int HhmmToMin(int hhmm) { return (hhmm / 100) * 60 + hhmm % 100; }
 
 constexpr int kMarketCloseHhmm = 1330;  // TWSE regular session close; hard stop
-
-// Distinct non-zero exits so the supervisor classifies the run crashed (and its
-// restart-on-crash backoff/cap applies); the stderr fatal line names the reason.
-constexpr int kNoJournalExit = 2;
-constexpr int kConnectFailExit = 3;
-constexpr int kHaltExit = 17;
 
 }  // namespace
 

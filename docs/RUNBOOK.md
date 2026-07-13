@@ -40,8 +40,7 @@ treated as unset everywhere.
 | `KAIROS_SCENARIO_TRADER` | exec supervisor; core sim tests | Path to the `kairos_scenario_trader` binary | `<scenario_dir>/build/kairos_scenario_trader` | `--trader-bin` flag > env > default |
 | `KAIROS_RESTART_BASE_MS` | exec supervisor | Crash-restart backoff base delay (ms); doubles each retry up to max | `1000` | env override, else `RestartPolicy` default |
 | `KAIROS_RESTART_MAX_MS` | exec supervisor | Crash-restart backoff cap (ms) | `60000` | env override, else default |
-| `KAIROS_RESTART_MAX_RETRIES` | exec supervisor | Consecutive crash restarts before the supervisor gives up on a scenario | `5` | env override, else default |
-| `KAIROS_RESTART_HEALTHY_MS` | exec supervisor | Run-survival time (ms) that resets the consecutive-crash counter | `60000` | env override, else default |
+| `KAIROS_RESTART_MAX_RETRIES` | exec supervisor | Consecutive crash restarts before the supervisor gives up on a scenario; the counter is cleared only by an operator start (a fail-closed halt, exit 17/2, never restarts at all) | `5` | env override, else default |
 | `KAIROS_SIM_AERON_DIR` | core (kairos-sim) | Isolated sim Aeron dir (never collides with live) | `/dev/shm/aeron-<user>-sim` | `--aeron-dir` flag > env > namespaced default |
 | `KAIROS_SIM_QUOTE_SOCK` | core (kairos-sim) | Isolated sim quote UDS | `<runtime>/kairos-sim-quotes.sock` | `--quote-sock` flag > env > default |
 | `KAIROS_SIM_ORDER_SOCK` | core (kairos-sim) | Isolated sim order UDS | `<runtime>/kairos-sim-orders.sock` | `--order-sock` flag > env > default |
