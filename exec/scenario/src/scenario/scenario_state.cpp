@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <string>
 
+#include "engine_exit_codes.h"
+
 namespace kairos::exec {
 
 namespace {
@@ -54,6 +56,8 @@ const char* StateName(ScenarioState state) {
       return "closed-exited";
     case ScenarioState::kCrashed:
       return "crashed";
+    case ScenarioState::kHalted:
+      return "halted";
     case ScenarioState::kStopping:
       return "stopping";
   }
@@ -105,6 +109,13 @@ ExitOutcome ClassifyExit(bool requested_stop, int wait_status, bool saw_end_line
     return {ScenarioState::kCrashed, reason};
   }
   int code = WIFEXITED(wait_status) ? WEXITSTATUS(wait_status) : -1;
+  // A deliberate fail-closed exit (order-failure halt, or a live run with no
+  // journal) is terminal: a restart re-orders after the engine deliberately stopped
+  // and cannot fix a missing journal. Never restart it.
+  if (code == kHaltExit || code == kNoJournalExit) {
+    return {ScenarioState::kHalted,
+            last_fail_reason.empty() ? "halted (fail-closed)" : last_fail_reason};
+  }
   if (code != 0) {
     std::string reason =
         last_fail_reason.empty() ? "exited with code " + std::to_string(code) : last_fail_reason;

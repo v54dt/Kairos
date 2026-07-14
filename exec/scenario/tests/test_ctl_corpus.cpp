@@ -75,6 +75,11 @@ std::vector<std::string> SnapLines() {
 
   out.push_back(SerializeScenarioSnapshot(false, "unknown cmd", {}));
 
+  out.push_back(SerializeScenarioSnapshot(
+      true, "",
+      {Row("s-halted", "halted", 0, 3, 39, 0, "halted: 3 consecutive order failures (ack timeout)",
+           true, 0, false)}));
+
   for (std::string& s : out) s = Strip(s);
   return out;
 }

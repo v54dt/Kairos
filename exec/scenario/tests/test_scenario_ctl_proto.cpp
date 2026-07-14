@@ -9,6 +9,7 @@
 
 #include "json_util.h"
 #include "scenario_ctl_proto.h"
+#include "scenario_state.h"
 #include "test_check.h"
 
 using namespace kairos::exec;
@@ -140,6 +141,16 @@ int main() {
     CHECK(s.find("\"last_exit_reason\":\"crashed; gave up after 5 restarts\"") !=
           std::string::npos);
     CHECK(!s.empty() && s.back() == '\n');
+  }
+  // A terminal halted row serializes with its reason (state is StateName pass-through).
+  {
+    std::vector<ScenarioSnapshotRow> rows;
+    rows.push_back({"0050", StateName(ScenarioState::kHalted), 0, 3, 39, 0,
+                    "halted: 3 consecutive order failures (ack timeout)", true, 0, false});
+    std::string s = SerializeScenarioSnapshot(true, "", rows);
+    CHECK(s.find("\"state\":\"halted\"") != std::string::npos);
+    CHECK(s.find("\"last_exit_reason\":\"halted: 3 consecutive order failures (ack timeout)\"") !=
+          std::string::npos);
   }
   // An error response carries ok=false + the reason.
   {

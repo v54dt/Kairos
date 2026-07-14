@@ -19,6 +19,7 @@ enum class ScenarioState {
   kFillRemainder,
   kClosedExited,
   kCrashed,
+  kHalted,
   kStopping,
 };
 
@@ -50,10 +51,12 @@ struct ExitOutcome {
 };
 
 // Terminal classification from the owned child's wait status. requested_stop wins
-// (an operator SIGINT is never mislabeled as a natural close); else a signal or
-// non-zero code is a crash; else a clean exit that reached the trader's end line
-// is closed-exited. `last_fail_reason` is the last ExtractFailureReason hit and
-// disambiguates a code-0 early bail (e.g. connect failed) as a crash.
+// (an operator SIGINT is never mislabeled as a natural close); a deliberate fail-
+// closed exit (kHaltExit/kNoJournalExit) is kHalted so the supervisor never respawns
+// it; else a signal or non-zero code is a crash; else a clean exit that reached the
+// trader's end line is closed-exited. `last_fail_reason` is the last
+// ExtractFailureReason hit and disambiguates a code-0 early bail (e.g. connect
+// failed) as a crash, or supplies the halt reason.
 ExitOutcome ClassifyExit(bool requested_stop, int wait_status, bool saw_end_line,
                          const std::string& last_fail_reason);
 

@@ -20,13 +20,13 @@ namespace kairos::exec {
 // Crash-restart tuning. Injectable so tests can use millisecond durations. A crash
 // re-spawns after an exponential backoff (base, 2*base, ... capped at max_delay);
 // after max_retries consecutive crash restarts the supervisor gives up. The
-// consecutive-crash counter resets only once a run survives healthy_reset, so an
-// occasional crash never exhausts the cap while a crash-loop still gives up.
+// consecutive-crash counter is cleared ONLY by an operator start or a process
+// restart (ops restart the supervisor daily), never by uptime: surviving a fixed
+// window does not prove health, and a halt/crash loop can outlive any such window.
 struct RestartPolicy {
   std::chrono::milliseconds base_delay{1000};
   std::chrono::milliseconds max_delay{60000};
   int max_retries = 5;
-  std::chrono::milliseconds healthy_reset{60000};
 };
 
 // Owns every scenario-trader child: one fork+execv per trader (NO setsid/double-

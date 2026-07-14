@@ -177,9 +177,6 @@ void ProcessManager::MaybeScheduleRestart(Child* c) {
   // operator stop, or anything during shutdown.
   if (c->state != ScenarioState::kCrashed || c->requested_stop || shutting_down_) return;
   RestartState& rs = restart_[c->name];
-  // Reset only after a full-cooldown run: an instantaneous in-window signal must not.
-  auto uptime = std::chrono::steady_clock::now() - c->spawn_time;
-  if (uptime >= policy_.healthy_reset) rs.restart_count = 0;
   if (rs.restart_count >= policy_.max_retries) {
     rs.gave_up = true;
     c->last_exit_reason =

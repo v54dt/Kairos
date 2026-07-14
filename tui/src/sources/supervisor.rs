@@ -38,8 +38,8 @@ impl Mode {
 
 /// Per-scenario lifecycle, mirroring the S1 `StateName()` strings. A running state
 /// (starting/wait-open/in-window/fill-remainder) renders GREEN; everything else
-/// (incl. stopping/closed-exited/crashed) renders RED. An unrecognized token is
-/// surfaced verbatim rather than silently mislabeled as running.
+/// (incl. stopping/closed-exited/crashed/halted) renders RED. An unrecognized token
+/// is surfaced verbatim rather than silently mislabeled as running.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScenarioState {
     Stopped,
@@ -49,6 +49,7 @@ pub enum ScenarioState {
     FillRemainder,
     ClosedExited,
     Crashed,
+    Halted,
     Stopping,
     Unknown(String),
 }
@@ -63,6 +64,7 @@ impl ScenarioState {
             "fill-remainder" => ScenarioState::FillRemainder,
             "closed-exited" => ScenarioState::ClosedExited,
             "crashed" => ScenarioState::Crashed,
+            "halted" => ScenarioState::Halted,
             "stopping" => ScenarioState::Stopping,
             other => ScenarioState::Unknown(other.to_string()),
         }
@@ -77,6 +79,7 @@ impl ScenarioState {
             ScenarioState::FillRemainder => "fill-remainder".to_string(),
             ScenarioState::ClosedExited => "closed-exited".to_string(),
             ScenarioState::Crashed => "crashed".to_string(),
+            ScenarioState::Halted => "halted".to_string(),
             ScenarioState::Stopping => "stopping".to_string(),
             ScenarioState::Unknown(s) => s.clone(),
         }
@@ -314,12 +317,20 @@ mod tests {
                 "{s} should be running"
             );
         }
-        for s in ["stopped", "stopping", "closed-exited", "crashed"] {
+        for s in ["stopped", "stopping", "closed-exited", "crashed", "halted"] {
             assert!(
                 !ScenarioState::parse(s).is_running(),
                 "{s} should not be running"
             );
         }
+    }
+
+    #[test]
+    fn halted_is_a_typed_terminal_state() {
+        let s = ScenarioState::parse("halted");
+        assert_eq!(s, ScenarioState::Halted);
+        assert!(!s.is_running());
+        assert_eq!(s.name(), "halted");
     }
 
     #[test]
