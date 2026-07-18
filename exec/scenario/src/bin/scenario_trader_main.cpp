@@ -109,13 +109,15 @@ EngineClock RtClock(bool ignore_window) {
 int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window) {
   std::unique_ptr<HttpPoster> poster;
   std::unique_ptr<NtfyDispatcher> dispatcher;
-  NullEventSink null_sink;
-  EventSink* sink = &null_sink;
+  LogEventSink log_sink;
+  std::vector<EventSink*> sinks{&log_sink};
   if (scenario.notify.enabled) {
     poster = std::make_unique<HttpPoster>();
     dispatcher = std::make_unique<NtfyDispatcher>(scenario.notify, poster.get());
-    sink = dispatcher.get();
+    sinks.push_back(dispatcher.get());
   }
+  TeeEventSink tee(std::move(sinks));
+  EventSink* sink = &tee;
 
   EngineLegFactory::BackendFn backend_fn =
       [paper_instant](const Scenario& leg) -> std::unique_ptr<OrderBackend> {

@@ -365,6 +365,10 @@ int Drill1(const Env& e) {
     std::printf("DRILL1: FAIL (SAFETY: order storm — submits not bounded: %d)\n", timeouts);
     rc = 1;
   }
+  if (Count(tlog, "enter-halt") < 1) {
+    std::printf("DRILL1: FAIL (SAFETY: no enter-halt alert emitted for the stranded partial)\n");
+    rc = 1;
+  }
   if (orphan) {
     std::printf("DRILL1: FAIL (orphan sim process group)\n");
     rc = 1;
@@ -399,10 +403,16 @@ int Drill2(const Env& e) {
     KillReap(sig, SIGKILL);  // daemon dies while the position is in HOLD
     std::string exit_trig = WaitRtRecord(n.journal_dir, "exit_trigger", 25000);
     int code = WaitExit(trader, 15000);
+    bool signal_loss_alert = Count(Slurp(n.trader_log), "rt:2330:alert") >= 1;
     bool orphan = ReapSim(n, sim);
-    std::printf("DRILL2A: held=%d exit_reason=%s flat=%d exit=%d orphan=%d\n", held,
-                JsonStr(exit_trig, "reason").c_str(), RtHas(n.journal_dir, "flat"), code, orphan);
+    std::printf("DRILL2A: held=%d exit_reason=%s flat=%d loss_alert=%d exit=%d orphan=%d\n", held,
+                JsonStr(exit_trig, "reason").c_str(), RtHas(n.journal_dir, "flat"),
+                signal_loss_alert, code, orphan);
     if (!held) std::printf("DRILL2A: FAIL (no HOLD to protect)\n"), rc = 1;
+    if (!signal_loss_alert) {
+      std::printf("DRILL2A: FAIL (SAFETY: no alert emitted when the signal daemon died)\n");
+      rc = 1;
+    }
     if (JsonStr(exit_trig, "reason") != "stop") {
       std::printf("DRILL2A: FAIL (SAFETY: stop did not fire with the signal daemon dead)\n");
       rc = 1;
