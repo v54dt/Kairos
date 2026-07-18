@@ -143,7 +143,9 @@ void SignalClient::ReadLoop(int fd) {
     }
     if (CheckLiveness()) break;  // heartbeat timeout -> reconnect
     if (p == 0) continue;
-    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) break;
+    if (pfd.revents & POLLNVAL) break;
+    // Drain buffered frames before honoring a hangup: a peer close coalesces
+    // POLLIN|POLLHUP, and recv() reports EOF only once the queue is emptied.
     ssize_t n = ::recv(fd, chunk, sizeof(chunk), 0);
     if (n <= 0) break;  // EOF or error
     for (ssize_t i = 0; i < n; ++i) {
