@@ -329,6 +329,29 @@ void TestQuoteStallForcedExit() {
                       std::to_string(static_cast<int>(ExitReason::kForcedTime))));
 }
 
+// The HOLD quote feed never delivers a first tick: the stall watchdog must still
+// force an exit, measuring staleness from HOLD start rather than never firing.
+void TestStallForcedExitWithoutFirstQuote() {
+  FakeClock clk;
+  FakeSignalSource sig;
+  FakeQuoteSource quotes;
+  FakeLegFactory legs;
+  RecorderSink sink;
+  Scenario s = BaseScenario();
+  s.quote_stall_alert_ms = 1000;
+  s.roundtrip.max_hold_min = 600;  // keep max-hold out of the way
+  RoundTripRunner runner(std::move(s), &sig, &quotes, &legs, &sink, clk.Make());
+  int rc = -1;
+  std::thread th([&] { rc = runner.Run(); });
+  ArmAndEnter(sig, sink);   // reach HOLD at mono=0; no quote ever pushed
+  clk.mono_ms.store(3000);  // 3s past HOLD start > 1s threshold
+  th.join();
+  CHECK_EQ(rc, 0);
+  CHECK(sink.Has("rt:2330:flat"));
+  CHECK(sink.HasField("rt:2330:exit", "reason",
+                      std::to_string(static_cast<int>(ExitReason::kForcedTime))));
+}
+
 void TestForcedExit1325() {
   FakeClock clk;
   FakeSignalSource sig;
@@ -556,6 +579,7 @@ int main() {
   TestStopTrigger();
   TestMaxHoldExpiry();
   TestQuoteStallForcedExit();
+  TestStallForcedExitWithoutFirstQuote();
   TestForcedExit1325();
   TestArmedSignalLostDisarm();
   TestHoldSignalLostStopStillFires();

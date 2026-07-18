@@ -228,11 +228,13 @@ void RoundTripRunner::CheckWatchdog() {
     tob = last_tob_;
     have = have_tob_;
   }
-  if (!have || !tob.valid) return;
-  if (s_.quote_stall_alert_ms > 0 && SteadyMs(mono - tob.recv_ts) > s_.quote_stall_alert_ms) {
+  // No quote yet: measure staleness from HOLD start so a feed dead from entry still trips.
+  auto last_recv = have ? tob.recv_ts : enter_done_mono_;
+  if (s_.quote_stall_alert_ms > 0 && SteadyMs(mono - last_recv) > s_.quote_stall_alert_ms) {
     Enqueue(RtEvent::kQuoteStallHard);
     return;
   }
+  if (!have || !tob.valid) return;  // no price to check the stop against
   long stop_cents =
       static_cast<long>(entry_avg_cents_ * (1.0 - s_.roundtrip.stop_loss_pct / 100.0));
   Cents ref = tob.last_trade > 0 ? tob.last_trade : tob.best_bid();
