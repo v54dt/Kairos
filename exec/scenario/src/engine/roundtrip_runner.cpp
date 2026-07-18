@@ -262,7 +262,16 @@ int RoundTripRunner::Run() {
       if (done_) break;
     }
     if (done_) break;
-    if (stop_) break;
+    if (stop_) {
+      // fail-closed: a stop with a position still open is a failed run, not a clean flat.
+      if (state_ == RtState::kHold || state_ == RtState::kExit) {
+        EmitPhase(EventCategory::kError, Severity::kError, "stopped",
+                  {{"remaining_shares", std::to_string(held_shares_)}});
+        state_ = RtState::kFailed;
+        exit_code_ = 1;
+      }
+      break;
+    }
     if (state_ == RtState::kHold) CheckWatchdog();
   }
 

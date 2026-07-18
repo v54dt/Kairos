@@ -440,6 +440,27 @@ void TestExitHaltLeavesPositionFatal() {
   CHECK_EQ(static_cast<int>(sink.SeverityOf("rt:2330:failed")), static_cast<int>(Severity::kError));
 }
 
+// Operator stop (SIGINT/SIGTERM) while a position is held: fail-closed with a loud
+// FATAL and non-zero exit, never a silent rc=0 that reads as a clean flat.
+void TestStopDuringHoldFailsClosed() {
+  FakeClock clk;
+  FakeSignalSource sig;
+  FakeQuoteSource quotes;
+  FakeLegFactory legs;
+  RecorderSink sink;
+  RoundTripRunner runner(BaseScenario(), &sig, &quotes, &legs, &sink, clk.Make());
+  int rc = -1;
+  std::thread th([&] { rc = runner.Run(); });
+  ArmAndEnter(sig, sink);  // 100 sh held
+  runner.RequestStop();
+  th.join();
+  CHECK_EQ(rc, 1);
+  CHECK(!sink.Has("rt:2330:flat"));
+  CHECK(sink.HasField("rt:2330:stopped", "remaining_shares", "100"));
+  CHECK_EQ(static_cast<int>(sink.SeverityOf("rt:2330:stopped")),
+           static_cast<int>(Severity::kError));
+}
+
 void TestDegenerateEnterGuard() {
   FakeClock clk;
   clk.wall_min.store(13 * 60 + 26);  // 13:26 >= 13:25: derive window would be degenerate
@@ -491,6 +512,7 @@ int main() {
   TestExitAfterEnterOrdering();
   TestEnterHaltWithFillsHolds();
   TestExitHaltLeavesPositionFatal();
+  TestStopDuringHoldFailsClosed();
   TestDegenerateEnterGuard();
   TestDegenerateExitGuard();
   if (g_failures == 0) {
