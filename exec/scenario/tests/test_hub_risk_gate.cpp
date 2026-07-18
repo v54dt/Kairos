@@ -71,11 +71,13 @@ OrderSubmitMsg Order(const std::string& id, const std::string& sym, Side side, C
 void Feed(OrderHub& hub, int client, const OrderSubmitMsg& o) {
   auto b = EncodeOrderSubmit(o);
   hub.OnClientMessage(client, b.data(), b.size());
+  hub.DrainForwardedForTest();  // forwarding is async now; wait for the backend to see it
 }
 
 void Cancel(OrderHub& hub, int client, const std::string& id) {
   auto b = EncodeOrderCancel({id});
   hub.OnClientMessage(client, b.data(), b.size());
+  hub.DrainForwardedForTest();  // wait for the forwarder to issue the broker cancel
 }
 
 // ---- registry accounting -----------------------------------------------

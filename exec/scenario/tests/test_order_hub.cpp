@@ -55,6 +55,7 @@ class StubBackend : public OrderBackend {
 
 void Feed(OrderHub& hub, int client, const std::vector<std::uint8_t>& bytes) {
   hub.OnClientMessage(client, bytes.data(), bytes.size());
+  hub.DrainForwardedForTest();  // forwarding is async now; wait for the backend to see it
 }
 
 }  // namespace
