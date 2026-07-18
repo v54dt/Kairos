@@ -31,7 +31,8 @@ treated as unset everywhere.
 | `KAIROS_QUOTE_SOCK` | core, exec (trader/hub), tui | Quote UDS: core publishes, consumers read | `<runtime>/kairos-quotes.sock` | env > XDG > run-user |
 | `KAIROS_ORDER_SOCK` | core (resolver), exec hub + scenarios | Order-hub UDS (hub <-> scenarios; not core) | `<runtime>/kairos-orders.sock` | env > XDG > run-user; or `hub.toml [hub] socket_path` |
 | `KAIROS_SCENARIO_CTL_SOCK` | exec supervisor, tui | Supervisor control UDS (TUI/operator <-> supervisor) | `<runtime>/kairos-scenario-ctl.sock` | env > XDG > run-user; or `--ctl-sock` flag |
-| `KAIROS_SIGNAL_SOCK` | exec signal client (B7; daemon in a later PR) | Signal daemon UDS (signald pushes signals/heartbeats to armed traders) | `<runtime>/kairos-signals.sock` | env > XDG > run-user |
+| `KAIROS_SIGNAL_SOCK` | exec signald + signal client | Signal daemon UDS (signald pushes signals/heartbeats to armed traders) | `<runtime>/kairos-signals.sock` | env > XDG > run-user |
+| `KAIROS_SIGNAL_SPOOL` | exec signald (manual predicate) | Operator drill spool: append a JSON line `{"signal","symbol","action"}` and the manual predicate emits it once | `<runtime>/kairos-signals.spool` | env > XDG > run-user; or `--spool` flag |
 | `KAIROS_HUB_STATUS` | exec hub (writes), tui (reads) | Hub status JSON path (fields incl. `halted`) | `<runtime>/kairos-hub-status.json` | env > XDG > run-user |
 | `KAIROS_HUB_HALT` | exec hub (watches), tui (arms/clears) | Admin-halt sentinel file; its existence halts all new submits | `<runtime>/kairos-hub-halt` | env > XDG > run-user |
 | `KAIROS_JOURNAL_DIR` | exec trader + hub | Shared run-state journal dir; same-day fills replay on restart so budget is not re-bought and hub unroutable fills land beside the trader's | `$HOME/Kairos/data/journal` (trader live: `<data-dir>/journal`) | `[journal].dir` / `[hub].journal_dir` toml > `KAIROS_JOURNAL_DIR` > legacy per-side env > `$HOME/Kairos/data/journal` |
@@ -77,7 +78,8 @@ scenarios all land on the same paths.
 | Quote UDS | `KAIROS_QUOTE_SOCK` | `kairos-quotes.sock` | core | trader, tui, `kairos-uds-client` |
 | Order UDS | `KAIROS_ORDER_SOCK` | `kairos-orders.sock` | hub (listens) | scenario traders |
 | Supervisor ctl UDS | `KAIROS_SCENARIO_CTL_SOCK` | `kairos-scenario-ctl.sock` | supervisor (listens) | tui / operator |
-| Signal UDS | `KAIROS_SIGNAL_SOCK` | `kairos-signals.sock` | signald (listens; later PR) | armed traders (signal client) |
+| Signal UDS | `KAIROS_SIGNAL_SOCK` | `kairos-signals.sock` | signald (listens) | armed traders (signal client) |
+| Signal spool | `KAIROS_SIGNAL_SPOOL` | `kairos-signals.spool` | operator (appends) | signald (manual predicate) |
 | Hub status JSON | `KAIROS_HUB_STATUS` | `kairos-hub-status.json` | hub | tui |
 | Hub halt sentinel | `KAIROS_HUB_HALT` | `kairos-hub-halt` | tui / operator | hub |
 
@@ -89,13 +91,14 @@ onto the live Aeron dir or either live socket.
 
 ## 3. Config files
 
-Three tomls. Committed templates are `*.example.*`; the live copies are
+Four tomls. Committed templates are `*.example.*`; the live copies are
 gitignored (they carry credentials). Env vars override toml only where a row says
 so; sockets are auto-resolved and normally need no config.
 
 | File | Template | Lives in | Holds |
 | --- | --- | --- | --- |
 | Scenario | `exec/scenario/scenario.example.toml` | `exec/scenario/*.toml` (gitignored) | `[scenario]`, `[fees]`, `[pricing]`, `[window]`, `[journal]`, `[risk]`, `[mode]`, `[notify]`, `[dashboard]`. No creds. Supports `base = "..."` inheritance |
+| Signal daemon | `exec/scenario/signald.example.toml` | `exec/scenario/signald.toml` (gitignored) | `[[predicate]]` entries (`kind`, `name`, `symbols` + per-kind params) for the `depth_evap` and `manual` predicates. No creds |
 | Order hub | `exec/scenario/hub.example.toml` | `exec/scenario/hub.toml` (gitignored) | `[user]` broker creds/PFX; `[hub]` socket_path/journal_dir/order_flow_journal; `[risk]` account-wide gate (notional caps, self-match, fat-finger collars). One hub per broker account |
 | Sidecar | `sidecar/concords/sidecar.toml.example` | `sidecar/concords/sidecar.toml` (gitignored) | `[user]` creds/PFX; `[feed]` symbols + `stale_restart_s`; `[reconnect] daily_at`; `[aeron] stream_id` + `dir` |
 
