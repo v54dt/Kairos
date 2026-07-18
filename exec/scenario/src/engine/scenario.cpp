@@ -293,7 +293,9 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
   if (rt.enabled) {
     if (s.side != Side::kBuy) errs.push_back("roundtrip requires a Buy scenario (long-only)");
     if (rt.signal.empty()) errs.push_back("roundtrip.signal is required when roundtrip.enabled");
-    if (rt.stop_loss_pct <= 0) errs.push_back("roundtrip.stop_loss_pct must be > 0");
+    if (rt.stop_loss_pct <= 0 || rt.stop_loss_pct >= 100)
+      errs.push_back(
+          "roundtrip.stop_loss_pct must be > 0 and < 100 (at 100 the stop can never fire)");
     if (rt.max_hold_min <= 0) errs.push_back("roundtrip.max_hold_min must be > 0");
     if (rt.enter_window_min <= 0) errs.push_back("roundtrip.enter_window_min must be > 0");
     if (rt.arm_end_hhmm > 1300) errs.push_back("roundtrip.arm_end must be <= 13:00");
