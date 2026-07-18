@@ -114,6 +114,7 @@ void RoundTripRunner::Recover() {
     case RecoveryDecision::kResumeHold:
     case RecoveryDecision::kResumeDegraded: {
       held_shares_ = plan.held_shares;
+      entered_shares_ = plan.entered_shares;
       entry_avg_cents_ = plan.entry_avg_c;
       // Bridge persisted wall time to the loop's steady clock: elapsed hold is the
       // wall delta since enter, clamped >= 0 so a backward operator clock jump only
@@ -159,7 +160,9 @@ FsmInput RoundTripRunner::BuildInput(const RunnerEvent& e) const {
   if (state_ == RtState::kEnter) {
     in.leg_had_fills = e.leg.filled_shares > 0;
   } else if (state_ == RtState::kExit) {
-    in.position_remaining = held_shares_ - e.leg.filled_shares > 0;
+    // leg.filled_shares is the exit engine's lifetime total sold (it replays prior
+    // sells), so the residual is against the lifetime shares bought, not net-held.
+    in.position_remaining = entered_shares_ - e.leg.filled_shares > 0;
   }
   return in;
 }
@@ -188,7 +191,7 @@ void RoundTripRunner::StartEnterLeg(int trigger_min) {
 }
 
 void RoundTripRunner::StartExitLeg(int now_min) {
-  Scenario leg = DeriveExitLeg(s_, held_shares_, exit_reason_, now_min);
+  Scenario leg = DeriveExitLeg(s_, entered_shares_, exit_reason_, now_min);
   leg.name += "-exit";
   exit_leg_ = legs_->Create(leg);
   active_leg_.store(exit_leg_.get());
@@ -214,6 +217,7 @@ RtState RoundTripRunner::Execute(RtState from, const RunnerEvent& e, const FsmOu
   if (from == RtState::kEnter && next == RtState::kHold) {
     JoinEnterThread();
     held_shares_ = e.leg.filled_shares;
+    entered_shares_ = e.leg.filled_shares;
     entry_avg_cents_ = e.leg.avg_price_cents;
     enter_done_mono_ = clock_.mono();
     if (rt_enabled_)
@@ -294,7 +298,7 @@ RtState RoundTripRunner::Execute(RtState from, const RunnerEvent& e, const FsmOu
       break;
     case RtAction::kTerminalFailed: {
       if (from == RtState::kExit) JoinExitThread();
-      long remaining = held_shares_ - e.leg.filled_shares;
+      long remaining = entered_shares_ - e.leg.filled_shares;
       if (rt_enabled_)
         RoundTripJournal::Failed(rt_dir_, rt_name_, "exit_incomplete", remaining, WallUs());
       EmitPhase(EventCategory::kError, Severity::kError, "failed",

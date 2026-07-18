@@ -121,7 +121,8 @@ class RoundTripRunner {
 
   RtState state_ = RtState::kArmed;
   bool signal_lost_ = false;  // loop-thread level view of signal health (edge-triggered events)
-  long held_shares_ = 0;
+  long held_shares_ = 0;      // net long still open
+  long entered_shares_ = 0;   // lifetime shares bought this day; the exit leg's total to sell
   long entry_avg_cents_ = 0;
   std::chrono::steady_clock::time_point enter_done_mono_{};
   ExitReason exit_reason_ = ExitReason::kForcedTime;

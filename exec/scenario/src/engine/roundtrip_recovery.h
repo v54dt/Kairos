@@ -35,11 +35,12 @@ struct RecoveryInputs {
 
 struct RecoveryPlan {
   RecoveryDecision decision = RecoveryDecision::kFresh;
-  long held_shares = 0;    // net long to resume with
-  long entry_avg_c = 0;    // average Buy price (cents) for the stop reference
-  long enter_wall_us = 0;  // wall-clock anchor the runner turns into remaining max-hold
-  bool degraded = false;   // resumed without a recorded enter_done
-  std::string message;     // human-readable note for the refuse/resume alert
+  long held_shares = 0;     // net long to resume with
+  long entered_shares = 0;  // total Buy shares this day = lifetime shares the exit must sell
+  long entry_avg_c = 0;     // average Buy price (cents) for the stop reference
+  long enter_wall_us = 0;   // wall-clock anchor the runner turns into remaining max-hold
+  bool degraded = false;    // resumed without a recorded enter_done
+  std::string message;      // human-readable note for the refuse/resume alert
 };
 
 RecoveryPlan DeriveRecovery(const RecoveryInputs& in);

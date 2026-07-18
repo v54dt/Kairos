@@ -26,6 +26,7 @@ RecoveryPlan DeriveRecovery(const RecoveryInputs& in) {
   // net > 0: we still hold a position. Fail-closed — always resume HOLD so the stop
   // watchdog protects it, regardless of what the rt journal says.
   p.held_shares = net;
+  p.entered_shares = in.buy_filled;  // exit leg replays prior sells, so it sells the lifetime total
   p.entry_avg_c = in.buy_filled > 0 ? in.buy_notional_c / in.buy_filled : 0;
   if (in.rt.has_enter_done) {
     p.decision = RecoveryDecision::kResumeHold;
