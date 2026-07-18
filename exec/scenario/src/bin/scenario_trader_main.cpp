@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -76,19 +77,37 @@ bool ProbeRtJournal(const std::string& dir, const std::string& name) {
   return true;
 }
 
+// Test-only seam (--test-wall-hhmm HHMM, negative => unset): offset the shared
+// round-trip clock to today's HH:MM UTC+8 while it keeps advancing in real time, so
+// off-hours fault drills can drive the in-window arm and the past-13:25 degenerate
+// paths. The typed flag is honored only with --ignore-window and never from the
+// environment, so no stray export can move a real session's clock (see main()).
+EngineClock RtClock(int test_wall_hhmm) {
+  if (test_wall_hhmm < 0) return EngineClock{};
+  int target_min = (test_wall_hhmm / 100) * 60 + (test_wall_hhmm % 100);
+  auto now = std::chrono::system_clock::now();
+  auto day = std::chrono::floor<std::chrono::days>(now + std::chrono::hours(8));
+  auto offset = (day + std::chrono::minutes(target_min) - std::chrono::hours(8)) - now;
+  EngineClock c;
+  c.wall = [offset] { return std::chrono::system_clock::now() + offset; };
+  return c;
+}
+
 // Round-trip: own signal subscription + HOLD quote feed + per-leg engines. Each leg
 // builds a fresh backend and quote client for its own symbol; live legs route real
 // orders through the shared order hub, paper legs use the queue-model sim.
-int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window) {
+int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window, int test_wall_hhmm) {
   std::unique_ptr<HttpPoster> poster;
   std::unique_ptr<NtfyDispatcher> dispatcher;
-  NullEventSink null_sink;
-  EventSink* sink = &null_sink;
+  LogEventSink log_sink;
+  std::vector<EventSink*> sinks{&log_sink};
   if (scenario.notify.enabled) {
     poster = std::make_unique<HttpPoster>();
     dispatcher = std::make_unique<NtfyDispatcher>(scenario.notify, poster.get());
-    sink = dispatcher.get();
+    sinks.push_back(dispatcher.get());
   }
+  TeeEventSink tee(std::move(sinks));
+  EventSink* sink = &tee;
 
   EngineLegFactory::BackendFn backend_fn =
       [paper_instant](const Scenario& leg) -> std::unique_ptr<OrderBackend> {
@@ -101,13 +120,13 @@ int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window) {
     return std::make_unique<UdsQuoteClient>(QuoteSocketPath(),
                                             std::vector<std::string>{leg.symbol});
   };
-  EngineLegFactory legs(std::move(backend_fn), std::move(quote_fn), sink, EngineClock{},
-                        ignore_window);
+  EngineClock rt_clock = RtClock(test_wall_hhmm);
+  EngineLegFactory legs(std::move(backend_fn), std::move(quote_fn), sink, rt_clock, ignore_window);
 
   SignalClientSource signal(SignalSocketPath(),
                             SignalSubscribe{scenario.roundtrip.signal, scenario.symbol});
   UdsQuoteClient hold_quotes(QuoteSocketPath(), {scenario.symbol});
-  RoundTripRunner runner(std::move(scenario), &signal, &hold_quotes, &legs, sink, EngineClock{});
+  RoundTripRunner runner(std::move(scenario), &signal, &hold_quotes, &legs, sink, rt_clock);
   g_runner = &runner;
   return runner.Run();
 }
@@ -121,6 +140,7 @@ int main(int argc, char** argv) {
   bool ignore_window = false;
   bool ignore_blacklist = false;
   long override_budget = 0;
+  int test_wall_hhmm = -1;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     if (a == "--check") {
@@ -137,6 +157,8 @@ int main(int argc, char** argv) {
       ignore_blacklist = true;
     } else if (a == "--budget" && i + 1 < argc) {
       override_budget = std::atol(argv[++i]);
+    } else if (a == "--test-wall-hhmm" && i + 1 < argc) {
+      test_wall_hhmm = std::atoi(argv[++i]);
     } else if (!a.empty() && a[0] != '-') {
       path = a;
     }
@@ -147,6 +169,25 @@ int main(int argc, char** argv) {
                  "[--check|--live|--paper-instant] "
                  "[--budget n] [--ignore-window] [--ignore-blacklist] [--yes]\n");
     return 1;
+  }
+
+  // Test-clock seam: the typed flag is the only way to shift the session clock, and
+  // it is inert without the deliberate off-hours override. On a live session it is a
+  // loud, explicit operator choice, never something a stray environment can trigger.
+  if (test_wall_hhmm >= 0 && !ignore_window) {
+    std::fprintf(stderr, "kairos-exec: FATAL --test-wall-hhmm requires --ignore-window\n");
+    return 1;
+  }
+  if (test_wall_hhmm >= 0 && flag_live) {
+    std::fprintf(stderr,
+                 "\n"
+                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+                 "!!! WARNING: TEST CLOCK ACTIVE ON A --live SESSION\n"
+                 "!!! --test-wall-hhmm=%02d:%02d shifts the session clock (UTC+8)\n"
+                 "!!! the 13:25/13:30 protections are DISPLACED from real wall time\n"
+                 "!!! this is an explicit operator override; abort now if unintended\n"
+                 "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n\n",
+                 test_wall_hhmm / 100, test_wall_hhmm % 100);
   }
 
   Scenario scenario;
@@ -241,7 +282,7 @@ int main(int argc, char** argv) {
         }
       }
     }
-    return RunRoundTrip(std::move(scenario), flag_paper_instant, ignore_window);
+    return RunRoundTrip(std::move(scenario), flag_paper_instant, ignore_window, test_wall_hhmm);
   }
 
   // --live routes orders through the shared order hub (kairos_order_hubd); the hub

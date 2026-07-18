@@ -360,6 +360,12 @@ add_executable(test_sim_fault_drills tests/test_sim_fault_drills.cpp)
 add_dependencies(test_sim_fault_drills kairos_sim_hubd kairos_scenario_trader)
 add_test(NAME test_sim_fault_drills COMMAND test_sim_fault_drills)
 
+# Opt-in round-trip fault drills: real signald + trader in [roundtrip] mode against the faulted sim
+# pipeline. Same KAIROS_FAULT_DRILLS gate; its own longer TIMEOUT below.
+add_executable(test_roundtrip_fault_drills tests/test_roundtrip_fault_drills.cpp)
+add_dependencies(test_roundtrip_fault_drills kairos_sim_hubd kairos_scenario_trader kairos_signald)
+add_test(NAME test_roundtrip_fault_drills COMMAND test_roundtrip_fault_drills)
+
 add_executable(test_order_codec tests/test_order_codec.cpp)
 target_link_libraries(test_order_codec PRIVATE kairos_order_codec)
 add_test(NAME test_order_codec COMMAND test_order_codec)
@@ -560,3 +566,4 @@ set_tests_properties(${KAIROS_ALL_TESTS} PROPERTIES TIMEOUT 60)
 set_tests_properties(test_scenario_process test_scenario_restart test_scenario_restart_e2e
                      test_hub_unroutable_e2e test_engine PROPERTIES TIMEOUT 120)
 set_tests_properties(test_scenario_supervisor_e2e test_sim_fault_drills PROPERTIES TIMEOUT 180)
+set_tests_properties(test_roundtrip_fault_drills PROPERTIES TIMEOUT 360)

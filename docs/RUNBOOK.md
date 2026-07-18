@@ -61,10 +61,17 @@ does not require them, but the drills below need them.
 | `KAIROS_SIM_BIN` | tui `sim_quote_smoke`, `supervisor_e2e` | Locate the `kairos-sim` binary (default `core/target/release/kairos-sim`) |
 | `KAIROS_SCENARIO_SUPERVISORD` | tui `supervisor_e2e` | Locate `kairos_scenario_supervisord` (default `exec/scenario/build/...`) |
 | `KAIROS_SUPERVISOR_E2E` | exec `test_scenario_supervisor_e2e` | Gate: set `=1` to run (else self-skips) |
-| `KAIROS_FAULT_DRILLS` | exec `test_sim_fault_drills` | Gate: set `=1` to run (else self-skips) |
+| `KAIROS_FAULT_DRILLS` | exec `test_sim_fault_drills`, `test_roundtrip_fault_drills` | Gate: set `=1` to run (else self-skips) |
 | `KAIROS_GOLDEN_PATH` | sidecar `test_golden` | Compile-time `-D` macro: path to `quote_golden_envelope.bin` |
 | `KAIROS_QUOTE_V2_GOLDEN_PATH` | sidecar `test_golden_v2` | Compile-time `-D` macro: path to `quote_v2_golden_envelope.bin` |
 | `KAIROS_TRADE_GOLDEN_PATH` | sidecar `test_trade` | Compile-time `-D` macro: path to `trade_golden_envelope.bin` |
+
+The round-trip trader also carries one test-only **CLI flag** (never an env var, so no
+stray export can trigger it): `kairos_scenario_trader --test-wall-hhmm <HHMM>` shifts the
+round-trip session clock to today's `HH:MM` UTC+8 (still advancing in real time) so
+off-hours drills can drive the in-window arm and the past-13:25 paths. It is honored only
+with `--ignore-window` (fatal otherwise) and prints a loud warning banner when combined
+with `--live`. Omit it in production => real system clock. The supervisor never passes it.
 
 ## 2. Sockets & runtime files
 
@@ -156,6 +163,7 @@ cmake --build exec/scenario/build -j               # sim_hubd, scenario_trader, 
 | tui `supervisor_e2e` | `KAIROS_SIM_BIN=<sim> KAIROS_SIM_HUBD=<sim_hubd> KAIROS_SCENARIO_TRADER=<trader> KAIROS_SCENARIO_SUPERVISORD=<supervisord> cargo test -p kairos-tui --test supervisor_e2e -- --ignored --nocapture` (cwd `tui/`) | sim, sim_hubd, trader, supervisord | The Rust supervisor client speaks the S1 wire format; list/start(test)/stop drives a real daemon to running-with-fills and back to stopped; no orphans |
 | exec `scenario_supervisor_e2e` | `KAIROS_SUPERVISOR_E2E=1 ctest --test-dir exec/scenario/build -R scenario_supervisor_e2e --output-on-failure` | built exec bins | The C++ supervisor owns and reaps a filling trader end-to-end |
 | exec `sim_fault_drills` | `KAIROS_FAULT_DRILLS=1 exec/scenario/build/test_sim_fault_drills` | sim_hubd, trader | Ack-drop storm halt, reject storm, late-fill, disconnect fault-injection drills |
+| exec `roundtrip_fault_drills` | `KAIROS_FAULT_DRILLS=1 exec/scenario/build/test_roundtrip_fault_drills` | sim_hubd, signald, trader | Round-trip incident replays end-to-end (real signald manual trigger + trader in `[roundtrip]`): ENTER ack-drop storm transfers the partial into a protected HOLD; signald-kill leaves the stop live; EXIT reject storm fails loud with shares named; quote-feed break forces a fail-closed exit; hub disconnect stops the exit leg; SIGKILL-in-HOLD restart resumes protection; a past-13:25 trigger starts no leg |
 | exec `scenario_restart_e2e` | `ctest --test-dir exec/scenario/build -R scenario_restart_e2e --output-on-failure` | supervisord | Crash-restart backoff, give-up after max retries, and cancel drills (`KAIROS_RESTART_*` injected by the test) |
 
 ## 6. `make drills`
