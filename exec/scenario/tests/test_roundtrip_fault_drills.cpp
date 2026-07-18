@@ -23,8 +23,8 @@
 //   DRILL 6  Late trigger: a manual signal after the arm window closes is dropped by the
 //            arm-window guard with no leg started, and an out-of-window alert fires.
 //
-// The wall clock is offset into the trading session with the KAIROS_RT_WALL_HHMM test
-// seam so these run off-hours. Opt-in: self-skips (exit 0) unless KAIROS_FAULT_DRILLS=1.
+// The wall clock is offset into the trading session with the --test-wall-hhmm test
+// flag so these run off-hours. Opt-in: self-skips (exit 0) unless KAIROS_FAULT_DRILLS=1.
 
 #include <fcntl.h>
 #include <signal.h>
@@ -326,12 +326,12 @@ pid_t StartTrader(const Env& e, const Ns& n, const std::vector<std::string>& mod
                   const std::string& wall_hhmm) {
   std::vector<std::string> argv = {e.trader, n.scn_toml};
   for (const auto& a : mode_args) argv.push_back(a);
-  argv.insert(argv.end(), {"--yes", "--ignore-window", "--ignore-blacklist"});
+  argv.insert(argv.end(),
+              {"--yes", "--ignore-window", "--ignore-blacklist", "--test-wall-hhmm", wall_hhmm});
   return SpawnLogged(argv,
                      {{"KAIROS_QUOTE_SOCK", n.quote_sock},
                       {"KAIROS_ORDER_SOCK", n.order_sock},
                       {"KAIROS_SIGNAL_SOCK", n.signal_sock},
-                      {"KAIROS_RT_WALL_HHMM", wall_hhmm},
                       {"HOME", n.base.string()}},
                      n.trader_log, /*own_pgroup=*/false);
 }

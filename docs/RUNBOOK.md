@@ -62,10 +62,16 @@ does not require them, but the drills below need them.
 | `KAIROS_SCENARIO_SUPERVISORD` | tui `supervisor_e2e` | Locate `kairos_scenario_supervisord` (default `exec/scenario/build/...`) |
 | `KAIROS_SUPERVISOR_E2E` | exec `test_scenario_supervisor_e2e` | Gate: set `=1` to run (else self-skips) |
 | `KAIROS_FAULT_DRILLS` | exec `test_sim_fault_drills`, `test_roundtrip_fault_drills` | Gate: set `=1` to run (else self-skips) |
-| `KAIROS_RT_WALL_HHMM` | exec `kairos_scenario_trader` (test seam) | Off-hours drill seam: offset the round-trip clock to today's `HHMM` UTC+8 (still advancing in real time) so fault drills can drive the in-window arm and past-13:25 degenerate paths. Unset in production => real system clock |
 | `KAIROS_GOLDEN_PATH` | sidecar `test_golden` | Compile-time `-D` macro: path to `quote_golden_envelope.bin` |
 | `KAIROS_QUOTE_V2_GOLDEN_PATH` | sidecar `test_golden_v2` | Compile-time `-D` macro: path to `quote_v2_golden_envelope.bin` |
 | `KAIROS_TRADE_GOLDEN_PATH` | sidecar `test_trade` | Compile-time `-D` macro: path to `trade_golden_envelope.bin` |
+
+The round-trip trader also carries one test-only **CLI flag** (never an env var, so no
+stray export can trigger it): `kairos_scenario_trader --test-wall-hhmm <HHMM>` shifts the
+round-trip session clock to today's `HH:MM` UTC+8 (still advancing in real time) so
+off-hours drills can drive the in-window arm and the past-13:25 paths. It is honored only
+with `--ignore-window` (fatal otherwise) and prints a loud warning banner when combined
+with `--live`. Omit it in production => real system clock. The supervisor never passes it.
 
 ## 2. Sockets & runtime files
 
