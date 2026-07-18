@@ -79,11 +79,20 @@ bool ProbeRtJournal(const std::string& dir, const std::string& name) {
 
 // Test-only seam (KAIROS_RT_WALL_HHMM=HHMM): offset the shared round-trip clock to
 // today's HH:MM UTC+8 while it keeps advancing in real time, so off-hours fault
-// drills can drive the in-window arm and the past-13:25 degenerate paths. Unset =>
-// the real system clock. Same *ForTest injection precedent as KAIROS_RESTART_*.
-EngineClock RtClock() {
+// drills can drive the in-window arm and the past-13:25 degenerate paths. Gated on
+// --ignore-window so a stray env export can never move a real session's clock: a
+// live run without that deliberate off-hours override ignores it. Unset => the real
+// system clock.
+EngineClock RtClock(bool ignore_window) {
   const char* hhmm = std::getenv("KAIROS_RT_WALL_HHMM");
   if (hhmm == nullptr || hhmm[0] == '\0') return EngineClock{};
+  if (!ignore_window) {
+    std::fprintf(stderr,
+                 "kairos-exec: ignoring KAIROS_RT_WALL_HHMM (only honored with --ignore-window)\n");
+    return EngineClock{};
+  }
+  std::fprintf(stderr, "kairos-exec: WARNING KAIROS_RT_WALL_HHMM=%s overrides the session clock\n",
+               hhmm);
   int v = std::atoi(hhmm);
   int target_min = (v / 100) * 60 + (v % 100);
   auto now = std::chrono::system_clock::now();
@@ -119,7 +128,7 @@ int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window) {
     return std::make_unique<UdsQuoteClient>(QuoteSocketPath(),
                                             std::vector<std::string>{leg.symbol});
   };
-  EngineClock rt_clock = RtClock();
+  EngineClock rt_clock = RtClock(ignore_window);
   EngineLegFactory legs(std::move(backend_fn), std::move(quote_fn), sink, rt_clock, ignore_window);
 
   SignalClientSource signal(SignalSocketPath(),
