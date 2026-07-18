@@ -147,6 +147,14 @@ struct OrderCancelResult {
   ok @1 :Bool;
 }
 
+# Hub -> owning scenario: the queued submit has cleared the forwarder gate and is
+# being handed to the broker now. Lets the trader restart its ack-timeout clock
+# from the moment the order actually reached the broker, so hub queue delay is not
+# misread as broker silence.
+struct OrderForwarded {
+  id @0 :Text;
+}
+
 struct OrderEnvelope {
   union {
     submit       @0 :OrderSubmit;
@@ -155,5 +163,6 @@ struct OrderEnvelope {
     fill         @3 :OrderFill;
     cancelResult @4 :OrderCancelResult;
     heartbeat    @5 :Void;
+    forwarded    @6 :OrderForwarded;
   }
 }

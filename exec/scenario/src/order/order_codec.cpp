@@ -68,6 +68,12 @@ std::vector<std::uint8_t> EncodeOrderCancelResult(const OrderCancelResultMsg& m)
   return Flatten(msg);
 }
 
+std::vector<std::uint8_t> EncodeOrderForwarded(const OrderForwardedMsg& m) {
+  capnp::MallocMessageBuilder msg;
+  msg.initRoot<OrderEnvelope>().initForwarded().setId(m.id.c_str());
+  return Flatten(msg);
+}
+
 bool DecodeOrder(const std::uint8_t* data, std::size_t len, OrderMessage* out) {
   if (data == nullptr || len == 0 || len % sizeof(capnp::word) != 0) {
     return false;
@@ -121,6 +127,10 @@ bool DecodeOrder(const std::uint8_t* data, std::size_t len, OrderMessage* out) {
       }
       case OrderEnvelope::HEARTBEAT:
         out->kind = OrderMsgKind::kHeartbeat;
+        return true;
+      case OrderEnvelope::FORWARDED:
+        out->kind = OrderMsgKind::kForwarded;
+        out->forwarded.id = env.getForwarded().getId().cStr();
         return true;
     }
     return false;

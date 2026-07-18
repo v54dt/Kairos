@@ -207,6 +207,13 @@ bool OrderFlowJournal::AppendCancelReq(const std::string& dir, const std::string
               false);
 }
 
+bool OrderFlowJournal::AppendForwarded(const std::string& dir, const std::string& id) {
+  return Emit(dir,
+              "{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"forwarded\",\"id\":\"" +
+                  JsonEscape(id) + "\"}\n",
+              false);
+}
+
 bool OrderFlowJournal::AppendCancelAck(const std::string& dir, const std::string& id, bool ok,
                                        bool withdrawn) {
   return Emit(dir,

@@ -66,6 +66,9 @@ class OrderFlowJournal {
   static bool AppendFill(const std::string& dir, const std::string& id, long shares, Cents price,
                          bool unroutable);
   static bool AppendCancelReq(const std::string& dir, const std::string& id);
+  // The queued submit cleared the forwarder gate and is being handed to the
+  // broker now (hub PR-B); flush-only, it carries no money field.
+  static bool AppendForwarded(const std::string& dir, const std::string& id);
   // withdrawn=true marks a cancel the hub honored locally: the submit was still
   // queued and never reached the broker (no broker cancel was issued).
   static bool AppendCancelAck(const std::string& dir, const std::string& id, bool ok,

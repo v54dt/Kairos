@@ -54,6 +54,7 @@ std::string BuildFile() {
   PutFrame(&out, EncodeOrderAck({"k12345-7", false, "rejected by broker"}));
   PutFrame(&out, EncodeOrderFill({"k12345-7", 1000, 92500}));
   PutFrame(&out, EncodeOrderCancelResult({"k12345-7", true}));
+  PutFrame(&out, EncodeOrderForwarded({"k12345-7"}));  // appended: additive @6 variant
   return out;
 }
 
@@ -99,7 +100,7 @@ int main() {
   }
 
   std::vector<std::vector<std::uint8_t>> frames = Frames(committed);
-  CHECK_EQ(static_cast<int>(frames.size()), 5);
+  CHECK_EQ(static_cast<int>(frames.size()), 6);
   OrderMessage out;
 
   CHECK(DecodeOrder(frames[0].data(), frames[0].size(), &out));
@@ -134,6 +135,13 @@ int main() {
   CHECK(out.kind == OrderMsgKind::kCancelResult);
   CHECK(out.cancel_result.id == "k12345-7");
   CHECK(out.cancel_result.ok);
+
+  CHECK(DecodeOrder(frames[5].data(), frames[5].size(), &out));
+  CHECK(out.kind == OrderMsgKind::kForwarded);
+  CHECK(out.forwarded.id == "k12345-7");
+
+  // A truncated forwarded frame (not a whole number of capnp words) is rejected.
+  CHECK(!DecodeOrder(frames[5].data(), frames[5].size() - 1, &out));
 
   if (g_failures != 0) std::printf("%d failures\n", g_failures);
   return g_failures == 0 ? 0 : 1;
