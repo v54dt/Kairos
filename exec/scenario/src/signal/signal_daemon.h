@@ -3,7 +3,9 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
@@ -102,20 +104,31 @@ class SignalDaemon {
   std::size_t SubscriberCount(const std::string& signal, const std::string& symbol);
 
  private:
+  // Each connection has its own writer thread draining a bounded outbound queue,
+  // so a slow/wedged client is dropped rather than head-of-line-blocking the
+  // shared heartbeat/dispatch threads writing to every other client.
   struct Conn {
     int fd = -1;
-    std::mutex write_mu;                                 // serializes whole-line writes + seq bump
-    std::uint64_t seq = 0;                               // guarded by write_mu
     std::set<std::pair<std::string, std::string>> subs;  // guarded by clients_mu_
+
+    std::mutex write_mu;  // guards q, q_bytes, seq, closed
+    std::condition_variable write_cv;
+    std::deque<std::string> q;  // serialized frames pending write
+    std::size_t q_bytes = 0;
+    std::uint64_t seq = 0;  // shared by heartbeats + signals
+    bool closed = false;    // writer should drain-and-exit; client is being dropped
+    std::thread writer;
   };
 
   void AcceptLoop();
   void ClientLoop(std::shared_ptr<Conn> conn);
+  void WriterLoop(const std::shared_ptr<Conn>& conn);
   void HeartbeatLoop();
   void PollLoop();
 
   void HandleSubscribe(const std::shared_ptr<Conn>& conn, const std::string& line);
   void Dispatch(const std::vector<SignalEmit>& emits);
+  void EnqueueLocked(Conn& conn, std::string frame);
   void SendHeartbeat(Conn& conn);
   void SendSignal(Conn& conn, const SignalEmit& emit);
   void SendAck(Conn& conn, const SignalAck& ack);

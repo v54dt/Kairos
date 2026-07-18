@@ -21,13 +21,19 @@ namespace kairos::exec {
 
 namespace {
 
-void WriteAll(int fd, const std::string& s) {
+// Cap on a single client's pending outbound bytes; past it the client is dropped
+// so a permanently-stuck reader cannot grow the daemon's memory without bound. A
+// client that falls this far behind is broken; healthy readers drain well under it.
+constexpr std::size_t kMaxConnBacklog = 16u << 20;  // 16 MiB
+
+bool WriteAll(int fd, const std::string& s) {
   std::size_t off = 0;
   while (off < s.size()) {
-    ssize_t w = ::write(fd, s.data() + off, s.size() - off);
-    if (w <= 0) return;  // closed or timed out: drop, ClientLoop detects EOF
+    ssize_t w = ::send(fd, s.data() + off, s.size() - off, MSG_NOSIGNAL);
+    if (w <= 0) return false;  // closed or timed out: caller drops the client
     off += static_cast<std::size_t>(w);
   }
+  return true;
 }
 
 void InterruptibleSleep(std::chrono::milliseconds d, const std::atomic<bool>& stop) {
@@ -240,10 +246,11 @@ void SignalDaemon::AcceptLoop() {
       if (stop_) break;
       continue;
     }
-    timeval tv{5, 0};  // bound writes: a stuck reader can't wedge the daemon
+    timeval tv{5, 0};  // backstop for this client's own writer thread
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     auto conn = std::make_shared<Conn>();
     conn->fd = fd;
+    conn->writer = std::thread([this, conn] { WriterLoop(conn); });
     {
       std::lock_guard<std::mutex> lock(clients_mu_);
       conns_[fd] = conn;
@@ -286,6 +293,13 @@ void SignalDaemon::ClientLoop(std::shared_ptr<Conn> conn) {
       }
     }
   }
+  {
+    std::lock_guard<std::mutex> lock(conn->write_mu);
+    conn->closed = true;
+  }
+  conn->write_cv.notify_all();
+  ::shutdown(fd, SHUT_RDWR);  // unblock the writer if it is mid-send
+  if (conn->writer.joinable()) conn->writer.join();
   {
     std::lock_guard<std::mutex> lock(clients_mu_);
     conns_.erase(fd);
@@ -345,16 +359,51 @@ void SignalDaemon::Dispatch(const std::vector<SignalEmit>& emits) {
   }
 }
 
+void SignalDaemon::EnqueueLocked(Conn& conn, std::string frame) {
+  if (conn.closed) return;
+  if (conn.q_bytes + frame.size() > kMaxConnBacklog) {
+    conn.closed = true;  // slow client: drop it instead of blocking the fleet
+    ::shutdown(conn.fd, SHUT_RDWR);
+    conn.write_cv.notify_all();
+    return;
+  }
+  conn.q_bytes += frame.size();
+  conn.q.push_back(std::move(frame));
+  conn.write_cv.notify_one();
+}
+
+void SignalDaemon::WriterLoop(const std::shared_ptr<Conn>& conn) {
+  while (true) {
+    std::string frame;
+    {
+      std::unique_lock<std::mutex> lock(conn->write_mu);
+      conn->write_cv.wait(lock, [&] { return conn->closed || !conn->q.empty(); });
+      if (conn->closed) return;
+      frame = std::move(conn->q.front());
+      conn->q.pop_front();
+      conn->q_bytes -= frame.size();
+    }
+    if (!WriteAll(conn->fd, frame)) {
+      std::lock_guard<std::mutex> lock(conn->write_mu);
+      conn->closed = true;  // dead peer: stop writing, ClientLoop will tear down
+      ::shutdown(conn->fd, SHUT_RDWR);
+      return;
+    }
+  }
+}
+
 void SignalDaemon::SendHeartbeat(Conn& conn) {
   std::lock_guard<std::mutex> lock(conn.write_mu);
+  if (conn.closed) return;
   SignalHeartbeat hb;
   hb.seq = ++conn.seq;
   hb.ts_us = clock_.wall_us();
-  WriteAll(conn.fd, SerializeHeartbeat(hb));
+  EnqueueLocked(conn, SerializeHeartbeat(hb));
 }
 
 void SignalDaemon::SendSignal(Conn& conn, const SignalEmit& emit) {
   std::lock_guard<std::mutex> lock(conn.write_mu);
+  if (conn.closed) return;
   SignalPush push;
   push.signal = emit.signal;
   push.symbol = emit.symbol;
@@ -362,12 +411,12 @@ void SignalDaemon::SendSignal(Conn& conn, const SignalEmit& emit) {
   push.seq = ++conn.seq;
   push.ts_us = clock_.wall_us();
   push.fields = emit.fire.fields;
-  WriteAll(conn.fd, SerializeSignal(push));
+  EnqueueLocked(conn, SerializeSignal(push));
 }
 
 void SignalDaemon::SendAck(Conn& conn, const SignalAck& ack) {
   std::lock_guard<std::mutex> lock(conn.write_mu);
-  WriteAll(conn.fd, SerializeAck(ack));  // out-of-band: no seq
+  EnqueueLocked(conn, SerializeAck(ack));  // out-of-band: no seq
 }
 
 void SignalDaemon::HeartbeatLoop() {
