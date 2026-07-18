@@ -154,6 +154,12 @@ target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_engine PUBLIC kairos_scenario kairos_dashboard kairos_order_journal
                                            pthread)
 
+# Round-trip runtime (pure FSM half): the SDK-free transition function that decides
+# the next state + action from a round-trip event.
+add_library(kairos_roundtrip src/engine/roundtrip_fsm.cpp)
+target_include_directories(kairos_roundtrip PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_roundtrip PUBLIC kairos_scenario)
+
 # Live order backend: real concords StockClient when the stock SDK is present in exec/scenario/lib,
 # otherwise a stub so --live reports "no broker SDK". CI has no SDK and builds the stub.
 set(CONCORDS_STOCK_LIB ${CMAKE_CURRENT_SOURCE_DIR}/lib/concords_sdk.so)
@@ -265,6 +271,10 @@ add_test(NAME test_roundtrip_legs COMMAND test_roundtrip_legs)
 add_executable(test_engine_result tests/test_engine_result.cpp)
 target_link_libraries(test_engine_result PRIVATE kairos_engine)
 add_test(NAME test_engine_result COMMAND test_engine_result)
+
+add_executable(test_roundtrip_fsm tests/test_roundtrip_fsm.cpp)
+target_link_libraries(test_roundtrip_fsm PRIVATE kairos_roundtrip)
+add_test(NAME test_roundtrip_fsm COMMAND test_roundtrip_fsm)
 
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
