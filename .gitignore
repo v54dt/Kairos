@@ -21,6 +21,7 @@
 /exec/scenario/*.toml
 !/exec/scenario/scenario.example.toml
 !/exec/scenario/hub.example.toml
+!/exec/scenario/signald.example.toml
 
 # Vendor stock SDK for exec (orders)
 /exec/scenario/lib/

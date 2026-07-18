@@ -113,6 +113,16 @@ add_library(kairos_signal src/signal/signal_proto.cpp src/signal/signal_client.c
 target_include_directories(kairos_signal PUBLIC ${KAIROS_INC} ${SRC}/signal)
 target_link_libraries(kairos_signal PUBLIC pthread)
 
+# Signal daemon: server side of the signal protocol (predicate registry + UDS
+# subscribe/heartbeat/dispatch), the predicate framework, and the depth_evap +
+# manual predicates. Consumes the core quote UDS via kairos_uds.
+add_library(
+  kairos_signal_daemon src/signal/signal_daemon.cpp src/signal/predicate_depth_evap.cpp
+                       src/signal/predicate_manual.cpp)
+target_include_directories(kairos_signal_daemon PUBLIC ${KAIROS_INC} ${SRC}/signal)
+target_link_libraries(kairos_signal_daemon PUBLIC kairos_signal kairos_uds
+                                                  tomlplusplus::tomlplusplus pthread)
+
 # Scenario supervisor: per-scenario state machine, trader stdout parsing, spawn argv, and
 # scenario-dir enumeration. Pure logic (toml++ for enumeration).
 add_library(kairos_scenario_state src/scenario/scenario_state.cpp)
@@ -186,6 +196,10 @@ target_link_libraries(kairos_sim_hubd PRIVATE kairos_sim_backend kairos_order_hu
 # Scenario supervisor daemon: single owner of every scenario-trader lifecycle.
 add_executable(kairos_scenario_supervisord src/bin/scenario_supervisor_main.cpp)
 target_link_libraries(kairos_scenario_supervisord PRIVATE kairos_scenario_ctl_server)
+
+# Signal daemon: pushes predicate-derived signals + heartbeats to armed traders.
+add_executable(kairos_signald src/bin/signal_daemon_main.cpp)
+target_link_libraries(kairos_signald PRIVATE kairos_signal_daemon)
 
 # --- tests ---
 enable_testing()
@@ -439,6 +453,14 @@ add_test(NAME test_signal_proto COMMAND test_signal_proto)
 add_executable(test_signal_client tests/test_signal_client.cpp)
 target_link_libraries(test_signal_client PRIVATE kairos_signal)
 add_test(NAME test_signal_client COMMAND test_signal_client)
+
+add_executable(test_predicate_depth_evap tests/test_predicate_depth_evap.cpp)
+target_link_libraries(test_predicate_depth_evap PRIVATE kairos_signal_daemon)
+add_test(NAME test_predicate_depth_evap COMMAND test_predicate_depth_evap)
+
+add_executable(test_signal_daemon tests/test_signal_daemon.cpp)
+target_link_libraries(test_signal_daemon PRIVATE kairos_signal_daemon)
+add_test(NAME test_signal_daemon COMMAND test_signal_daemon)
 
 add_executable(test_order_wire tests/test_order_wire.cpp)
 target_link_libraries(test_order_wire PRIVATE kairos_order_codec)
