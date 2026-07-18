@@ -151,6 +151,32 @@ class FakeLegFactory : public LegFactory {
   bool exit_saw_enter_returned_ = false;
 };
 
+// Enter leg that blocks in Run() until released, so a test can inject a signal
+// event while the FSM is still in ENTER.
+class BlockingEnterLeg : public LegRunner {
+ public:
+  explicit BlockingEnterLeg(std::atomic<bool>* release) : release_(release) {}
+  LegResult Run() override {
+    while (!release_->load()) std::this_thread::sleep_for(1ms);
+    return {100, 1000000, 10000, true, false};
+  }
+  void RequestStop() override { release_->store(true); }
+
+ private:
+  std::atomic<bool>* release_;
+};
+
+class BlockingEnterFactory : public LegFactory {
+ public:
+  std::atomic<bool> release{false};
+  std::atomic<int> exit_count{0};
+  std::unique_ptr<LegRunner> Create(const Scenario& leg) override {
+    if (leg.side == Side::kBuy) return std::make_unique<BlockingEnterLeg>(&release);
+    exit_count.fetch_add(1);
+    return std::make_unique<FakeLeg>(LegResult{100, 1000000, 10000, true, false}, nullptr);
+  }
+};
+
 struct Rec {
   EventCategory category;
   Severity severity;
@@ -461,6 +487,31 @@ void TestStopDuringHoldFailsClosed() {
            static_cast<int>(Severity::kError));
 }
 
+// on_signal_loss=exit with the loss landing while the enter leg is still running:
+// the policy must still fire an exit once the position reaches HOLD.
+void TestSignalLostDuringEnterAppliesExit() {
+  FakeClock clk;
+  FakeSignalSource sig;
+  FakeQuoteSource quotes;
+  BlockingEnterFactory legs;
+  RecorderSink sink;
+  Scenario s = BaseScenario();
+  s.roundtrip.on_signal_loss = OnSignalLoss::kExit;
+  RoundTripRunner runner(std::move(s), &sig, &quotes, &legs, &sink, clk.Make());
+  int rc = -1;
+  std::thread th([&] { rc = runner.Run(); });
+  CHECK(WaitFor([&] { return sink.Has("rt:2330:armed"); }));
+  sig.Signal(SignalAction::kEnter);
+  CHECK(WaitFor([&] { return sink.Has("rt:2330:enter"); }));
+  sig.Lost();  // loss WHILE the enter leg is still running
+  CHECK(WaitFor([&] { return sink.Has("rt:2330:alert"); }));
+  legs.release.store(true);  // enter leg completes -> HOLD
+  th.join();
+  CHECK_EQ(rc, 0);
+  CHECK(sink.Has("rt:2330:flat"));
+  CHECK_EQ(legs.exit_count.load(), 1);
+}
+
 void TestDegenerateEnterGuard() {
   FakeClock clk;
   clk.wall_min.store(13 * 60 + 26);  // 13:26 >= 13:25: derive window would be degenerate
@@ -513,6 +564,7 @@ int main() {
   TestEnterHaltWithFillsHolds();
   TestExitHaltLeavesPositionFatal();
   TestStopDuringHoldFailsClosed();
+  TestSignalLostDuringEnterAppliesExit();
   TestDegenerateEnterGuard();
   TestDegenerateExitGuard();
   if (g_failures == 0) {

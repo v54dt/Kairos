@@ -144,6 +144,10 @@ RtState RoundTripRunner::Execute(RtState from, const RunnerEvent& e, const FsmOu
     EmitPhase(EventCategory::kMilestone, Severity::kInfo, "hold",
               {{"held_shares", std::to_string(held_shares_)},
                {"entry_avg_cents", std::to_string(entry_avg_cents_)}});
+    // A loss that landed during the enter leg is edge-triggered and never re-arrives;
+    // re-apply the exit-on-loss policy now that the position is in HOLD.
+    if (signal_lost_ && s_.roundtrip.on_signal_loss == OnSignalLoss::kExit)
+      Enqueue(RtEvent::kSignalLost);
     return next;
   }
   if (from == RtState::kEnter && next != RtState::kEnter) JoinEnterThread();
@@ -257,6 +261,11 @@ int RoundTripRunner::Run() {
       batch.swap(queue_);
     }
     for (auto& e : batch) {
+      if (e.ev == RtEvent::kSignalLost) {
+        signal_lost_ = true;
+      } else if (e.ev == RtEvent::kSignalRestored) {
+        signal_lost_ = false;
+      }
       FsmOutput out = Step(state_, BuildInput(e));
       state_ = Execute(state_, e, out);
       if (done_) break;

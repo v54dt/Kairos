@@ -107,6 +107,7 @@ class RoundTripRunner {
   int arm_end_min_;
 
   RtState state_ = RtState::kArmed;
+  bool signal_lost_ = false;  // loop-thread level view of signal health (edge-triggered events)
   long held_shares_ = 0;
   long entry_avg_cents_ = 0;
   std::chrono::steady_clock::time_point enter_done_mono_{};
