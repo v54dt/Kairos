@@ -106,6 +106,11 @@ target_include_directories(kairos_blacklist PUBLIC ${KAIROS_INC})
 add_library(kairos_scenario_ctl_proto src/scenario/scenario_ctl_proto.cpp)
 target_include_directories(kairos_scenario_ctl_proto PUBLIC ${KAIROS_INC})
 
+# Round-trip signal runtime: fail-closed JSON-lines wire codec (client<->daemon). Pure, no I/O.
+# Standalone library -- nothing existing links it.
+add_library(kairos_signal src/signal/signal_proto.cpp)
+target_include_directories(kairos_signal PUBLIC ${KAIROS_INC} ${SRC}/signal)
+
 # Scenario supervisor: per-scenario state machine, trader stdout parsing, spawn argv, and
 # scenario-dir enumeration. Pure logic (toml++ for enumeration).
 add_library(kairos_scenario_state src/scenario/scenario_state.cpp)
@@ -404,6 +409,10 @@ target_compile_definitions(
   test_ctl_corpus
   PRIVATE KAIROS_CTL_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/../../schema/testdata/ctl_corpus.txt")
 add_test(NAME test_ctl_corpus COMMAND test_ctl_corpus)
+
+add_executable(test_signal_proto tests/test_signal_proto.cpp)
+target_link_libraries(test_signal_proto PRIVATE kairos_signal)
+add_test(NAME test_signal_proto COMMAND test_signal_proto)
 
 add_executable(test_order_wire tests/test_order_wire.cpp)
 target_link_libraries(test_order_wire PRIVATE kairos_order_codec)
