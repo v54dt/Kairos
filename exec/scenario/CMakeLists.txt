@@ -312,17 +312,17 @@ add_executable(test_order_hub_forwarder tests/test_order_hub_forwarder.cpp)
 target_link_libraries(test_order_hub_forwarder PRIVATE kairos_order_hub)
 add_test(NAME test_order_hub_forwarder COMMAND test_order_hub_forwarder)
 
-# Opt-in ThreadSanitizer variant of the forwarder/stress test. Recompiles the hub
-# itself under TSan (so its own races are caught, not just the test's) and links
-# the disk/codec helpers as-is. Off by default so the normal build stays clean.
+# Opt-in ThreadSanitizer variant of the forwarder/stress test. Recompiles the hub itself under TSan
+# (so its own races are caught, not just the test's) and links the disk/codec helpers as-is. Off by
+# default so the normal build stays clean.
 option(KAIROS_TSAN "Build a ThreadSanitizer variant of the forwarder test" OFF)
 if(KAIROS_TSAN)
   add_executable(test_order_hub_forwarder_tsan tests/test_order_hub_forwarder.cpp
                                                src/order/order_hub.cpp src/order/risk_gate.cpp)
   target_include_directories(test_order_hub_forwarder_tsan PRIVATE ${KAIROS_INC})
-  target_link_libraries(test_order_hub_forwarder_tsan PRIVATE kairos_order_codec kairos_hub_status
-                                                              kairos_order_journal kairos_scenario
-                                                              pthread)
+  target_link_libraries(
+    test_order_hub_forwarder_tsan PRIVATE kairos_order_codec kairos_hub_status kairos_order_journal
+                                          kairos_scenario pthread)
   target_compile_options(test_order_hub_forwarder_tsan PRIVATE -fsanitize=thread -O1 -g)
   target_link_options(test_order_hub_forwarder_tsan PRIVATE -fsanitize=thread)
   add_test(NAME test_order_hub_forwarder_tsan COMMAND test_order_hub_forwarder_tsan)
