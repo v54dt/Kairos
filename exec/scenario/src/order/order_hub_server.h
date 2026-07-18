@@ -36,6 +36,10 @@ class OrderHubServer {
   void AcceptLoop();
   void ClientLoop(int fd);
   void Send(int client, const std::vector<std::uint8_t>& bytes);
+  // Best-effort, never-blocking `forwarded` hint: dropped if the client's write
+  // lock is contended or its socket buffer is full, so the shared forwarder thread
+  // that calls it is never stalled by a slow reader.
+  void TrySendForwarded(int client, const std::vector<std::uint8_t>& bytes);
   void StatusLoop();                          // periodic status snapshot writer
   void WriteStatus(const std::string& path);  // one snapshot, off all mutexes
 

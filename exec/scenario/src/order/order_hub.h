@@ -43,6 +43,11 @@ class OrderHub {
   bool Start();  // wire backend callbacks + connect + launch the forwarder
   void Stop();   // stop the forwarder, then disconnect the backend
 
+  // Override the sender used for the best-effort `forwarded` clock-rebase hint.
+  // The server injects a non-blocking variant so a stalled client never blocks
+  // the shared forwarder thread. Defaults to the reliable reply sender.
+  void SetForwardedSender(SendFn fn);
+
   // Register a client the moment its connection is accepted, so the status
   // snapshot counts connected-but-idle traders (before any submit).
   void OnClientConnect(int client);
@@ -140,6 +145,7 @@ class OrderHub {
 
   OrderBackend* backend_;
   SendFn send_;
+  SendFn forwarded_send_;  // best-effort `forwarded` hint sender; server-injected
   mutable std::mutex mu_;
   std::unordered_map<std::string, Route> routes_;
   // Ids of currently-open routes; bounds the per-submit self-match scan to live

@@ -37,9 +37,12 @@ OrderHub::OrderHub(OrderBackend* backend, SendFn send)
 OrderHub::OrderHub(OrderBackend* backend, SendFn send, RiskConfig risk)
     : backend_(backend),
       send_(std::move(send)),
+      forwarded_send_(send_),
       start_epoch_s_(SystemNowUs() / 1000000),
       current_trading_day_(TradingDayNumUtc8(std::chrono::system_clock::now())),
       risk_(std::move(risk)) {}
+
+void OrderHub::SetForwardedSender(SendFn fn) { forwarded_send_ = std::move(fn); }
 
 OrderHub::~OrderHub() { StopForwarder(); }
 
@@ -178,10 +181,12 @@ void OrderHub::Forwarder() {
     } else {
       // Tell the owning client its order reached the broker so it can rebase its
       // ack-timeout clock; sent BEFORE Submit so it precedes any synchronous ack.
+      // Best-effort and non-blocking (server-injected): a stalled client drops the
+      // hint rather than blocking this shared forwarder ahead of other scenarios.
       lock.lock();
       bool connected = clients_.count(p.client) > 0;
       lock.unlock();
-      if (connected) send_(p.client, EncodeOrderForwarded({p.order.id}));
+      if (connected) forwarded_send_(p.client, EncodeOrderForwarded({p.order.id}));
       if (FlowJournalOn()) OrderFlowJournal::AppendForwarded(risk_.journal_dir, p.order.id);
       backend_->Submit(p.order);  // gated inside the backend; only this thread blocks there
     }
