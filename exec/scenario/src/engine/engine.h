@@ -22,6 +22,16 @@
 
 namespace kairos::exec {
 
+// Snapshot of one leg's fill accounting for the RoundTripRunner (PR4) to chain
+// legs. avg_price_cents is 0 when there are no fills (no divide-by-zero).
+struct LegResult {
+  long filled_shares = 0;
+  long filled_notional_cents = 0;
+  long avg_price_cents = 0;
+  bool complete = false;
+  bool halted = false;
+};
+
 // The engine's two time sources, injected so a replay can drive them coherently.
 // wall: local/session gating (date strings + HHMM window). mono: latency/pacing.
 // Both default to the real system/steady clocks.
@@ -48,6 +58,8 @@ class ScenarioEngine {
   // refused for lack of a journal).
   int Run();
   void RequestStop();
+  // Thread-safe snapshot of the current fill accounting + terminal state.
+  LegResult Result() const;
   void set_ignore_window(bool v) { ignore_window_ = v; }
   void set_dashboard(DashboardMetrics* d) { dash_.SetDashboard(d, s_.live); }
 
@@ -103,7 +115,7 @@ class ScenarioEngine {
   EngineClock clock_;
   OrderJournal journal_;
 
-  std::mutex mu_;
+  mutable std::mutex mu_;
   std::condition_variable cv_;
   Accounting acct_;
   RestingOrder resting_;
