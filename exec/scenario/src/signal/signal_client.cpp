@@ -55,6 +55,7 @@ void SignalClient::Stop() {
   int fd = fd_.exchange(-1);
   if (fd >= 0) ::shutdown(fd, SHUT_RDWR);  // unblock a pending poll/read
   if (thread_.joinable()) thread_.join();
+  if (fd >= 0) ::close(fd);  // Stop() stole the fd from Run(), so it owns the close
 }
 
 int SignalClient::ConnectAndSubscribe() {

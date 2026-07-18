@@ -4,6 +4,7 @@
 // clean Stop() under a signal flood. Deterministic (fake clock for liveness); the
 // small real poll tick only bounds how fast the reader notices.
 
+#include <dirent.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -180,6 +181,15 @@ std::string TempPath(const char* tag) {
 }
 
 SignalSubscribe MakeSub() { return SignalSubscribe{"break-2330", "2330"}; }
+
+int OpenFdCount() {
+  DIR* d = ::opendir("/proc/self/fd");
+  if (d == nullptr) return -1;
+  int n = 0;
+  while (::readdir(d) != nullptr) ++n;
+  ::closedir(d);
+  return n;
+}
 
 // (a) subscribe sent, (b) signal dispatched.
 void TestSubscribeAndSignal() {
@@ -361,6 +371,24 @@ void TestStopUnderFlood() {
   CHECK(signals.load() >= 1);
 }
 
+// (g) Stop() on a connected client does not leak its socket fd.
+void TestNoFdLeakAcrossStops() {
+  FakeServer srv(TempPath("fdl"));
+  CHECK(srv.Start());
+  FakeClock clk;
+  SignalCallbacks cb;
+  const int kCycles = 25;
+  int baseline = 0;
+  for (int i = 0; i < kCycles; ++i) {
+    SignalClient cli(TempPath("fdl"), MakeSub(), cb, 1000ms, clk.Make());
+    cli.Start();
+    CHECK(WaitFor([&] { return srv.ConnCount() >= i + 1; }));
+    cli.Stop();
+    if (i == 0) baseline = OpenFdCount();  // measure after one full cycle settles
+  }
+  CHECK(WaitFor([&] { return OpenFdCount() <= baseline + 3; }));
+}
+
 }  // namespace
 
 int main() {
@@ -369,6 +397,7 @@ int main() {
   TestReconnectRestored();
   TestSeqGap();
   TestStopUnderFlood();
+  TestNoFdLeakAcrossStops();
   if (g_failures == 0) {
     std::printf("test_signal_client: OK\n");
     return 0;
