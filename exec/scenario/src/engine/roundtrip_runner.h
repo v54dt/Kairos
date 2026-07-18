@@ -20,7 +20,9 @@
 #include "order_backend.h"
 #include "quote_source.h"
 #include "roundtrip_fsm.h"
+#include "roundtrip_journal.h"
 #include "roundtrip_legs.h"  // ExitReason, kForcedExitMin
+#include "roundtrip_recovery.h"
 #include "scenario.h"
 #include "signal_client.h"
 #include "signal_proto.h"  // SignalAction
@@ -87,6 +89,12 @@ class RoundTripRunner {
   RtState Execute(RtState from, const RunnerEvent& e, const FsmOutput& out);
   void CheckWatchdog();
   int NowMin() const;
+  long WallUs() const;
+
+  // Read the Buy/Sell/rt journals for today and derive the startup state before
+  // arming: resume HOLD, refuse, treat the trip as done, or arm fresh. No-op (arm
+  // fresh) when no journal dir is configured.
+  void Recover();
 
   void StartEnterLeg(int trigger_min);
   void StartExitLeg(int now_min);
@@ -106,11 +114,19 @@ class RoundTripRunner {
   int arm_start_min_;
   int arm_end_min_;
 
+  bool rt_enabled_ = false;  // rt journal written only when a journal dir is configured
+  std::string rt_dir_;
+  std::string rt_name_;  // "<symbol>-rt-<day>"
+  long trip_seq_ = 0;
+
   RtState state_ = RtState::kArmed;
   bool signal_lost_ = false;  // loop-thread level view of signal health (edge-triggered events)
-  long held_shares_ = 0;
+  long held_shares_ = 0;      // net long still open
+  long entered_shares_ = 0;   // lifetime shares bought this day; the exit leg's total to sell
   long entry_avg_cents_ = 0;
   std::chrono::steady_clock::time_point enter_done_mono_{};
+  std::chrono::steady_clock::time_point
+      hold_since_mono_{};  // this process's HOLD start; quote-stall anchor
   ExitReason exit_reason_ = ExitReason::kForcedTime;
   bool done_ = false;
   int exit_code_ = 0;

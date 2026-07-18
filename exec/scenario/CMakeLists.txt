@@ -154,9 +154,11 @@ target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_engine PUBLIC kairos_scenario kairos_dashboard kairos_order_journal
                                            pthread)
 
-# Round-trip runtime: pure FSM + the orchestrator that owns a signal subscription, a HOLD watchdog,
-# and per-leg engines. PAPER/SIM only until live restart recovery lands.
-add_library(kairos_roundtrip src/engine/roundtrip_fsm.cpp src/engine/roundtrip_runner.cpp)
+# Round-trip runtime: pure FSM + recovery decider + lifecycle journal + the orchestrator that owns a
+# signal subscription, a HOLD watchdog, and per-leg engines. Restart recovery resumes an open
+# position under protection after a crash.
+add_library(kairos_roundtrip src/engine/roundtrip_fsm.cpp src/engine/roundtrip_runner.cpp
+                             src/engine/roundtrip_journal.cpp src/engine/roundtrip_recovery.cpp)
 target_include_directories(kairos_roundtrip PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_roundtrip PUBLIC kairos_engine kairos_signal)
 
@@ -289,6 +291,27 @@ add_test(NAME test_roundtrip_runner COMMAND test_roundtrip_runner)
 add_executable(test_roundtrip_paper_e2e tests/test_roundtrip_paper_e2e.cpp)
 target_link_libraries(test_roundtrip_paper_e2e PRIVATE kairos_roundtrip kairos_sim_backend)
 add_test(NAME test_roundtrip_paper_e2e COMMAND test_roundtrip_paper_e2e)
+
+add_executable(test_roundtrip_journal tests/test_roundtrip_journal.cpp)
+target_link_libraries(test_roundtrip_journal PRIVATE kairos_roundtrip)
+add_test(NAME test_roundtrip_journal COMMAND test_roundtrip_journal)
+
+add_executable(test_roundtrip_recovery tests/test_roundtrip_recovery.cpp)
+target_link_libraries(test_roundtrip_recovery PRIVATE kairos_roundtrip)
+add_test(NAME test_roundtrip_recovery COMMAND test_roundtrip_recovery)
+
+add_executable(test_roundtrip_recovery_runner tests/test_roundtrip_recovery_runner.cpp)
+target_link_libraries(test_roundtrip_recovery_runner PRIVATE kairos_roundtrip)
+add_test(NAME test_roundtrip_recovery_runner COMMAND test_roundtrip_recovery_runner)
+
+add_executable(test_roundtrip_partial_exit_recovery tests/test_roundtrip_partial_exit_recovery.cpp)
+target_link_libraries(test_roundtrip_partial_exit_recovery PRIVATE kairos_roundtrip
+                                                                   kairos_sim_backend)
+add_test(NAME test_roundtrip_partial_exit_recovery COMMAND test_roundtrip_partial_exit_recovery)
+
+add_executable(test_scenario_stop_loss_bound tests/test_scenario_stop_loss_bound.cpp)
+target_link_libraries(test_scenario_stop_loss_bound PRIVATE kairos_scenario kairos_order_journal)
+add_test(NAME test_scenario_stop_loss_bound COMMAND test_scenario_stop_loss_bound)
 
 add_executable(test_roundtrip_live_refusal tests/test_roundtrip_live_refusal.cpp)
 add_dependencies(test_roundtrip_live_refusal kairos_scenario_trader)

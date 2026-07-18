@@ -1,8 +1,12 @@
 #include "roundtrip_runner.h"
 
+#include <algorithm>
 #include <cassert>
+#include <cstdio>
 #include <string>
 #include <utility>
+
+#include "order_journal.h"  // ReadJournalFills, JournalPath, TradingDayUtc8
 
 namespace kairos::exec {
 
@@ -32,6 +36,19 @@ ExitReason ReasonFor(RtEvent ev) {
   }
 }
 
+const char* ReasonTag(ExitReason r) {
+  switch (r) {
+    case ExitReason::kReverseSignal:
+      return "reverse";
+    case ExitReason::kStopLoss:
+      return "stop";
+    case ExitReason::kHoldTimeout:
+      return "timeout";
+    default:
+      return "forced";
+  }
+}
+
 }  // namespace
 
 RoundTripRunner::RoundTripRunner(Scenario scenario, SignalSource* signal, QuoteSource* hold_quotes,
@@ -43,7 +60,10 @@ RoundTripRunner::RoundTripRunner(Scenario scenario, SignalSource* signal, QuoteS
       sink_(sink),
       clock_(std::move(clock)),
       arm_start_min_(HhmmToMinutes(s_.roundtrip.arm_start_hhmm)),
-      arm_end_min_(HhmmToMinutes(s_.roundtrip.arm_end_hhmm)) {}
+      arm_end_min_(HhmmToMinutes(s_.roundtrip.arm_end_hhmm)),
+      rt_enabled_(!s_.journal_dir.empty()),
+      rt_dir_(s_.journal_dir),
+      rt_name_(s_.symbol + "-rt-" + TradingDayUtc8(clock_.wall())) {}
 
 RoundTripRunner::~RoundTripRunner() {
   JoinEnterThread();
@@ -51,6 +71,69 @@ RoundTripRunner::~RoundTripRunner() {
 }
 
 int RoundTripRunner::NowMin() const { return WallToMin(clock_.wall()); }
+
+long RoundTripRunner::WallUs() const {
+  return std::chrono::duration_cast<std::chrono::microseconds>(clock_.wall().time_since_epoch())
+      .count();
+}
+
+void RoundTripRunner::Recover() {
+  if (!rt_enabled_) return;  // no journal dir: nothing to recover, arm fresh
+  std::string day = TradingDayUtc8(clock_.wall());
+  auto buy = ReadJournalFills(JournalPath(rt_dir_, s_.symbol + "-Buy-" + day));
+  auto sell = ReadJournalFills(JournalPath(rt_dir_, s_.symbol + "-Sell-" + day));
+
+  RecoveryInputs in;
+  for (const auto& f : buy) {
+    if (in.buy_filled == 0) in.first_buy_ts_us = f.ts_us;
+    in.buy_filled += f.shares;
+    in.buy_notional_c += f.shares * f.price;
+  }
+  for (const auto& f : sell) in.sell_filled += f.shares;
+  in.rt = ReadRoundTripJournal(JournalPath(rt_dir_, rt_name_));
+
+  RecoveryPlan plan = DeriveRecovery(in);
+  switch (plan.decision) {
+    case RecoveryDecision::kFresh:
+      return;  // leave kArmed
+    case RecoveryDecision::kRefuse:
+      std::fprintf(stderr, "kairos-exec: FATAL round-trip recovery: %s\n", plan.message.c_str());
+      EmitPhase(EventCategory::kError, Severity::kError, "recover-refuse",
+                {{"buy_filled", std::to_string(in.buy_filled)},
+                 {"sell_filled", std::to_string(in.sell_filled)}});
+      state_ = RtState::kFailed;
+      done_ = true;
+      exit_code_ = 1;
+      return;
+    case RecoveryDecision::kTerminal:
+      EmitPhase(EventCategory::kComplete, Severity::kInfo, "recover-done", {});
+      state_ = RtState::kFlat;
+      done_ = true;
+      exit_code_ = 0;
+      return;
+    case RecoveryDecision::kResumeHold:
+    case RecoveryDecision::kResumeDegraded: {
+      held_shares_ = plan.held_shares;
+      entered_shares_ = plan.entered_shares;
+      entry_avg_cents_ = plan.entry_avg_c;
+      // Bridge persisted wall time to the loop's steady clock: elapsed hold is the
+      // wall delta since enter, clamped >= 0 so a backward operator clock jump only
+      // shortens the remaining hold (the safe side); the wall-based 13:25 forced
+      // exit and the price stop remain the real backstops.
+      long elapsed_us = std::max<long>(0, WallUs() - plan.enter_wall_us);
+      enter_done_mono_ = clock_.mono() - std::chrono::microseconds(elapsed_us);
+      // Quote staleness is measured from THIS process's resume, not the back-dated
+      // entry, so the feed gets a full grace window before a stall can force an exit.
+      hold_since_mono_ = clock_.mono();
+      state_ = RtState::kHold;
+      EmitPhase(EventCategory::kReconnect, plan.degraded ? Severity::kWarning : Severity::kInfo,
+                plan.degraded ? "recover-degraded" : "recover-hold",
+                {{"held_shares", std::to_string(held_shares_)},
+                 {"entry_avg_cents", std::to_string(entry_avg_cents_)}});
+      return;
+    }
+  }
+}
 
 void RoundTripRunner::Enqueue(RtEvent ev, const LegResult& leg) {
   {
@@ -80,7 +163,9 @@ FsmInput RoundTripRunner::BuildInput(const RunnerEvent& e) const {
   if (state_ == RtState::kEnter) {
     in.leg_had_fills = e.leg.filled_shares > 0;
   } else if (state_ == RtState::kExit) {
-    in.position_remaining = held_shares_ - e.leg.filled_shares > 0;
+    // leg.filled_shares is the exit engine's lifetime total sold (it replays prior
+    // sells), so the residual is against the lifetime shares bought, not net-held.
+    in.position_remaining = entered_shares_ - e.leg.filled_shares > 0;
   }
   return in;
 }
@@ -109,7 +194,7 @@ void RoundTripRunner::StartEnterLeg(int trigger_min) {
 }
 
 void RoundTripRunner::StartExitLeg(int now_min) {
-  Scenario leg = DeriveExitLeg(s_, held_shares_, exit_reason_, now_min);
+  Scenario leg = DeriveExitLeg(s_, entered_shares_, exit_reason_, now_min);
   leg.name += "-exit";
   exit_leg_ = legs_->Create(leg);
   active_leg_.store(exit_leg_.get());
@@ -135,8 +220,12 @@ RtState RoundTripRunner::Execute(RtState from, const RunnerEvent& e, const FsmOu
   if (from == RtState::kEnter && next == RtState::kHold) {
     JoinEnterThread();
     held_shares_ = e.leg.filled_shares;
+    entered_shares_ = e.leg.filled_shares;
     entry_avg_cents_ = e.leg.avg_price_cents;
     enter_done_mono_ = clock_.mono();
+    hold_since_mono_ = enter_done_mono_;
+    if (rt_enabled_)
+      RoundTripJournal::EnterDone(rt_dir_, rt_name_, held_shares_, entry_avg_cents_, WallUs());
     if (e.ev == RtEvent::kLegHalted) {
       EmitPhase(EventCategory::kPartialFill, Severity::kWarning, "enter-halt",
                 {{"held_shares", std::to_string(held_shares_)}});
@@ -164,6 +253,10 @@ RtState RoundTripRunner::Execute(RtState from, const RunnerEvent& e, const FsmOu
                   {{"now_min", std::to_string(now)}});
         next = RtState::kArmed;  // window would be [13:25,13:25]: drop, stay armed
       } else {
+        // Decision line BEFORE the leg: a crash in the gap counts the trip as used
+        // (net==0 + trigger => terminal on restart), so it can never double-enter.
+        if (rt_enabled_)
+          RoundTripJournal::Trigger(rt_dir_, rt_name_, s_.roundtrip.signal, ++trip_seq_, WallUs());
         EmitPhase(EventCategory::kMilestone, Severity::kInfo, "enter",
                   {{"trigger_min", std::to_string(now)}});
         StartEnterLeg(now);
@@ -177,10 +270,16 @@ RtState RoundTripRunner::Execute(RtState from, const RunnerEvent& e, const FsmOu
       if (now >= kForcedExitMin) {
         EmitPhase(EventCategory::kError, Severity::kError, "exit-degenerate",
                   {{"remaining_shares", std::to_string(held_shares_)}});
+        if (rt_enabled_)
+          RoundTripJournal::Failed(rt_dir_, rt_name_, "past_close", held_shares_, WallUs());
         next = RtState::kFailed;  // past 13:25: cannot cross to close; never silent flat
         done_ = true;
         exit_code_ = 1;
       } else {
+        // Decision line BEFORE the exit leg (fail-closed: a crash in the gap still
+        // shows a committed exit, and net stays > 0 so the restart re-protects).
+        if (rt_enabled_)
+          RoundTripJournal::ExitTrigger(rt_dir_, rt_name_, ReasonTag(exit_reason_), WallUs());
         EmitPhase(EventCategory::kMilestone, Severity::kInfo, "exit",
                   {{"reason", std::to_string(static_cast<int>(exit_reason_))}});
         StartExitLeg(now);
@@ -196,17 +295,22 @@ RtState RoundTripRunner::Execute(RtState from, const RunnerEvent& e, const FsmOu
       break;
     case RtAction::kTerminalFlat:
       if (from == RtState::kExit) JoinExitThread();
+      if (rt_enabled_) RoundTripJournal::Flat(rt_dir_, rt_name_, WallUs());
       EmitPhase(EventCategory::kComplete, Severity::kInfo, "flat", {});
       done_ = true;
       exit_code_ = 0;
       break;
-    case RtAction::kTerminalFailed:
+    case RtAction::kTerminalFailed: {
       if (from == RtState::kExit) JoinExitThread();
+      long remaining = entered_shares_ - e.leg.filled_shares;
+      if (rt_enabled_)
+        RoundTripJournal::Failed(rt_dir_, rt_name_, "exit_incomplete", remaining, WallUs());
       EmitPhase(EventCategory::kError, Severity::kError, "failed",
-                {{"remaining_shares", std::to_string(held_shares_ - e.leg.filled_shares)}});
+                {{"remaining_shares", std::to_string(remaining)}});
       done_ = true;
       exit_code_ = 1;
       break;
+    }
   }
   return next;
 }
@@ -228,8 +332,9 @@ void RoundTripRunner::CheckWatchdog() {
     tob = last_tob_;
     have = have_tob_;
   }
-  // No quote yet: measure staleness from HOLD start so a feed dead from entry still trips.
-  auto last_recv = have ? tob.recv_ts : enter_done_mono_;
+  // No quote yet: measure staleness from this process's HOLD start (resume instant on
+  // recovery, not the back-dated entry) so a feed dead since HOLD trips after its grace.
+  auto last_recv = have ? tob.recv_ts : hold_since_mono_;
   if (s_.quote_stall_alert_ms > 0 && SteadyMs(mono - last_recv) > s_.quote_stall_alert_ms) {
     Enqueue(RtEvent::kQuoteStallHard);
     return;
@@ -242,6 +347,8 @@ void RoundTripRunner::CheckWatchdog() {
 }
 
 int RoundTripRunner::Run() {
+  // Register the feeds BEFORE recovery so a resumed HOLD is already receiving quotes
+  // (the stop watchdog needs a price) the instant recovery sets the state.
   signal_->SetCallbacks(
       {[this](SignalAction a) {
          Enqueue(a == SignalAction::kEnter ? RtEvent::kSignalEnter : RtEvent::kSignalExit);
@@ -251,10 +358,16 @@ int RoundTripRunner::Run() {
       [this](const std::string& sym, const TopOfBook& t) { OnHoldQuote(sym, t); });
   hold_quotes_->Start();
   signal_->Start();
-  EmitPhase(EventCategory::kStart, Severity::kInfo, "armed",
-            {{"signal", s_.roundtrip.signal}, {"symbol", s_.symbol}});
 
-  while (true) {
+  Recover();  // decides kArmed / kHold / kFlat / kFailed from today's journals
+
+  if (!done_ && state_ == RtState::kArmed) {
+    if (rt_enabled_) RoundTripJournal::Arm(rt_dir_, rt_name_);
+    EmitPhase(EventCategory::kStart, Severity::kInfo, "armed",
+              {{"signal", s_.roundtrip.signal}, {"symbol", s_.symbol}});
+  }
+
+  while (!done_) {
     std::deque<RunnerEvent> batch;
     {
       std::unique_lock<std::mutex> lk(q_mu_);
@@ -278,6 +391,8 @@ int RoundTripRunner::Run() {
       if (state_ == RtState::kHold || state_ == RtState::kExit) {
         EmitPhase(EventCategory::kError, Severity::kError, "stopped",
                   {{"remaining_shares", std::to_string(held_shares_)}});
+        if (rt_enabled_)
+          RoundTripJournal::Failed(rt_dir_, rt_name_, "stopped", held_shares_, WallUs());
         state_ = RtState::kFailed;
         exit_code_ = 1;
       }
