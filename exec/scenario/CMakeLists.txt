@@ -125,7 +125,7 @@ add_library(kairos_scenario_ctl_server src/scenario/scenario_ctl_server.cpp)
 target_include_directories(kairos_scenario_ctl_server PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario_ctl_server PUBLIC kairos_scenario_process pthread)
 
-add_library(kairos_scenario src/engine/scenario.cpp)
+add_library(kairos_scenario src/engine/scenario.cpp src/engine/roundtrip_legs.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
 

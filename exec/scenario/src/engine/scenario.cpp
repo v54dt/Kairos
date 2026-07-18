@@ -7,6 +7,8 @@
 #include <format>
 #include <stdexcept>
 
+#include "roundtrip_legs.h"  // kForcedExitMin, HhmmToMinutes
+
 namespace kairos::exec {
 
 namespace {
@@ -82,6 +84,12 @@ Severity ParseSeverity(const std::string& s) {
   if (s == "warning" || s == "warn") return Severity::kWarning;
   if (s == "error") return Severity::kError;
   return Severity::kInfo;
+}
+
+OnSignalLoss ParseOnSignalLoss(const std::string& s) {
+  if (s == "hold_with_stops") return OnSignalLoss::kHoldWithStops;
+  if (s == "exit") return OnSignalLoss::kExit;
+  throw std::runtime_error("invalid on_signal_loss (hold_with_stops|exit): " + s);
 }
 
 Product ParseProduct(const std::string& s) {
@@ -232,6 +240,19 @@ Scenario LoadScenario(const std::string& path) {
   s.dashboard.api_url = t["dashboard"]["api_url"].value_or<std::string>("");
   s.dashboard.broker_name = t["dashboard"]["broker_name"].value_or<std::string>("scenario-trader");
 
+  // [roundtrip] — absent table leaves enabled=false and every field at its default.
+  s.roundtrip.enabled = t["roundtrip"]["enabled"].value_or<bool>(false);
+  s.roundtrip.signal = t["roundtrip"]["signal"].value_or<std::string>("");
+  s.roundtrip.stop_loss_pct = t["roundtrip"]["stop_loss_pct"].value_or<double>(0.0);
+  s.roundtrip.max_hold_min = t["roundtrip"]["max_hold_min"].value_or<int>(0);
+  s.roundtrip.enter_window_min = t["roundtrip"]["enter_window_min"].value_or<int>(10);
+  s.roundtrip.on_signal_loss =
+      ParseOnSignalLoss(t["roundtrip"]["on_signal_loss"].value_or<std::string>("hold_with_stops"));
+  s.roundtrip.arm_start = t["roundtrip"]["arm_start"].value_or<std::string>("09:00");
+  s.roundtrip.arm_end = t["roundtrip"]["arm_end"].value_or<std::string>("13:00");
+  s.roundtrip.arm_start_hhmm = ParseHHMM(s.roundtrip.arm_start);
+  s.roundtrip.arm_end_hhmm = ParseHHMM(s.roundtrip.arm_end);
+
   return s;
 }
 
@@ -267,6 +288,24 @@ std::vector<std::string> ValidateScenario(const Scenario& s) {
     errs.push_back("notify.enabled but notify.base_url/topic is empty");
   if (s.dashboard.enabled && s.dashboard.api_url.empty())
     errs.push_back("dashboard.enabled but dashboard.api_url is empty");
+
+  const RoundTripConfig& rt = s.roundtrip;
+  if (rt.enabled) {
+    if (s.side != Side::kBuy) errs.push_back("roundtrip requires a Buy scenario (long-only)");
+    if (rt.signal.empty()) errs.push_back("roundtrip.signal is required when roundtrip.enabled");
+    if (rt.stop_loss_pct <= 0) errs.push_back("roundtrip.stop_loss_pct must be > 0");
+    if (rt.max_hold_min <= 0) errs.push_back("roundtrip.max_hold_min must be > 0");
+    if (rt.enter_window_min <= 0) errs.push_back("roundtrip.enter_window_min must be > 0");
+    if (rt.arm_end_hhmm > 1300) errs.push_back("roundtrip.arm_end must be <= 13:00");
+    if (rt.arm_start_hhmm >= rt.arm_end_hhmm)
+      errs.push_back("roundtrip.arm_start must be before roundtrip.arm_end");
+    long latest = HhmmToMinutes(rt.arm_end_hhmm) + rt.enter_window_min + rt.max_hold_min;
+    if (latest > kForcedExitMin)
+      errs.push_back(
+          std::format("roundtrip: arm_end + enter_window_min + max_hold_min ({}) must "
+                      "be <= 13:25 forced exit ({})",
+                      latest, kForcedExitMin));
+  }
 
   return errs;
 }
