@@ -76,6 +76,7 @@ void OrderHubServer::AcceptLoop() {
     {
       std::lock_guard<std::mutex> lock(clients_mu_);
       live_.insert(fd);
+      write_mu_[fd] = std::make_shared<std::mutex>();
     }
     hub_.OnClientConnect(fd);
     ++active_clients_;
@@ -97,24 +98,34 @@ void OrderHubServer::ClientLoop(int fd) {
   {
     std::lock_guard<std::mutex> lock(clients_mu_);
     live_.erase(fd);
+    write_mu_.erase(fd);
   }
   ::close(fd);
 }
 
 void OrderHubServer::Send(int client, const std::vector<std::uint8_t>& bytes) {
   int dupfd = -1;
+  std::shared_ptr<std::mutex> wmu;
   {
     std::lock_guard<std::mutex> lock(clients_mu_);
-    if (live_.count(client))
+    if (live_.count(client)) {
       dupfd = ::dup(client);  // keep the socket alive past a concurrent close
+      wmu = write_mu_[client];
+    }
   }
   if (dupfd < 0) {
     std::fprintf(stderr, "kairos-order-hub: drop reply to client=%d (connection gone)\n", client);
     return;
   }
-  // Outside the lock: a slow client can't stall accept/disconnect/Stop.
-  if (!WriteFrame(dupfd, bytes))
-    std::fprintf(stderr, "kairos-order-hub: reply write to client=%d failed\n", client);
+  // Off clients_mu_ so a slow client can't stall accept/disconnect/Stop, but under
+  // the per-client write lock so two concurrent replies to one fd (forwarder vs
+  // SDK-callback thread) never interleave and tear each other's framed payloads.
+  bool ok;
+  {
+    std::lock_guard<std::mutex> wlock(*wmu);
+    ok = WriteFrame(dupfd, bytes);
+  }
+  if (!ok) std::fprintf(stderr, "kairos-order-hub: reply write to client=%d failed\n", client);
   ::close(dupfd);
 }
 
