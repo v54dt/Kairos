@@ -23,6 +23,7 @@ void SetWindow(Scenario& s, int start_min, int end_min) {
 
 Scenario DeriveEnterLeg(const Scenario& parent, int trigger_min) {
   Scenario s = parent;
+  s.roundtrip.enabled = false;
   s.side = Side::kBuy;
   int start = std::min(trigger_min, kForcedExitMin);
   int end = std::min(trigger_min + parent.roundtrip.enter_window_min, kForcedExitMin);
@@ -34,6 +35,7 @@ Scenario DeriveEnterLeg(const Scenario& parent, int trigger_min) {
 Scenario DeriveExitLeg(const Scenario& parent, long entered_shares, ExitReason reason,
                        int now_min) {
   Scenario s = parent;
+  s.roundtrip.enabled = false;
   s.side = Side::kSell;
   s.budget_twd = 0;
   s.budget_shares = entered_shares;
