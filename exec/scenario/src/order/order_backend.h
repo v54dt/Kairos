@@ -25,6 +25,9 @@ class OrderBackend {
   using FillFn = std::function<void(const std::string& id, const Fill&)>;
   using CancelFn = std::function<void(const std::string& id, bool ok)>;
   using DisconnectFn = std::function<void()>;  // backend lost its link unexpectedly
+  // Optional: the hub confirmed the order reached the broker (hub forwarder gate
+  // cleared). Backends that never emit it (paper/sim) leave this unused.
+  using ForwardedFn = std::function<void(const std::string& id)>;
 
   virtual ~OrderBackend() = default;
 
@@ -47,11 +50,13 @@ class OrderBackend {
   // subscription so the live quote client never starts decoding Trade frames.
   virtual bool WantsMarketTrades() const { return false; }
 
-  void SetCallbacks(AckFn ack, FillFn fill, CancelFn cancel, DisconnectFn disconnect = {}) {
+  void SetCallbacks(AckFn ack, FillFn fill, CancelFn cancel, DisconnectFn disconnect = {},
+                    ForwardedFn forwarded = {}) {
     on_ack_ = std::move(ack);
     on_fill_ = std::move(fill);
     on_cancel_ = std::move(cancel);
     on_disconnect_ = std::move(disconnect);
+    on_forwarded_ = std::move(forwarded);
   }
 
  protected:
@@ -59,6 +64,7 @@ class OrderBackend {
   FillFn on_fill_;
   CancelFn on_cancel_;
   DisconnectFn on_disconnect_;
+  ForwardedFn on_forwarded_;
 };
 
 // Paper backend: acks and fully fills every order at its limit price, instantly.

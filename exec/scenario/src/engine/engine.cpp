@@ -101,6 +101,7 @@ void ScenarioEngine::ClearResting() {
   resting_id_.clear();
   resting_filled_ = 0;
   resting_acked_ = false;
+  resting_forwarded_used_ = false;
   cancelling_ = false;
 }
 
@@ -151,6 +152,17 @@ void ScenarioEngine::OnCancel(const std::string& id, bool ok) {
   if (!ok) AbandonResting();  // cancel rejected -> the order may still be live at broker
   ClearResting();             // stop tracking it; next tick re-places at the current peg
   cv_.notify_all();
+}
+
+void ScenarioEngine::OnForwarded(const std::string& id) {
+  std::lock_guard<std::mutex> lock(mu_);
+  // Only the current, still-un-acked resting order, and only once: a late/stale id
+  // (already abandoned or replaced) is ignored, and a second forwarded must not
+  // extend again — absent forwarded, the watchdog still fires from the original
+  // submit time (fail-closed).
+  if (id != resting_id_ || resting_acked_ || resting_forwarded_used_) return;
+  resting_t_submit_ = clock_.mono();
+  resting_forwarded_used_ = true;
 }
 
 void ScenarioEngine::OnDisconnect() {
@@ -300,6 +312,7 @@ bool ScenarioEngine::DispatchAction(const TopOfBook& tob, const RestingOrder& re
       resting_id_ = id;
       resting_filled_ = 0;
       resting_acked_ = false;
+      resting_forwarded_used_ = false;
       cancelling_ = false;
       resting_seq_ = seq;
     }
@@ -419,7 +432,8 @@ int ScenarioEngine::Run() {
   backend_->SetCallbacks(
       [this](const std::string& id, bool ok, const std::string& e) { OnAck(id, ok, e); },
       [this](const std::string& id, const Fill& f) { OnFill(id, f); },
-      [this](const std::string& id, bool ok) { OnCancel(id, ok); }, [this] { OnDisconnect(); });
+      [this](const std::string& id, bool ok) { OnCancel(id, ok); }, [this] { OnDisconnect(); },
+      [this](const std::string& id) { OnForwarded(id); });
   if (!backend_->Connect()) {
     std::fprintf(stderr, "kairos-exec: order backend connect failed\n");
     return kConnectFailExit;

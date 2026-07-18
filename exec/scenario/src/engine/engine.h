@@ -67,6 +67,10 @@ class ScenarioEngine {
   void OnAck(const std::string& id, bool ok, const std::string& err);
   void OnFill(const std::string& id, const Fill& f);
   void OnCancel(const std::string& id, bool ok);
+  // Hub confirmed the current resting order reached the broker: rebase the
+  // ack-timeout clock so hub queue delay is not misread as broker silence. Only
+  // the current, un-acked resting order is affected, and only once (fail-closed).
+  void OnForwarded(const std::string& id);
   void OnDisconnect();
   void ClearResting();  // call under mu_
   // Move the still-unfilled part of the current resting order into the
@@ -125,9 +129,10 @@ class ScenarioEngine {
   // rejected) that may still be live at the broker; counted against the sell
   // position cap so filled + in-flight can never oversell. Guarded by mu_.
   SellCapLedger sell_cap_;
-  bool resting_acked_ = false;  // broker confirmed the working order (OnSubmit)
-  bool cancelling_ = false;     // cancel issued for re-peg, awaiting OnCancel/full fill
-  int resting_seq_ = 0;         // order id's sequence number (dashboard iteration_id)
+  bool resting_acked_ = false;           // broker confirmed the working order (OnSubmit)
+  bool resting_forwarded_used_ = false;  // hub-forwarded clock restart consumed (once per order)
+  bool cancelling_ = false;              // cancel issued for re-peg, awaiting OnCancel/full fill
+  int resting_seq_ = 0;                  // order id's sequence number (dashboard iteration_id)
   std::chrono::steady_clock::time_point resting_t_start_;   // before Submit (post-gate)
   std::chrono::steady_clock::time_point resting_t_submit_;  // after Submit returns
   bool complete_ = false;
