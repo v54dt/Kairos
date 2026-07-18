@@ -154,9 +154,11 @@ target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_engine PUBLIC kairos_scenario kairos_dashboard kairos_order_journal
                                            pthread)
 
-# Round-trip runtime: pure FSM + the orchestrator that owns a signal subscription, a HOLD watchdog,
-# and per-leg engines. PAPER/SIM only until live restart recovery lands.
-add_library(kairos_roundtrip src/engine/roundtrip_fsm.cpp src/engine/roundtrip_runner.cpp)
+# Round-trip runtime: pure FSM + recovery decider + lifecycle journal + the orchestrator that owns a
+# signal subscription, a HOLD watchdog, and per-leg engines. Restart recovery resumes an open
+# position under protection after a crash.
+add_library(kairos_roundtrip src/engine/roundtrip_fsm.cpp src/engine/roundtrip_runner.cpp
+                             src/engine/roundtrip_journal.cpp src/engine/roundtrip_recovery.cpp)
 target_include_directories(kairos_roundtrip PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_roundtrip PUBLIC kairos_engine kairos_signal)
 
