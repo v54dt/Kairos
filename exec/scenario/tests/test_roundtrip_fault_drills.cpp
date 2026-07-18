@@ -651,14 +651,18 @@ int Drill5a(const Env& e) {
 }
 
 int Drill5b(const Env& e) {
-  // SIGKILL-in-HOLD restart (the CI kill -9): a clean enter reaches HOLD, kill -9 the
-  // trader, restart it on the same journal => PR5 recovery resumes protection, and a
-  // manual exit then flats. What this proves is the ungraceful crash + journal recovery
-  // path, so both legs run paper-instant for round, deterministic fills.
+  // SIGKILL-in-HOLD restart (the CI kill -9): a clean enter reaches HOLD under a loose
+  // stop, kill -9 the trader, then restart it on the same journal with a TIGHT stop so
+  // PR5 recovery resumes the position and the re-armed watchdog fires the stop on its
+  // own against the down-trending tape — no manual signal. This proves autonomous
+  // protection actually resumed, not just that a manual exit still works. Both legs run
+  // paper-instant for round, deterministic fills.
   Ns n = MakeNs("d5b-" + std::to_string(::getpid()));
-  WriteScenario(n, 2000000, "[risk]\nquote_stall_alert_ms=0\nquote_max_age_ms=60000\n",
-                "stop_loss_pct=15\nmax_hold_min=5\nenter_window_min=10\narm_start=\"09:00\"\n"
-                "arm_end=\"13:00\"\non_signal_loss=\"hold_with_stops\"\n");
+  const std::string risk = "[risk]\nquote_stall_alert_ms=0\nquote_max_age_ms=60000\n";
+  const std::string rt_tail =
+      "\nmax_hold_min=5\nenter_window_min=10\narm_start=\"09:00\"\narm_end=\"13:00\"\n"
+      "on_signal_loss=\"hold_with_stops\"\n";
+  WriteScenario(n, 2000000, risk, "stop_loss_pct=15" + rt_tail);  // t1: loose, stays in HOLD
   int rc = 0;
   pid_t sim = StartSim(e, n, "", 8);
   pid_t sig = StartSignald(e, n);
@@ -677,21 +681,21 @@ int Drill5b(const Env& e) {
   long entered = JsonInt(WaitRtRecord(n.journal_dir, "enter_done", 25000), "sh");
   KillReap(t1, SIGKILL);  // ungraceful crash mid-HOLD; reaped before the restart races
 
+  // Tighten the stop for the restart: the resumed watchdog must fire it autonomously.
+  WriteScenario(n, 2000000, risk, "stop_loss_pct=0.5" + rt_tail);
   pid_t t2 = StartTrader(e, n, {"--paper-instant"}, "1000");
-  // recover-hold is sink-only; the restart re-arms nothing (net>0 resumes HOLD), so the
-  // observable proof of resumed protection is that a manual exit now flats the position.
-  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
-  InjectSignal(n, "exit");
-  bool exited = !WaitRtRecord(n.journal_dir, "exit_trigger", 25000).empty();
+  std::string exit_trig = WaitRtRecord(n.journal_dir, "exit_trigger", 30000);
+  bool stop_fired = JsonStr(exit_trig, "reason") == "stop";
   bool flat = !WaitRtRecord(n.journal_dir, "flat", 20000).empty();
   int code = WaitExit(t2, 15000);
   KillReap(sig, SIGTERM);
   bool orphan = ReapSim(n, sim);
-  std::printf("DRILL5B: entered=%ld exit_leg=%d flat=%d exit=%d orphan=%d\n", entered, exited, flat,
-              code, orphan);
+  std::printf("DRILL5B: entered=%ld stop_fired=%d flat=%d exit=%d orphan=%d\n", entered, stop_fired,
+              flat, code, orphan);
   if (entered <= 0) std::printf("DRILL5B: FAIL (enter did not fill before the kill)\n"), rc = 1;
-  if (!exited || !flat || code != 0) {
-    std::printf("DRILL5B: FAIL (SAFETY: crash restart did not resume protection and exit)\n");
+  if (!stop_fired || !flat || code != 0) {
+    std::printf(
+        "DRILL5B: FAIL (SAFETY: crash restart did not re-arm the stop watchdog autonomously)\n");
     rc = 1;
   }
   if (orphan) std::printf("DRILL5B: FAIL (orphan)\n"), rc = 1;
