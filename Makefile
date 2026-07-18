@@ -8,6 +8,7 @@ SIM_HUBD := $(EXEC_BUILD)/kairos_sim_hubd
 TRADER := $(EXEC_BUILD)/kairos_scenario_trader
 SUPERVISORD := $(EXEC_BUILD)/kairos_scenario_supervisord
 FAULT_DRILLS := $(EXEC_BUILD)/test_sim_fault_drills
+RT_FAULT_DRILLS := $(EXEC_BUILD)/test_roundtrip_fault_drills
 SIM_BIN := $(ROOT)/core/target/release/kairos-sim
 
 .PHONY: sim-e2e sim-e2e-help drills
@@ -45,12 +46,13 @@ sim-e2e-help:
 drills:
 	@echo "drills: building release core binaries (kairos-sim + siblings)"
 	cd $(ROOT)/core && cargo build --release --bins
-	@if [ ! -x "$(SIM_HUBD)" ] || [ ! -x "$(TRADER)" ] || [ ! -x "$(SUPERVISORD)" ] || [ ! -x "$(FAULT_DRILLS)" ]; then \
+	@if [ ! -x "$(SIM_HUBD)" ] || [ ! -x "$(TRADER)" ] || [ ! -x "$(SUPERVISORD)" ] || [ ! -x "$(FAULT_DRILLS)" ] || [ ! -x "$(RT_FAULT_DRILLS)" ]; then \
 	  echo "drills: FAIL — missing C++ binaries under $(EXEC_BUILD)."; \
 	  echo "  expected: $(SIM_HUBD)"; \
 	  echo "            $(TRADER)"; \
 	  echo "            $(SUPERVISORD)"; \
 	  echo "            $(FAULT_DRILLS)"; \
+	  echo "            $(RT_FAULT_DRILLS)"; \
 	  echo "  build them: cmake -S $(ROOT)/exec/scenario -B $(EXEC_BUILD) \\"; \
 	  echo "                -DCMAKE_BUILD_TYPE=Release && cmake --build $(EXEC_BUILD) -j"; \
 	  exit 1; \
@@ -76,8 +78,10 @@ drills:
 	  cargo test -p kairos-tui --test supervisor_e2e -- --ignored --nocapture
 	@echo "drills: [8/10] exec scenario_supervisor_e2e (supervisor owns/reaps a filling trader)"
 	KAIROS_SUPERVISOR_E2E=1 ctest --test-dir $(EXEC_BUILD) -R scenario_supervisor_e2e --output-on-failure
-	@echo "drills: [9/10] exec sim_fault_drills (ack-drop/reject/late-fill/disconnect)"
+	@echo "drills: [9/11] exec sim_fault_drills (ack-drop/reject/late-fill/disconnect)"
 	KAIROS_FAULT_DRILLS=1 $(FAULT_DRILLS)
-	@echo "drills: [10/10] exec scenario_restart_e2e (backoff/give-up/cancel)"
+	@echo "drills: [10/11] exec scenario_restart_e2e (backoff/give-up/cancel)"
 	ctest --test-dir $(EXEC_BUILD) -R scenario_restart_e2e --output-on-failure
-	@echo "drills: PASS — full env-gated catalog green (10 steps)"
+	@echo "drills: [11/11] exec roundtrip_fault_drills (round-trip incident replays)"
+	KAIROS_FAULT_DRILLS=1 $(RT_FAULT_DRILLS)
+	@echo "drills: PASS — full env-gated catalog green (11 steps)"
