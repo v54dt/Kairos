@@ -114,11 +114,10 @@ target_include_directories(kairos_signal PUBLIC ${KAIROS_INC} ${SRC}/signal)
 target_link_libraries(kairos_signal PUBLIC pthread)
 
 # Signal daemon: server side of the signal protocol (predicate registry + UDS
-# subscribe/heartbeat/dispatch), the predicate framework, and the depth_evap +
-# manual predicates. Consumes the core quote UDS via kairos_uds.
-add_library(
-  kairos_signal_daemon src/signal/signal_daemon.cpp src/signal/predicate_depth_evap.cpp
-                       src/signal/predicate_manual.cpp)
+# subscribe/heartbeat/dispatch), the predicate framework, and the depth_evap + manual predicates.
+# Consumes the core quote UDS via kairos_uds.
+add_library(kairos_signal_daemon src/signal/signal_daemon.cpp src/signal/predicate_depth_evap.cpp
+                                 src/signal/predicate_manual.cpp)
 target_include_directories(kairos_signal_daemon PUBLIC ${KAIROS_INC} ${SRC}/signal)
 target_link_libraries(kairos_signal_daemon PUBLIC kairos_signal kairos_uds
                                                   tomlplusplus::tomlplusplus pthread)
