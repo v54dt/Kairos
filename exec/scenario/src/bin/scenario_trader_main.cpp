@@ -4,11 +4,15 @@
 //   --check          offline: print the plan, no connection
 //   --live           real orders (requires typing LIVE, or --yes to skip)
 
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <atomic>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -17,11 +21,13 @@
 #include "blacklist.h"
 #include "dashboard_metrics.h"
 #include "engine.h"
+#include "engine_exit_codes.h"
 #include "event_sink.h"
 #include "http_poster.h"
 #include "hub_order_backend.h"
 #include "ntfy_dispatcher.h"
 #include "order_backend.h"
+#include "order_journal.h"
 #include "queue_sim_backend.h"
 #include "roundtrip_runner.h"
 #include "scenario.h"
@@ -58,8 +64,21 @@ void PrintPlan(const Scenario& s) {
   }
 }
 
-// PAPER/SIM round-trip: own signal subscription + HOLD quote feed + per-leg engines.
-// Each leg builds a fresh backend and quote client for its own symbol.
+// Writability probe for the round-trip journal: create the dir and open the file
+// for append (creating it empty, writing nothing), then close. An empty file reads
+// back as no recovery facts, so this never disturbs restart recovery.
+bool ProbeRtJournal(const std::string& dir, const std::string& name) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  int fd = ::open(JournalPath(dir, name).c_str(), O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+  if (fd < 0) return false;
+  ::close(fd);
+  return true;
+}
+
+// Round-trip: own signal subscription + HOLD quote feed + per-leg engines. Each leg
+// builds a fresh backend and quote client for its own symbol; live legs route real
+// orders through the shared order hub, paper legs use the queue-model sim.
 int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window) {
   std::unique_ptr<HttpPoster> poster;
   std::unique_ptr<NtfyDispatcher> dispatcher;
@@ -73,6 +92,7 @@ int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window) {
 
   EngineLegFactory::BackendFn backend_fn =
       [paper_instant](const Scenario& leg) -> std::unique_ptr<OrderBackend> {
+    if (leg.live) return std::make_unique<HubOrderBackend>(OrderSocketPath());
     if (paper_instant) return std::make_unique<PaperOrderBackend>();
     return std::make_unique<QueueSimBackend>(FillMode::kProbQueue,
                                              std::vector<std::string>{leg.symbol});
@@ -192,12 +212,34 @@ int main(int argc, char** argv) {
   std::fflush(stdout);
 
   if (scenario.roundtrip.enabled) {
+    // Live resolves the shared journal dir so legs + recovery share one path; paper
+    // writes the rt journal only when a dir is explicitly configured (mirrors the
+    // fill-journal paper semantics). Setting scenario.journal_dir hands the resolved
+    // path to both the per-leg engines and the runner's recovery/rt writer.
+    std::string rt_dir =
+        scenario.live ? ResolveJournalDir(scenario.journal_dir, nullptr) : scenario.journal_dir;
+    scenario.journal_dir = rt_dir;
     if (scenario.live) {
-      std::fprintf(stderr,
-                   "REFUSING TO TRADE: [roundtrip] live mode is not supported yet "
-                   "(journal-based restart recovery lands in a later change); "
-                   "run paper or --paper-instant only\n");
-      return 1;
+      std::string rt_name = scenario.symbol + "-rt-" + JournalDayUtc8();
+      if (rt_dir.empty() || !ProbeRtJournal(rt_dir, rt_name)) {
+        std::fprintf(stderr,
+                     "kairos-exec: FATAL live [roundtrip] requires a writable journal for restart "
+                     "recovery but '%s' could not be opened for append\n",
+                     rt_dir.empty() ? "<unset>" : rt_dir.c_str());
+        return kNoJournalExit;
+      }
+      if (!assume_yes) {
+        std::printf("*** LIVE round-trip: %s NT$ %ld on signal '%s'. Type LIVE to confirm: ",
+                    scenario.symbol.c_str(), scenario.budget_twd,
+                    scenario.roundtrip.signal.c_str());
+        std::fflush(stdout);
+        std::string line;
+        std::getline(std::cin, line);
+        if (line != "LIVE") {
+          std::printf("cancelled\n");
+          return 0;
+        }
+      }
     }
     return RunRoundTrip(std::move(scenario), flag_paper_instant, ignore_window);
   }
