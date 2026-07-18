@@ -41,7 +41,10 @@ struct SignalCallbacks {
 // source is HEALTHY only while the socket is connected and heartbeats keep
 // arriving; three missed heartbeat intervals or any socket error fires
 // on_signal_lost exactly once, a reconnect plus the first heartbeat fires
-// on_signal_restored (and re-subscribes). Reconnects with capped backoff.
+// on_signal_restored (and re-subscribes). Reconnects with capped backoff; the
+// backoff resets only once a heartbeat proves the link, so a peer that accepts
+// then drops keeps escalating, and a run of never-healthy attempts fires
+// on_signal_lost ("connect flapping") once instead of spinning silently.
 class SignalClient {
  public:
   SignalClient(std::string socket_path, SignalSubscribe sub, SignalCallbacks cb,
@@ -64,6 +67,7 @@ class SignalClient {
   void HandleLine(const std::string& line);
   void HandleSeq(std::uint64_t seq);
   void OnHeartbeat();
+  void MarkFlapping();  // never-healthy connect crash-loop -> lost, exactly once
   void MarkLostFromError();
   bool CheckLiveness();  // true => tear the connection down and reconnect
 
@@ -79,6 +83,7 @@ class SignalClient {
 
   std::mutex mu_;
   Health health_ = Health::kInitial;
+  bool proven_healthy_ = false;  // a heartbeat arrived on the current connection
   std::chrono::steady_clock::time_point last_hb_;
   std::uint64_t last_seq_ = 0;
   bool have_seq_ = false;

@@ -16,7 +16,8 @@ namespace kairos::exec {
 namespace {
 constexpr auto kBackoffMin = std::chrono::milliseconds(200);
 constexpr auto kBackoffMax = std::chrono::seconds(5);
-constexpr int kPollTickMs = 20;  // wake often enough to re-check the hb clock
+constexpr int kPollTickMs = 20;        // wake often enough to re-check the hb clock
+constexpr int kFlapLostThreshold = 3;  // never-healthy attempts before crying lost
 
 void InterruptibleSleep(std::chrono::milliseconds d, const std::atomic<bool>& stop) {
   auto until = std::chrono::steady_clock::now() + d;
@@ -109,23 +110,35 @@ int SignalClient::ConnectAndSubscribe() {
 
 void SignalClient::Run() {
   auto backoff = kBackoffMin;
+  int fail_streak = 0;
   while (!stop_) {
     int fd = ConnectAndSubscribe();
-    if (fd < 0) {
-      InterruptibleSleep(backoff, stop_);
+    bool proven = false;
+    if (fd >= 0) {
+      {
+        std::lock_guard<std::mutex> lock(mu_);
+        last_hb_ = clock_.mono();  // grace start; health persists across reconnects
+        have_seq_ = false;
+        proven_healthy_ = false;
+      }
+      ReadLoop(fd);
+      int old = fd_.exchange(-1);
+      if (old >= 0) ::close(old);
+      std::lock_guard<std::mutex> lock(mu_);
+      proven = proven_healthy_;
+    }
+    if (proven) {
+      backoff = kBackoffMin;  // reset only once a heartbeat proved the link
+      fail_streak = 0;
+    } else if (++fail_streak == kFlapLostThreshold) {
+      MarkFlapping();  // surface a crash-looping daemon instead of spinning silently
+    }
+    if (stop_) break;
+    InterruptibleSleep(backoff, stop_);  // minimum inter-attempt delay on every path
+    if (!proven) {
       backoff =
           std::min(backoff * 2, std::chrono::duration_cast<std::chrono::milliseconds>(kBackoffMax));
-      continue;
     }
-    backoff = kBackoffMin;
-    {
-      std::lock_guard<std::mutex> lock(mu_);
-      last_hb_ = clock_.mono();  // grace start; health persists across reconnects
-      have_seq_ = false;
-    }
-    ReadLoop(fd);
-    int old = fd_.exchange(-1);
-    if (old >= 0) ::close(old);
   }
 }
 
@@ -200,6 +213,7 @@ void SignalClient::OnHeartbeat() {
   {
     std::lock_guard<std::mutex> lock(mu_);
     last_hb_ = clock_.mono();
+    proven_healthy_ = true;  // first heartbeat proves the link; resets backoff in Run()
     if (health_ == Health::kInitial) {
       health_ = Health::kHealthy;
     } else if (health_ == Health::kLost) {
@@ -208,6 +222,18 @@ void SignalClient::OnHeartbeat() {
     }
   }
   if (fire_restored && cb_.on_signal_restored) cb_.on_signal_restored();
+}
+
+void SignalClient::MarkFlapping() {
+  bool fire = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (health_ == Health::kInitial) {
+      health_ = Health::kLost;
+      fire = true;
+    }
+  }
+  if (fire && cb_.on_signal_lost) cb_.on_signal_lost("connect flapping");
 }
 
 void SignalClient::MarkLostFromError() {
