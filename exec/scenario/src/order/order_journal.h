@@ -14,6 +14,7 @@ namespace kairos::exec {
 struct JournalFill {
   long shares = 0;
   Cents price = 0;
+  long ts_us = 0;  // wall-clock epoch us of the fill (0 when the line carried none)
 };
 
 // Append-only JSONL run-state journal. Order lifecycle events are logged (each
@@ -80,6 +81,13 @@ class OrderFlowJournal {
 };
 
 std::string JournalPath(const std::string& dir, const std::string& name);
+
+// Append one whole `line` (caller supplies the trailing '\n') to <dir>/<name>.jsonl,
+// creating <dir>; fsync when do_fsync. The line goes out in a single O_APPEND
+// ::write() so concurrent appends never tear. False on any short write or open
+// error. Shared by the round-trip journal, which keeps no open handle.
+bool AppendJsonlLine(const std::string& dir, const std::string& name, const std::string& line,
+                     bool do_fsync);
 
 // The trading day of `tp` in fixed UTC+8 (Taipei, no DST) — the single source
 // every trading-day derivation shares so both journal writers name the same file

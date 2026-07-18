@@ -100,7 +100,12 @@ std::string JsonEscapeCap(const std::string& s, std::size_t cap) {
 // no single field ever approaches the page size and stresses the write below.
 constexpr std::size_t kErrEscapedCap = 512;
 
-// Append one whole line to <dir>/<name>.jsonl, creating <dir>; fsync when asked.
+}  // namespace
+
+std::string JournalPath(const std::string& dir, const std::string& name) {
+  return dir + "/" + name + ".jsonl";
+}
+
 // The whole line goes out in a single ::write() on an O_APPEND fd: for a regular
 // file that write is atomic at end-of-file, so concurrent appends never interleave
 // regardless of line length. A short write is treated as a failure (return false),
@@ -115,11 +120,6 @@ bool AppendJsonlLine(const std::string& dir, const std::string& name, const std:
   if (ok && do_fsync) ::fsync(fd);
   ::close(fd);
   return ok;
-}
-}  // namespace
-
-std::string JournalPath(const std::string& dir, const std::string& name) {
-  return dir + "/" + name + ".jsonl";
 }
 
 std::string ResolveJournalDir(const std::string& toml_dir, const char* legacy_env_name,
@@ -296,6 +296,7 @@ std::vector<JournalFill> ReadJournalFills(const std::string& path) {
     JournalFill f;
     f.shares = JournalJsonInt(line, "shares", 0);
     f.price = JournalJsonInt(line, "price", 0);
+    f.ts_us = JournalJsonInt(line, "t", 0);
     if (f.shares != 0) out.push_back(f);
   }
   return out;
