@@ -305,7 +305,8 @@ target_link_libraries(test_roundtrip_recovery_runner PRIVATE kairos_roundtrip)
 add_test(NAME test_roundtrip_recovery_runner COMMAND test_roundtrip_recovery_runner)
 
 add_executable(test_roundtrip_partial_exit_recovery tests/test_roundtrip_partial_exit_recovery.cpp)
-target_link_libraries(test_roundtrip_partial_exit_recovery PRIVATE kairos_roundtrip kairos_sim_backend)
+target_link_libraries(test_roundtrip_partial_exit_recovery PRIVATE kairos_roundtrip
+                                                                   kairos_sim_backend)
 add_test(NAME test_roundtrip_partial_exit_recovery COMMAND test_roundtrip_partial_exit_recovery)
 
 add_executable(test_scenario_stop_loss_bound tests/test_scenario_stop_loss_bound.cpp)
