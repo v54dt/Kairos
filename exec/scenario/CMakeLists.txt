@@ -154,8 +154,8 @@ target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_engine PUBLIC kairos_scenario kairos_dashboard kairos_order_journal
                                            pthread)
 
-# Round-trip runtime: pure FSM + the orchestrator that owns a signal subscription, a
-# HOLD watchdog, and per-leg engines. PAPER/SIM only until live restart recovery lands.
+# Round-trip runtime: pure FSM + the orchestrator that owns a signal subscription, a HOLD watchdog,
+# and per-leg engines. PAPER/SIM only until live restart recovery lands.
 add_library(kairos_roundtrip src/engine/roundtrip_fsm.cpp src/engine/roundtrip_runner.cpp)
 target_include_directories(kairos_roundtrip PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_roundtrip PUBLIC kairos_engine kairos_signal)
@@ -187,8 +187,14 @@ target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
 target_link_libraries(
-  kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_sim_backend kairos_notify
-                                 kairos_uds kairos_blacklist kairos_roundtrip)
+  kairos_scenario_trader
+  PRIVATE kairos_engine
+          kairos_hub_backend
+          kairos_sim_backend
+          kairos_notify
+          kairos_uds
+          kairos_blacklist
+          kairos_roundtrip)
 
 add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
