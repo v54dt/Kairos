@@ -4,8 +4,9 @@
 // returns before the backend sees it, per-client FIFO is preserved under a
 // concurrent burst, a cancel of a still-queued submit never reaches the broker
 // (and frees its reservation), cancels drain before queued submits, a client
-// disconnect purges its queued submits, admin halt is re-checked at dequeue, and
-// shutdown fails closed (queued-but-unforwarded submits are never sent).
+// disconnect purges its queued submits, admin halt is re-checked at dequeue,
+// shutdown fails closed (queued-but-unforwarded submits are never sent), and a
+// broker-bound cancel still queued at shutdown is forwarded, not dropped.
 
 #include <atomic>
 #include <chrono>
@@ -333,6 +334,30 @@ void TestShutdownFailClosed() {
   CHECK(sink.Has("s2", OrderMsgKind::kAck, false));            // s2 rejected on shutdown
 }
 
+// --- shutdown forwards a queued broker cancel instead of dropping it -------
+void TestShutdownForwardsCancel() {
+  SlowBackend backend;
+  Sink sink;
+  OrderHub hub(&backend, sink.Fn());
+  CHECK(hub.Start());
+  backend.Hold();
+
+  Submit(hub, 7, Order("s1", Side::kBuy, 10000, 1000));  // popped, parks in Submit(s1)
+  CHECK(backend.WaitEntered(1));
+  CancelReq(hub, 7, "live");  // unknown id -> a broker cancel is queued, still un-drained
+
+  // Release the in-flight s1 only after Stop() set the stop flag, so the forwarder
+  // observes stop with the cancel still queued and drains it on the way out.
+  std::thread opener([&] {
+    std::this_thread::sleep_for(80ms);
+    backend.Open();
+  });
+  hub.Stop();  // sets stop, joins the forwarder (which must forward the queued cancel)
+  opener.join();
+
+  CHECK(backend.Cancels() == std::vector<std::string>{"live"});  // cancel reached the broker
+}
+
 // --- stress: 10 clients x many submits, bounded shutdown, no loss/dup ------
 void TestStress() {
   SlowBackend backend;
@@ -379,6 +404,7 @@ int main() {
   TestDisconnectPurge();
   TestHaltAtDequeue();
   TestShutdownFailClosed();
+  TestShutdownForwardsCancel();
   TestStress();
 
   if (g_failures == 0) {

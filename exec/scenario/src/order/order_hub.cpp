@@ -195,7 +195,16 @@ void OrderHub::Forwarder() {
       OrderFlowJournal::AppendAck(risk_.journal_dir, p.order.id, false, "hub shutting down");
     lock.lock();
   }
-  pending_cancels_.clear();
+  // A queued broker-bound cancel is a flatten of a live order: forward it before
+  // the backend disconnects rather than dropping it, so no working order is left
+  // un-cancelled at the exchange after a mid-session hub restart.
+  while (!pending_cancels_.empty()) {
+    std::string id = std::move(pending_cancels_.front());
+    pending_cancels_.pop_front();
+    lock.unlock();
+    backend_->Cancel(id);
+    lock.lock();
+  }
 }
 
 void OrderHub::DrainForwardedForTest() {
