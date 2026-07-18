@@ -156,8 +156,63 @@ void ReapActiveSims() {
   }
 }
 
+// Per-run scratch that outlives an interrupt: the ~48MB /dev/shm aeron dir and the
+// /tmp base tree. Registered by exact path so the handler removes only this run's
+// files — never a glob — via fork+/bin/rm, an async-signal-safe pattern.
+constexpr int kMaxActiveRuns = 8;
+struct ActiveRun {
+  std::atomic<bool> live{false};
+  char aeron_dir[256] = {};
+  char pidfile[256] = {};
+  char base[256] = {};
+};
+ActiveRun g_active_runs[kMaxActiveRuns];
+
+ActiveRun* RegisterRun(const std::string& base) {
+  for (auto& r : g_active_runs) {
+    bool expected = false;
+    if (r.live.compare_exchange_strong(expected, true)) {
+      std::snprintf(r.base, sizeof(r.base), "%s", base.c_str());
+      r.aeron_dir[0] = '\0';
+      r.pidfile[0] = '\0';
+      return &r;
+    }
+  }
+  return nullptr;
+}
+
+void SetRunShm(ActiveRun* r, const std::string& aeron_dir, const std::string& pidfile) {
+  if (r == nullptr) return;
+  std::snprintf(r->aeron_dir, sizeof(r->aeron_dir), "%s", aeron_dir.c_str());
+  std::snprintf(r->pidfile, sizeof(r->pidfile), "%s", pidfile.c_str());
+}
+
+void UnregisterRun(ActiveRun* r) {
+  if (r != nullptr) r->live.store(false);
+}
+
+void RemoveTree(const char* path) {
+  if (path == nullptr || path[0] == '\0') return;
+  pid_t p = ::fork();
+  if (p == 0) {
+    ::execl("/bin/rm", "rm", "-rf", "--", path, static_cast<char*>(nullptr));
+    ::_exit(127);
+  }
+  if (p > 0) ::waitpid(p, nullptr, 0);
+}
+
+void ReapActiveRuns() {
+  for (auto& r : g_active_runs) {
+    if (!r.live.exchange(false)) continue;
+    RemoveTree(r.aeron_dir);
+    RemoveTree(r.pidfile);
+    RemoveTree(r.base);
+  }
+}
+
 void OnTerm(int sig) {
   ReapActiveSims();
+  ReapActiveRuns();
   ::signal(sig, SIG_DFL);
   ::raise(sig);
 }
@@ -254,6 +309,7 @@ struct Ns {
   std::string scn_toml, signald_toml;
   std::string sim_log, signald_log, trader_log;
   std::string pidfile;
+  ActiveRun* run = nullptr;
 };
 
 Ns MakeNs(const std::string& tag) {
@@ -274,6 +330,8 @@ Ns MakeNs(const std::string& tag) {
   n.trader_log = (n.base / "trader.log").string();
   n.pidfile = n.aeron_dir + ".kairos-sim.pids";
   std::filesystem::create_directories(n.journal_dir);
+  n.run = RegisterRun(n.base.string());
+  SetRunShm(n.run, n.aeron_dir, n.pidfile);
   std::ofstream(n.spool).close();  // manual predicate anchors its offset at end-of-spool
   {
     std::ofstream f(n.signald_toml);
@@ -301,6 +359,7 @@ void RotateSim(Ns& n, const std::string& suffix) {
   n.quote_sock = (n.base / ("q" + suffix + ".sock")).string();
   n.order_sock = (n.base / ("o" + suffix + ".sock")).string();
   n.pidfile = n.aeron_dir + ".kairos-sim.pids";
+  SetRunShm(n.run, n.aeron_dir, n.pidfile);
 }
 
 pid_t StartSim(const Env& e, const Ns& n, const std::string& hubd_args, int speed) {
@@ -376,6 +435,7 @@ void RemoveSimShm(const std::string& aeron_dir) {
 void Cleanup(const Ns& n) {
   std::filesystem::remove_all(n.base);
   RemoveSimShm(n.aeron_dir);
+  UnregisterRun(n.run);
 }
 
 const char* Ok(int rc) { return rc == 0 ? "OK" : "FAILED"; }
@@ -858,6 +918,7 @@ int main() {
 
   // A wedged drill hitting the ctest TIMEOUT, or an operator Ctrl-C, would otherwise
   // leave the own-group sims (and their child groups) orphaned to init.
+  std::atexit(ReapActiveRuns);  // LIFO: sims reaped first, then their scratch removed
   std::atexit(ReapActiveSims);
   ::signal(SIGINT, OnTerm);
   ::signal(SIGTERM, OnTerm);
