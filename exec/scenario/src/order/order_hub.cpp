@@ -176,6 +176,13 @@ void OrderHub::Forwarder() {
       if (FlowJournalOn())
         OrderFlowJournal::AppendAck(risk_.journal_dir, p.order.id, false, "hub halted by admin");
     } else {
+      // Tell the owning client its order reached the broker so it can rebase its
+      // ack-timeout clock; sent BEFORE Submit so it precedes any synchronous ack.
+      lock.lock();
+      bool connected = clients_.count(p.client) > 0;
+      lock.unlock();
+      if (connected) send_(p.client, EncodeOrderForwarded({p.order.id}));
+      if (FlowJournalOn()) OrderFlowJournal::AppendForwarded(risk_.journal_dir, p.order.id);
       backend_->Submit(p.order);  // gated inside the backend; only this thread blocks there
     }
     lock.lock();

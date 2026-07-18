@@ -65,7 +65,8 @@ int main() {
   std::vector<std::pair<int, OrderMessage>> sent;
   auto send = [&](int client, const std::vector<std::uint8_t>& bytes) {
     OrderMessage m;
-    if (DecodeOrder(bytes.data(), bytes.size(), &m)) sent.push_back({client, m});
+    if (DecodeOrder(bytes.data(), bytes.size(), &m) && m.kind != OrderMsgKind::kForwarded)
+      sent.push_back({client, m});
   };
 
   OrderHub hub(&backend, send);
@@ -143,7 +144,8 @@ int main() {
     std::vector<std::pair<int, OrderMessage>> sent2;
     auto send2 = [&](int c, const std::vector<std::uint8_t>& bytes) {
       OrderMessage m;
-      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sent2.push_back({c, m});
+      if (DecodeOrder(bytes.data(), bytes.size(), &m) && m.kind != OrderMsgKind::kForwarded)
+        sent2.push_back({c, m});
     };
     OrderHub::RiskConfig risk;
     risk.journal_dir = dir;
@@ -251,7 +253,8 @@ int main() {
     std::vector<std::pair<int, OrderMessage>> sentf;
     auto sendf = [&](int c, const std::vector<std::uint8_t>& bytes) {
       OrderMessage m;
-      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sentf.push_back({c, m});
+      if (DecodeOrder(bytes.data(), bytes.size(), &m) && m.kind != OrderMsgKind::kForwarded)
+        sentf.push_back({c, m});
     };
     OrderHub::RiskConfig risk;
     risk.journal_dir = dir;  // order_flow_journal defaults on
@@ -272,18 +275,22 @@ int main() {
     bf.FireCancel("kf-1", true);
 
     auto lines = ReadLines(fpath);
-    CHECK(lines.size() == 5);
+    // A `forwarded` audit line lands between submit and ack (Feed drains the
+    // forwarder, which journals it, before the test fires the ack).
+    CHECK(lines.size() == 6);
     CHECK(JournalJsonStr(lines[0], "type", "") == "submit");
     CHECK(JournalJsonStr(lines[0], "id", "") == "kf-1");
     CHECK(JournalJsonStr(lines[0], "prefix", "") == "kf");
     CHECK(JournalJsonStr(lines[0], "symbol", "") == "2330");
     CHECK(JournalJsonStr(lines[0], "side", "") == "Buy");
-    CHECK(JournalJsonStr(lines[1], "type", "") == "ack");
-    CHECK(JournalJsonInt(lines[1], "ok", -1) == 1);
-    CHECK(JournalJsonStr(lines[2], "type", "") == "fill");
-    CHECK(JournalJsonInt(lines[2], "unroutable", -1) == 0);
-    CHECK(JournalJsonStr(lines[3], "type", "") == "cancel_req");
-    CHECK(JournalJsonStr(lines[4], "type", "") == "cancel_ack");
+    CHECK(JournalJsonStr(lines[1], "type", "") == "forwarded");
+    CHECK(JournalJsonStr(lines[1], "id", "") == "kf-1");
+    CHECK(JournalJsonStr(lines[2], "type", "") == "ack");
+    CHECK(JournalJsonInt(lines[2], "ok", -1) == 1);
+    CHECK(JournalJsonStr(lines[3], "type", "") == "fill");
+    CHECK(JournalJsonInt(lines[3], "unroutable", -1) == 0);
+    CHECK(JournalJsonStr(lines[4], "type", "") == "cancel_req");
+    CHECK(JournalJsonStr(lines[5], "type", "") == "cancel_ack");
     long prev = 0;  // timestamps are sane and non-decreasing
     for (const auto& l : lines) {
       long t = JournalJsonInt(l, "t", -1);
@@ -300,10 +307,11 @@ int main() {
     hf.OnClientDisconnect(12);
     bf.FireFill("kf-2", Fill{2000, 10000});
     auto lines2 = ReadLines(fpath);
-    CHECK(lines2.size() == 7);
-    CHECK(JournalJsonStr(lines2[6], "type", "") == "fill");
-    CHECK(JournalJsonStr(lines2[6], "id", "") == "kf-2");
-    CHECK(JournalJsonInt(lines2[6], "unroutable", -1) == 1);
+    // +3: os2 submit + its forwarded line + the unroutable fill.
+    CHECK(lines2.size() == 9);
+    CHECK(JournalJsonStr(lines2[8], "type", "") == "fill");
+    CHECK(JournalJsonStr(lines2[8], "id", "") == "kf-2");
+    CHECK(JournalJsonInt(lines2[8], "unroutable", -1) == 1);
 
     hf.Stop();
     std::remove(fpath.c_str());
@@ -318,7 +326,8 @@ int main() {
     std::vector<std::pair<int, OrderMessage>> sento;
     auto sendo = [&](int c, const std::vector<std::uint8_t>& bytes) {
       OrderMessage m;
-      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sento.push_back({c, m});
+      if (DecodeOrder(bytes.data(), bytes.size(), &m) && m.kind != OrderMsgKind::kForwarded)
+        sento.push_back({c, m});
     };
     OrderHub::RiskConfig risk;
     risk.journal_dir = dir;
@@ -345,7 +354,8 @@ int main() {
     std::vector<std::pair<int, OrderMessage>> sent3;
     auto send3 = [&](int c, const std::vector<std::uint8_t>& bytes) {
       OrderMessage m;
-      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sent3.push_back({c, m});
+      if (DecodeOrder(bytes.data(), bytes.size(), &m) && m.kind != OrderMsgKind::kForwarded)
+        sent3.push_back({c, m});
     };
     OrderHub::RiskConfig risk;
     risk.journal_dir = "/proc/nonexistent/cannot-create";  // unwritable
@@ -404,7 +414,8 @@ int main() {
     std::vector<std::pair<int, OrderMessage>> sd;
     auto send = [&](int c, const std::vector<std::uint8_t>& bytes) {
       OrderMessage m;
-      if (DecodeOrder(bytes.data(), bytes.size(), &m)) sd.push_back({c, m});
+      if (DecodeOrder(bytes.data(), bytes.size(), &m) && m.kind != OrderMsgKind::kForwarded)
+        sd.push_back({c, m});
     };
     OrderHub::RiskConfig risk;
     risk.price_collar_pct = 10;                    // reject a price >10% from the last fill

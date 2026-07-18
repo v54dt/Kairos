@@ -62,9 +62,10 @@ int main() {
                    "ROD", 92500,  1000};
   CHECK(WriteFrame(fd, EncodeOrderSubmit(m)));
 
-  // paper acks then fills -> expect both routed back to this client
+  // paper acks then fills -> expect both routed back to this client (a leading
+  // forwarded frame precedes them, so drain up to three frames)
   bool got_ack = false, got_fill = false;
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < 3; ++i) {
     std::vector<std::uint8_t> frame;
     if (ReadFrame(fd, &frame) != 1) break;
     OrderMessage om;
@@ -112,26 +113,28 @@ int main() {
       OrderSubmitMsg m{"k-e2e", "2330", Market::kTse, Board::kRoundLot, Side::kBuy, "Cash",
                        "ROD",   92500,  1000};
       CHECK(WriteFrame(c, EncodeOrderSubmit(m)));
-      for (int i = 0; i < 2; ++i) {  // drain ack + fill
+      for (int i = 0; i < 3; ++i) {  // drain forwarded + ack + fill
         std::vector<std::uint8_t> frame;
         if (ReadFrame(c, &frame) != 1) break;
       }
       CHECK(WriteFrame(c, EncodeOrderCancel({"k-e2e"})));
       std::vector<std::string> lines;
-      for (int i = 0; i < 200 && lines.size() < 5; ++i) {  // bounded wait for async writes
+      // submit, forwarded, ack, fill, cancel_req, cancel_ack -> 6 lines.
+      for (int i = 0; i < 200 && lines.size() < 6; ++i) {  // bounded wait for async writes
         lines = ReadLines(fpath);
-        if (lines.size() < 5) ::usleep(10000);
+        if (lines.size() < 6) ::usleep(10000);
       }
-      CHECK(lines.size() == 5);
+      CHECK(lines.size() == 6);
       std::printf("--- %s ---\n", fpath.c_str());
       for (const auto& l : lines) std::printf("%s\n", l.c_str());
       std::printf("--- end ---\n");
-      if (lines.size() == 5) {
+      if (lines.size() == 6) {
         CHECK(JournalJsonStr(lines[0], "type", "") == "submit");
-        CHECK(JournalJsonStr(lines[1], "type", "") == "ack");
-        CHECK(JournalJsonStr(lines[2], "type", "") == "fill");
-        CHECK(JournalJsonStr(lines[3], "type", "") == "cancel_req");
-        CHECK(JournalJsonStr(lines[4], "type", "") == "cancel_ack");
+        CHECK(JournalJsonStr(lines[1], "type", "") == "forwarded");
+        CHECK(JournalJsonStr(lines[2], "type", "") == "ack");
+        CHECK(JournalJsonStr(lines[3], "type", "") == "fill");
+        CHECK(JournalJsonStr(lines[4], "type", "") == "cancel_req");
+        CHECK(JournalJsonStr(lines[5], "type", "") == "cancel_ack");
         long prev = 0;
         for (const auto& l : lines) {
           long t = JournalJsonInt(l, "t", -1);
