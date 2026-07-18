@@ -31,6 +31,7 @@ treated as unset everywhere.
 | `KAIROS_QUOTE_SOCK` | core, exec (trader/hub), tui | Quote UDS: core publishes, consumers read | `<runtime>/kairos-quotes.sock` | env > XDG > run-user |
 | `KAIROS_ORDER_SOCK` | core (resolver), exec hub + scenarios | Order-hub UDS (hub <-> scenarios; not core) | `<runtime>/kairos-orders.sock` | env > XDG > run-user; or `hub.toml [hub] socket_path` |
 | `KAIROS_SCENARIO_CTL_SOCK` | exec supervisor, tui | Supervisor control UDS (TUI/operator <-> supervisor) | `<runtime>/kairos-scenario-ctl.sock` | env > XDG > run-user; or `--ctl-sock` flag |
+| `KAIROS_SIGNAL_SOCK` | exec signal client (B7; daemon in a later PR) | Signal daemon UDS (signald pushes signals/heartbeats to armed traders) | `<runtime>/kairos-signals.sock` | env > XDG > run-user |
 | `KAIROS_HUB_STATUS` | exec hub (writes), tui (reads) | Hub status JSON path (fields incl. `halted`) | `<runtime>/kairos-hub-status.json` | env > XDG > run-user |
 | `KAIROS_HUB_HALT` | exec hub (watches), tui (arms/clears) | Admin-halt sentinel file; its existence halts all new submits | `<runtime>/kairos-hub-halt` | env > XDG > run-user |
 | `KAIROS_JOURNAL_DIR` | exec trader + hub | Shared run-state journal dir; same-day fills replay on restart so budget is not re-bought and hub unroutable fills land beside the trader's | `$HOME/Kairos/data/journal` (trader live: `<data-dir>/journal`) | `[journal].dir` / `[hub].journal_dir` toml > `KAIROS_JOURNAL_DIR` > legacy per-side env > `$HOME/Kairos/data/journal` |
@@ -76,6 +77,7 @@ scenarios all land on the same paths.
 | Quote UDS | `KAIROS_QUOTE_SOCK` | `kairos-quotes.sock` | core | trader, tui, `kairos-uds-client` |
 | Order UDS | `KAIROS_ORDER_SOCK` | `kairos-orders.sock` | hub (listens) | scenario traders |
 | Supervisor ctl UDS | `KAIROS_SCENARIO_CTL_SOCK` | `kairos-scenario-ctl.sock` | supervisor (listens) | tui / operator |
+| Signal UDS | `KAIROS_SIGNAL_SOCK` | `kairos-signals.sock` | signald (listens; later PR) | armed traders (signal client) |
 | Hub status JSON | `KAIROS_HUB_STATUS` | `kairos-hub-status.json` | hub | tui |
 | Hub halt sentinel | `KAIROS_HUB_HALT` | `kairos-hub-halt` | tui / operator | hub |
 
