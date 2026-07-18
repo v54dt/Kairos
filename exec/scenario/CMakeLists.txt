@@ -125,7 +125,7 @@ add_library(kairos_scenario_ctl_server src/scenario/scenario_ctl_server.cpp)
 target_include_directories(kairos_scenario_ctl_server PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario_ctl_server PUBLIC kairos_scenario_process pthread)
 
-add_library(kairos_scenario src/engine/scenario.cpp)
+add_library(kairos_scenario src/engine/scenario.cpp src/engine/roundtrip_legs.cpp)
 target_include_directories(kairos_scenario PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_scenario PUBLIC tomlplusplus::tomlplusplus)
 
@@ -237,6 +237,14 @@ add_test(NAME test_scenario COMMAND test_scenario)
 add_executable(test_blacklist tests/test_blacklist.cpp)
 target_link_libraries(test_blacklist PRIVATE kairos_blacklist)
 add_test(NAME test_blacklist COMMAND test_blacklist)
+
+add_executable(test_roundtrip_legs tests/test_roundtrip_legs.cpp)
+target_link_libraries(test_roundtrip_legs PRIVATE kairos_scenario)
+add_test(NAME test_roundtrip_legs COMMAND test_roundtrip_legs)
+
+add_executable(test_engine_result tests/test_engine_result.cpp)
+target_link_libraries(test_engine_result PRIVATE kairos_engine)
+add_test(NAME test_engine_result COMMAND test_engine_result)
 
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)

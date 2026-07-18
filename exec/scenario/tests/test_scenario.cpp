@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "order_journal.h"  // ResolveJournalDir
 #include "scenario.h"
@@ -222,6 +223,122 @@ static void TestBudgetOverride() {
   CHECK_EQ(shares.budget_shares, 2000);
 }
 
+static bool HasErr(const std::vector<std::string>& errs, const std::string& needle) {
+  for (const auto& e : errs)
+    if (e.find(needle) != std::string::npos) return true;
+  return false;
+}
+
+// A minimal enabled [roundtrip] Buy that passes every rule (arm_end 12:00 leaves
+// room for enter_window + max_hold before the 13:25 forced exit).
+static Scenario ValidRoundTrip() {
+  Scenario s;
+  s.symbol = "2330";
+  s.budget_twd = 300000;
+  s.side = Side::kBuy;
+  s.roundtrip.enabled = true;
+  s.roundtrip.signal = "vwap_reversion";
+  s.roundtrip.stop_loss_pct = 1.0;
+  s.roundtrip.max_hold_min = 30;
+  s.roundtrip.enter_window_min = 10;
+  s.roundtrip.arm_start_hhmm = 900;
+  s.roundtrip.arm_end_hhmm = 1200;
+  return s;
+}
+
+// Absent [roundtrip] leaves enabled=false with every field at its default, and an
+// enabled block round-trips through the loader and validates.
+static void TestRoundTripDefaults() {
+  const std::string body = R"(
+[scenario]
+symbol = "2330"
+budget_twd = 300000
+)";
+  std::string path = WriteTemp(body);
+  Scenario s = LoadScenario(path);
+  CHECK(!s.roundtrip.enabled);
+  CHECK(s.roundtrip.signal.empty());
+  CHECK_EQ(s.roundtrip.enter_window_min, 10);
+  CHECK(s.roundtrip.on_signal_loss == OnSignalLoss::kHoldWithStops);
+  CHECK_EQ(s.roundtrip.arm_start_hhmm, 900);
+  CHECK_EQ(s.roundtrip.arm_end_hhmm, 1300);
+  CHECK(ValidateScenario(s).empty());  // disabled => no roundtrip errors
+
+  const std::string enabled_body = R"(
+[scenario]
+symbol = "2330"
+budget_twd = 300000
+[roundtrip]
+enabled = true
+signal = "vwap_reversion"
+stop_loss_pct = 1.5
+max_hold_min = 30
+enter_window_min = 5
+on_signal_loss = "exit"
+arm_start = "09:30"
+arm_end = "12:00"
+)";
+  std::ofstream(path) << enabled_body;
+  Scenario e = LoadScenario(path);
+  std::remove(path.c_str());
+  CHECK(e.roundtrip.enabled);
+  CHECK(e.roundtrip.signal == "vwap_reversion");
+  CHECK(e.roundtrip.on_signal_loss == OnSignalLoss::kExit);
+  CHECK_EQ(e.roundtrip.enter_window_min, 5);
+  CHECK_EQ(e.roundtrip.arm_start_hhmm, 930);
+  CHECK_EQ(e.roundtrip.arm_end_hhmm, 1200);
+  CHECK(ValidateScenario(e).empty());
+}
+
+// Every fail-closed reject rule fires; the baseline passes.
+static void TestRoundTripValidationMatrix() {
+  CHECK(ValidateScenario(ValidRoundTrip()).empty());
+
+  Scenario sell = ValidRoundTrip();
+  sell.side = Side::kSell;
+  sell.position_shares = 5000;  // satisfy the Sell seatbelt so only the roundtrip rule fires
+  CHECK(HasErr(ValidateScenario(sell), "long-only"));
+
+  Scenario no_sig = ValidRoundTrip();
+  no_sig.roundtrip.signal.clear();
+  CHECK(HasErr(ValidateScenario(no_sig), "roundtrip.signal"));
+
+  Scenario no_stop = ValidRoundTrip();
+  no_stop.roundtrip.stop_loss_pct = 0.0;
+  CHECK(HasErr(ValidateScenario(no_stop), "stop_loss_pct"));
+
+  Scenario no_hold = ValidRoundTrip();
+  no_hold.roundtrip.max_hold_min = 0;
+  CHECK(HasErr(ValidateScenario(no_hold), "max_hold_min"));
+
+  Scenario no_win = ValidRoundTrip();
+  no_win.roundtrip.enter_window_min = 0;
+  CHECK(HasErr(ValidateScenario(no_win), "enter_window_min"));
+
+  Scenario late_arm = ValidRoundTrip();
+  late_arm.roundtrip.arm_end_hhmm = 1330;
+  CHECK(HasErr(ValidateScenario(late_arm), "arm_end must be <= 13:00"));
+
+  Scenario bad_order = ValidRoundTrip();
+  bad_order.roundtrip.arm_start_hhmm = 1200;
+  bad_order.roundtrip.arm_end_hhmm = 1200;  // start == end
+  CHECK(HasErr(ValidateScenario(bad_order), "arm_start must be before"));
+}
+
+// The fit check uses true minutes: arm_end 13:00 (780) + enter + hold == 805 is
+// accepted, one minute more is rejected with the arithmetic in the message.
+static void TestRoundTripArmArithmetic() {
+  Scenario edge = ValidRoundTrip();
+  edge.roundtrip.arm_end_hhmm = 1300;
+  edge.roundtrip.enter_window_min = 10;
+  edge.roundtrip.max_hold_min = 15;  // 780 + 10 + 15 == 805 exactly
+  CHECK(ValidateScenario(edge).empty());
+
+  Scenario over = edge;
+  over.roundtrip.max_hold_min = 16;  // 806 > 805
+  CHECK(HasErr(ValidateScenario(over), "forced exit"));
+}
+
 int main() {
   const std::string body = R"(
 [scenario]
@@ -281,6 +398,9 @@ quote_max_age_ms = 70000
   TestResolveJournalDir();
   TestSellAndBudgetValidation();
   TestBudgetOverride();
+  TestRoundTripDefaults();
+  TestRoundTripValidationMatrix();
+  TestRoundTripArmArithmetic();
 
   if (g_failures == 0) {
     std::printf("test_scenario: OK\n");

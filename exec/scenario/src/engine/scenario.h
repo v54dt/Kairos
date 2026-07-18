@@ -23,6 +23,26 @@ struct UserCreds {
   std::string pfx_password;
 };
 
+// What the round-trip does when the entry signal fades before the position is
+// closed: keep the position under stop/timeout, or exit immediately.
+enum class OnSignalLoss { kHoldWithStops, kExit };
+
+// [roundtrip] same-day long round-trip: enter on a signal, exit on reverse
+// signal / stop-loss / max hold / the 13:25 forced-exit wall time. All fields
+// are validated only when enabled, so an absent table changes nothing.
+struct RoundTripConfig {
+  bool enabled = false;
+  std::string signal;          // entry predicate name (required when enabled)
+  double stop_loss_pct = 0.0;  // required > 0
+  int max_hold_min = 0;        // required > 0
+  int enter_window_min = 10;   // > 0
+  OnSignalLoss on_signal_loss = OnSignalLoss::kHoldWithStops;
+  std::string arm_start = "09:00";
+  std::string arm_end = "13:00";
+  int arm_start_hhmm = 900;
+  int arm_end_hhmm = 1300;
+};
+
 struct Scenario {
   std::string name = "scenario";
   std::string symbol;
@@ -77,6 +97,7 @@ struct Scenario {
 
   NotifyConfig notify;
   DashboardConfig dashboard;
+  RoundTripConfig roundtrip;
 
   bool IsOddLot() const { return board == Board::kOddLot; }
 };

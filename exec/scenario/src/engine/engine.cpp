@@ -510,4 +510,15 @@ void ScenarioEngine::RequestStop() {
   cv_.notify_all();
 }
 
+LegResult ScenarioEngine::Result() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  LegResult r;
+  r.filled_shares = acct_.filled_shares;
+  r.filled_notional_cents = acct_.filled_notional;
+  r.avg_price_cents = r.filled_shares > 0 ? r.filled_notional_cents / r.filled_shares : 0;
+  r.complete = complete_;
+  r.halted = failure_halt_.halted();
+  return r;
+}
+
 }  // namespace kairos::exec
