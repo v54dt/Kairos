@@ -99,6 +99,69 @@ void KillReap(pid_t pid, int sig) {
   ::waitpid(pid, nullptr, 0);
 }
 
+// Sims run in their own process groups (ReapSim kills them by recorded pgid), so they
+// escape a group-kill or Ctrl-C of the harness and orphan on abnormal exit. Track the
+// live ones so an atexit/signal handler can still reap them and their recorded child
+// groups. Fixed-size + atomic so the handler touches only async-signal-safe syscalls.
+constexpr int kMaxActiveSims = 16;
+struct ActiveSim {
+  std::atomic<pid_t> sim{0};
+  char pidfile[256] = {};
+};
+ActiveSim g_active_sims[kMaxActiveSims];
+
+void RegisterSim(pid_t sim, const std::string& pidfile) {
+  for (auto& a : g_active_sims) {
+    pid_t expected = 0;
+    if (a.sim.compare_exchange_strong(expected, sim)) {
+      std::snprintf(a.pidfile, sizeof(a.pidfile), "%s", pidfile.c_str());
+      return;
+    }
+  }
+}
+
+void UnregisterSim(pid_t sim) {
+  for (auto& a : g_active_sims)
+    if (a.sim.load() == sim) {
+      a.sim.store(0);
+      return;
+    }
+}
+
+void ReapActiveSims() {
+  for (auto& a : g_active_sims) {
+    pid_t sim = a.sim.exchange(0);
+    if (sim <= 0) continue;
+    ::killpg(sim, SIGKILL);  // the sim leads its own group (pid == pgid)
+    int fd = ::open(a.pidfile, O_RDONLY);
+    if (fd < 0) continue;
+    char buf[512];
+    ssize_t nrd = ::read(fd, buf, sizeof(buf) - 1);
+    ::close(fd);
+    if (nrd <= 0) continue;
+    buf[nrd] = '\0';
+    long g = 0;
+    bool have = false;
+    for (char* p = buf;; ++p) {
+      if (*p >= '0' && *p <= '9') {
+        g = g * 10 + (*p - '0');
+        have = true;
+      } else {
+        if (have && g > 0) ::killpg(static_cast<pid_t>(g), SIGKILL);
+        g = 0;
+        have = false;
+        if (*p == '\0') break;
+      }
+    }
+  }
+}
+
+void OnTerm(int sig) {
+  ReapActiveSims();
+  ::signal(sig, SIG_DFL);
+  ::raise(sig);
+}
+
 std::string Slurp(const std::string& path) {
   std::ifstream f(path);
   std::stringstream ss;
@@ -246,6 +309,7 @@ pid_t StartSim(const Env& e, const Ns& n, const std::string& hubd_args, int spee
        "--quote-sock", n.quote_sock, "--order-sock", n.order_sock, "--aeron-dir", n.aeron_dir,
        "--hubd", e.hubd, "--bin-dir", e.bin_dir},
       {{"KAIROS_SIM_HUBD_ARGS", hubd_args}}, n.sim_log, /*own_pgroup=*/true);
+  RegisterSim(sim, n.pidfile);
   return sim;
 }
 
@@ -291,6 +355,7 @@ bool ReapSim(const Ns& n, pid_t sim) {
   if (sim > 0) {
     ::kill(-sim, SIGTERM);
     ::waitpid(sim, nullptr, 0);
+    UnregisterSim(sim);
   }
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
   bool orphan = false;
@@ -765,6 +830,12 @@ int main() {
   }
   Env e = Probe();
   if (!e.ok) return 0;
+
+  // A wedged drill hitting the ctest TIMEOUT, or an operator Ctrl-C, would otherwise
+  // leave the own-group sims (and their child groups) orphaned to init.
+  std::atexit(ReapActiveSims);
+  ::signal(SIGINT, OnTerm);
+  ::signal(SIGTERM, OnTerm);
 
   int rc = 0;
   rc |= Drill1(e);
