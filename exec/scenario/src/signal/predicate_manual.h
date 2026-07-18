@@ -13,7 +13,8 @@ namespace kairos::exec {
 // {"signal":"<name>","symbol":"<sym>","action":"enter|exit"} whose signal matches
 // this predicate's name and whose symbol is in its set is emitted exactly once.
 // Offset-tracked (never truncates), so a concurrent appender cannot lose or
-// double a line; a shrink resets the offset.
+// double a line; a shrink resets the offset. The offset starts at end-of-spool,
+// so a restart emits only newly appended lines and never replays history.
 class ManualPredicate : public Predicate {
  public:
   ManualPredicate(std::string name, std::vector<std::string> symbols, std::string spool_path);

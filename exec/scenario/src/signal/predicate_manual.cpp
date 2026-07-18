@@ -77,7 +77,12 @@ bool ParseFlatObject(const std::string& line, std::map<std::string, std::string>
 
 ManualPredicate::ManualPredicate(std::string name, std::vector<std::string> symbols,
                                  std::string spool_path)
-    : Predicate(std::move(name), std::move(symbols)), spool_path_(std::move(spool_path)) {}
+    : Predicate(std::move(name), std::move(symbols)), spool_path_(std::move(spool_path)) {
+  struct stat st;
+  // Start at end-of-spool: pre-existing lines were consumed by a prior lifetime,
+  // so a restart never replays history and re-fires trades.
+  if (::stat(spool_path_.c_str(), &st) == 0) offset_ = static_cast<std::uint64_t>(st.st_size);
+}
 
 std::vector<PredicateHit> ManualPredicate::Poll(std::int64_t /*ts_us*/) {
   std::vector<PredicateHit> hits;
