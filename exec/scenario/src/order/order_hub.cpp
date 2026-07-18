@@ -41,6 +41,8 @@ OrderHub::OrderHub(OrderBackend* backend, SendFn send, RiskConfig risk)
       current_trading_day_(TradingDayNumUtc8(std::chrono::system_clock::now())),
       risk_(std::move(risk)) {}
 
+OrderHub::~OrderHub() { StopForwarder(); }
+
 long OrderHub::CurrentTradingDay() const {
   return forced_trading_day_ >= 0 ? forced_trading_day_
                                   : TradingDayNumUtc8(std::chrono::system_clock::now());
@@ -105,10 +107,112 @@ bool OrderHub::Start() {
       [this](const std::string& id, bool ok, const std::string& e) { OnAck(id, ok, e); },
       [this](const std::string& id, const Fill& f) { OnFill(id, f); },
       [this](const std::string& id, bool ok) { OnCancel(id, ok); });
-  return backend_->Connect();
+  if (!backend_->Connect()) return false;
+  StartForwarder();
+  return true;
 }
 
-void OrderHub::Stop() { backend_->Disconnect(); }
+void OrderHub::Stop() {
+  StopForwarder();  // fail-closed: any still-queued submit is journaled, never sent
+  backend_->Disconnect();
+}
+
+void OrderHub::StartForwarder() {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    stop_forwarder_ = false;
+  }
+  forwarder_ = std::thread([this] { Forwarder(); });
+}
+
+void OrderHub::StopForwarder() {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    stop_forwarder_ = true;
+  }
+  cv_.notify_all();
+  if (forwarder_.joinable()) forwarder_.join();
+}
+
+void OrderHub::ReleaseQueuedTerminal(const std::string& id) {
+  auto it = routes_.find(id);
+  if (it != routes_.end()) {
+    ReleaseOpen(it->second);  // free reserved notional exactly once (guards on r.closed)
+    open_ids_.erase(id);
+    routes_.erase(it);
+  }
+  RemoveDupEntry(id);  // never sent: a legitimate re-order must not read as a dup
+  ForgetOrder(id);     // never reaches the broker, so nothing left to journal by id
+}
+
+void OrderHub::Forwarder() {
+  std::unique_lock<std::mutex> lock(mu_);
+  for (;;) {
+    cv_.wait(lock, [this] {
+      return stop_forwarder_ || !pending_cancels_.empty() || !pending_submits_.empty();
+    });
+    if (stop_forwarder_) break;
+    if (!pending_cancels_.empty()) {  // flatten priority: cancels drain before submits
+      std::string id = std::move(pending_cancels_.front());
+      pending_cancels_.pop_front();
+      forwarding_ = true;
+      lock.unlock();
+      backend_->Cancel(id);  // gated inside the backend; only this thread blocks there
+      lock.lock();
+      forwarding_ = false;
+      drain_cv_.notify_all();
+      continue;
+    }
+    PendingSubmit p = std::move(pending_submits_.front());
+    pending_submits_.pop_front();
+    forwarding_ = true;
+    lock.unlock();
+    if (IsHaltedNow()) {  // halt set after accept: reject at dequeue, never forward
+      lock.lock();
+      ReleaseQueuedTerminal(p.order.id);
+      bool connected = clients_.count(p.client) > 0;
+      lock.unlock();
+      if (connected) RejectSubmit(p.client, p.order.id, "hub halted by admin");
+      if (FlowJournalOn())
+        OrderFlowJournal::AppendAck(risk_.journal_dir, p.order.id, false, "hub halted by admin");
+    } else {
+      backend_->Submit(p.order);  // gated inside the backend; only this thread blocks there
+    }
+    lock.lock();
+    forwarding_ = false;
+    drain_cv_.notify_all();
+  }
+  // Shutdown: fail-closed. A submit accepted but not yet forwarded is dropped
+  // (its reservation released) and journaled, never sent to the broker.
+  while (!pending_submits_.empty()) {
+    PendingSubmit p = std::move(pending_submits_.front());
+    pending_submits_.pop_front();
+    ReleaseQueuedTerminal(p.order.id);
+    bool connected = clients_.count(p.client) > 0;
+    lock.unlock();
+    if (connected) RejectSubmit(p.client, p.order.id, "hub shutting down");
+    if (FlowJournalOn())
+      OrderFlowJournal::AppendAck(risk_.journal_dir, p.order.id, false, "hub shutting down");
+    lock.lock();
+  }
+  // A queued broker-bound cancel is a flatten of a live order: forward it before
+  // the backend disconnects rather than dropping it, so no working order is left
+  // un-cancelled at the exchange after a mid-session hub restart.
+  while (!pending_cancels_.empty()) {
+    std::string id = std::move(pending_cancels_.front());
+    pending_cancels_.pop_front();
+    lock.unlock();
+    backend_->Cancel(id);
+    lock.lock();
+  }
+}
+
+void OrderHub::DrainForwardedForTest() {
+  std::unique_lock<std::mutex> lock(mu_);
+  drain_cv_.wait(lock, [this] {
+    return pending_submits_.empty() && pending_cancels_.empty() && !forwarding_;
+  });
+}
 
 void OrderHub::OnClientConnect(int client) {
   std::lock_guard<std::mutex> lock(mu_);
@@ -169,6 +273,10 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
           dup_ring_.push_back({o.id, o.symbol, o.side, o.shares, o.price, now_ms});
           if (dup_ring_.size() > kDupRingCap) dup_ring_.pop_front();
         }
+        // Enqueue under the same lock as the reservation so a cancel racing in
+        // always finds the still-queued submit (it never sees a reserved-but-
+        // unqueued order). The forwarder is the only thread that hits the gate.
+        pending_submits_.push_back({client, o});
       }
     }
     if (!reject.empty()) {
@@ -185,30 +293,89 @@ void OrderHub::OnClientMessage(int client, const std::uint8_t* data, std::size_t
       std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow submit id=%s\n",
                    o.id.c_str());
     }
-    backend_->Submit(o);  // gated inside the backend; never hold mu_ across it
+    cv_.notify_one();  // hand the queued submit to the forwarder; never forward here
   } else if (msg.kind == OrderMsgKind::kCancel) {
-    std::fprintf(stderr, "kairos-order-hub: cancel-request client=%d id=%s\n", client,
-                 msg.cancel.id.c_str());
-    if (FlowJournalOn() && !OrderFlowJournal::AppendCancelReq(risk_.journal_dir, msg.cancel.id)) {
+    const std::string& id = msg.cancel.id;
+    std::fprintf(stderr, "kairos-order-hub: cancel-request client=%d id=%s\n", client, id.c_str());
+    if (FlowJournalOn() && !OrderFlowJournal::AppendCancelReq(risk_.journal_dir, id)) {
       std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow cancel_req id=%s\n",
-                   msg.cancel.id.c_str());
+                   id.c_str());
     }
-    backend_->Cancel(msg.cancel.id);  // cancels are never gated: always allow flattening
+    bool withdrawn = false;
+    int wclient = -1;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      auto pit = pending_submits_.end();
+      for (auto it = pending_submits_.begin(); it != pending_submits_.end(); ++it) {
+        if (it->order.id == id) {
+          pit = it;
+          break;
+        }
+      }
+      if (pit != pending_submits_.end()) {
+        // Still queued: withdraw locally. Release its reservation and drop it; the
+        // broker is never contacted. Whoever holds mu_ first (this or the forwarder
+        // popping) wins; if already popped, we fall through to the broker cancel.
+        wclient = pit->client;
+        pending_submits_.erase(pit);
+        ReleaseQueuedTerminal(id);
+        if (auto cs = clients_.find(wclient); cs != clients_.end()) {
+          ++cs->second.cancelled;
+          cs->second.last_activity_us = SystemNowUs();
+        }
+        withdrawn = true;
+      } else {
+        pending_cancels_.push_back(id);  // let the forwarder issue the broker cancel
+      }
+    }
+    if (withdrawn) {
+      std::fprintf(stderr, "kairos-order-hub: cancel-withdrew queued id=%s -> client=%d\n",
+                   id.c_str(), wclient);
+      send_(wclient, EncodeOrderCancelResult({id, true}));
+      if (FlowJournalOn() &&
+          !OrderFlowJournal::AppendCancelAck(risk_.journal_dir, id, true, /*withdrawn=*/true)) {
+        std::fprintf(stderr, "kairos-order-hub: FAILED to journal order-flow cancel_ack id=%s\n",
+                     id.c_str());
+      }
+      return;
+    }
+    cv_.notify_one();  // cancels are never gated: always allow flattening
   }
 }
 
 void OrderHub::OnClientDisconnect(int client) {
-  std::lock_guard<std::mutex> lock(mu_);
-  for (auto it = routes_.begin(); it != routes_.end();) {
-    if (it->second.client == client) {
-      ReleaseOpen(it->second);  // free any still-open reserved notional before dropping
-      open_ids_.erase(it->first);
-      it = routes_.erase(it);
-    } else {
-      ++it;
+  std::vector<std::string> purged;  // still-queued submits: never sent, dropped whole
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (auto it = pending_submits_.begin(); it != pending_submits_.end();) {
+      if (it->client == client) {
+        purged.push_back(it->order.id);
+        it = pending_submits_.erase(it);
+      } else {
+        ++it;
+      }
     }
+    for (auto it = routes_.begin(); it != routes_.end();) {
+      if (it->second.client == client) {
+        ReleaseOpen(it->second);  // free any still-open reserved notional before dropping
+        open_ids_.erase(it->first);
+        it = routes_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    // The purged submits never reached the broker, so no fill will ever arrive:
+    // drop their dup/meta too (their reservation was freed by the routes_ loop).
+    for (const auto& id : purged) {
+      RemoveDupEntry(id);
+      ForgetOrder(id);
+    }
+    clients_.erase(client);
   }
-  clients_.erase(client);
+  if (FlowJournalOn()) {
+    for (const auto& id : purged)
+      OrderFlowJournal::AppendAck(risk_.journal_dir, id, false, "purged: client disconnect");
+  }
 }
 
 int OrderHub::ClientFor(const std::string& id) {

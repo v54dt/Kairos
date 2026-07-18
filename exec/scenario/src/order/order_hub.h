@@ -2,12 +2,14 @@
 #define KAIROS_EXEC_ORDER_HUB_H_
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -36,9 +38,10 @@ class OrderHub {
 
   OrderHub(OrderBackend* backend, SendFn send);
   OrderHub(OrderBackend* backend, SendFn send, RiskConfig risk);
+  ~OrderHub();
 
-  bool Start();  // wire backend callbacks + connect
-  void Stop();   // disconnect the backend
+  bool Start();  // wire backend callbacks + connect + launch the forwarder
+  void Stop();   // stop the forwarder, then disconnect the backend
 
   // Register a client the moment its connection is accepted, so the status
   // snapshot counts connected-but-idle traders (before any submit).
@@ -63,6 +66,9 @@ class OrderHub {
   void SetMonoMsForTest(long ms);
   // Size of the surviving id->{symbol,side} map (tests only).
   std::size_t OrderMetaCountForTest() const;
+  // Block until the forwarder has drained every queued submit/cancel and is not
+  // mid-backend-call, so a test can assert the backend saw a forward (tests only).
+  void DrainForwardedForTest();
 
   // Hard bound on the id->{symbol,side} map so it cannot grow unbounded across a
   // trading day; the oldest entry is FIFO-evicted once this many are tracked.
@@ -80,6 +86,13 @@ class OrderHub {
     Side side = Side::kBuy;
     long shares_total = 0;
     long shares_accounted = 0;
+  };
+
+  // One accepted-but-not-yet-forwarded submit, waiting for the forwarder to clear
+  // the broker's shared rate gate. The risk gate already reserved for it.
+  struct PendingSubmit {
+    int client = -1;
+    OrderSubmitMsg order;
   };
 
   // Lifetime aggregate for one connected client (fd), for the status snapshot.
@@ -115,6 +128,16 @@ class OrderHub {
   void RememberOrder(const std::string& id, const std::string& symbol, Side side, long shares);
   void ForgetOrder(const std::string& id);
 
+  // Forwarder: the only thread that ever calls backend_->Submit/Cancel (and thus
+  // the only one that blocks in the broker's shared rate gate).
+  void StartForwarder();
+  void StopForwarder();  // idempotent; sets the stop flag and joins
+  void Forwarder();      // pop loop: cancels first, then submits; halt re-checked
+  // Release a still-queued (never-forwarded) submit: free its reserved notional
+  // and drop its route/dup/meta, exactly as the backend-reject path does. Caller
+  // holds mu_.
+  void ReleaseQueuedTerminal(const std::string& id);
+
   OrderBackend* backend_;
   SendFn send_;
   mutable std::mutex mu_;
@@ -140,6 +163,17 @@ class OrderHub {
   RiskConfig risk_;
   RiskGate gate_{risk_};  // stateless money-guard over the state above; caller holds mu_
   std::atomic<bool> admin_halt_{false};
+
+  // Broker-forward queues, guarded by mu_. Client threads only enqueue; the one
+  // forwarder thread dequeues and calls the backend, so no client thread blocks
+  // in the gate. Cancels drain before submits (flatten priority).
+  std::deque<PendingSubmit> pending_submits_;
+  std::deque<std::string> pending_cancels_;
+  std::condition_variable cv_;        // wakes the forwarder on new work or stop
+  std::condition_variable drain_cv_;  // wakes DrainForwardedForTest
+  bool stop_forwarder_ = false;
+  bool forwarding_ = false;  // the forwarder is mid backend call for a popped item
+  std::thread forwarder_;
 };
 
 }  // namespace kairos::exec
