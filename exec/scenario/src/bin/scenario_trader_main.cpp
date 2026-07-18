@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -76,6 +77,23 @@ bool ProbeRtJournal(const std::string& dir, const std::string& name) {
   return true;
 }
 
+// Test-only seam (KAIROS_RT_WALL_HHMM=HHMM): offset the shared round-trip clock to
+// today's HH:MM UTC+8 while it keeps advancing in real time, so off-hours fault
+// drills can drive the in-window arm and the past-13:25 degenerate paths. Unset =>
+// the real system clock. Same *ForTest injection precedent as KAIROS_RESTART_*.
+EngineClock RtClock() {
+  const char* hhmm = std::getenv("KAIROS_RT_WALL_HHMM");
+  if (hhmm == nullptr || hhmm[0] == '\0') return EngineClock{};
+  int v = std::atoi(hhmm);
+  int target_min = (v / 100) * 60 + (v % 100);
+  auto now = std::chrono::system_clock::now();
+  auto day = std::chrono::floor<std::chrono::days>(now + std::chrono::hours(8));
+  auto offset = (day + std::chrono::minutes(target_min) - std::chrono::hours(8)) - now;
+  EngineClock c;
+  c.wall = [offset] { return std::chrono::system_clock::now() + offset; };
+  return c;
+}
+
 // Round-trip: own signal subscription + HOLD quote feed + per-leg engines. Each leg
 // builds a fresh backend and quote client for its own symbol; live legs route real
 // orders through the shared order hub, paper legs use the queue-model sim.
@@ -101,13 +119,13 @@ int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window) {
     return std::make_unique<UdsQuoteClient>(QuoteSocketPath(),
                                             std::vector<std::string>{leg.symbol});
   };
-  EngineLegFactory legs(std::move(backend_fn), std::move(quote_fn), sink, EngineClock{},
-                        ignore_window);
+  EngineClock rt_clock = RtClock();
+  EngineLegFactory legs(std::move(backend_fn), std::move(quote_fn), sink, rt_clock, ignore_window);
 
   SignalClientSource signal(SignalSocketPath(),
                             SignalSubscribe{scenario.roundtrip.signal, scenario.symbol});
   UdsQuoteClient hold_quotes(QuoteSocketPath(), {scenario.symbol});
-  RoundTripRunner runner(std::move(scenario), &signal, &hold_quotes, &legs, sink, EngineClock{});
+  RoundTripRunner runner(std::move(scenario), &signal, &hold_quotes, &legs, sink, rt_clock);
   g_runner = &runner;
   return runner.Run();
 }
