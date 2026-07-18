@@ -176,6 +176,63 @@ class FakeServer {
   std::vector<std::thread> readers_;
 };
 
+// Crash-loop daemon: accepts a connection then immediately closes it, never
+// sending a heartbeat. Records how many times it accepted.
+class FlapServer {
+ public:
+  explicit FlapServer(std::string path) : path_(std::move(path)) {}
+  ~FlapServer() { Stop(); }
+
+  bool Start() {
+    listen_fd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (listen_fd_ < 0) return false;
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    std::strncpy(addr.sun_path, path_.c_str(), sizeof(addr.sun_path) - 1);
+    ::unlink(path_.c_str());
+    if (::bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 ||
+        ::listen(listen_fd_, 8) != 0) {
+      ::close(listen_fd_);
+      listen_fd_ = -1;
+      return false;
+    }
+    accept_thread_ = std::thread([this] { AcceptLoop(); });
+    return true;
+  }
+
+  void Stop() {
+    if (stop_.exchange(true)) return;
+    if (listen_fd_ >= 0) ::shutdown(listen_fd_, SHUT_RDWR);
+    if (accept_thread_.joinable()) accept_thread_.join();
+    if (listen_fd_ >= 0) {
+      ::close(listen_fd_);
+      listen_fd_ = -1;
+    }
+    ::unlink(path_.c_str());
+  }
+
+  int Accepts() const { return accepts_.load(); }
+
+ private:
+  void AcceptLoop() {
+    while (!stop_) {
+      int fd = ::accept(listen_fd_, nullptr, nullptr);
+      if (fd < 0) {
+        if (stop_) break;
+        continue;
+      }
+      ++accepts_;
+      ::close(fd);  // immediately drop; no heartbeat ever
+    }
+  }
+
+  std::string path_;
+  int listen_fd_ = -1;
+  std::thread accept_thread_;
+  std::atomic<bool> stop_{false};
+  std::atomic<int> accepts_{0};
+};
+
 std::string TempPath(const char* tag) {
   return "/tmp/kairos-test-signal-" + std::to_string(::getpid()) + "-" + tag + ".sock";
 }
@@ -228,7 +285,8 @@ void TestSubscribeAndSignal() {
   cli.Stop();
 }
 
-// (c) first hb -> healthy, silence + clock advance -> lost exactly once.
+// (c) first hb -> healthy; signal traffic across the timeout window must NOT
+// refresh the heartbeat timer, so lost still fires exactly once.
 void TestHeartbeatMissLostOnce() {
   FakeServer srv(TempPath("hbm"));
   CHECK(srv.Start());
@@ -244,8 +302,8 @@ void TestHeartbeatMissLostOnce() {
   SignalHeartbeat hb;
   hb.seq = 1;
   hb.ts_us = 1;
-  CHECK(srv.SendHeartbeat(hb));
-  SignalPush p;  // in-order after the hb: OnSignal proves the hb was processed
+  CHECK(srv.SendHeartbeat(hb));  // last heartbeat; timer starts here
+  SignalPush p;                  // in-order after the hb: OnSignal proves the hb was processed
   p.signal = "break-2330";
   p.symbol = "2330";
   p.action = SignalAction::kEnter;
@@ -255,7 +313,16 @@ void TestHeartbeatMissLostOnce() {
   CHECK(WaitFor([&] { return signals.load() >= 1; }));
   CHECK(lost.load() == 0);  // healthy, no miss yet
 
-  clk.Advance(3001ms);  // past 3 * 1000ms since the last heartbeat
+  // Send signal frames DURING the timeout window; they must not push the hb clock.
+  clk.Advance(1500ms);
+  p.seq = 3;
+  CHECK(srv.SendSignal(p));
+  CHECK(WaitFor([&] { return signals.load() >= 2; }));
+  CHECK(lost.load() == 0);  // still within 3 * 1000ms of the last heartbeat
+
+  clk.Advance(1600ms);  // 3100ms since the last heartbeat -> timed out
+  p.seq = 4;
+  CHECK(srv.SendSignal(p));  // more traffic after the deadline must not save it
   CHECK(WaitFor([&] { return lost.load() >= 1; }));
   clk.Advance(10000ms);
   std::this_thread::sleep_for(150ms);
@@ -432,6 +499,43 @@ void TestNoFdLeakAcrossStops() {
   CHECK(WaitFor([&] { return OpenFdCount() <= baseline + 3; }));
 }
 
+// (h) a peer that accepts then instantly closes (crash loop) must not spin: the
+// reconnect rate stays bounded by the backoff and a never-healthy run fires lost.
+void TestFlappingPeerBounded() {
+  FlapServer srv(TempPath("flap"));
+  CHECK(srv.Start());
+  FakeClock clk;
+  std::atomic<int> lost{0}, restored{0};
+  std::string reason;
+  std::mutex rm;
+  SignalCallbacks cb;
+  cb.on_signal_lost = [&](const std::string& r) {
+    {
+      std::lock_guard<std::mutex> l(rm);
+      reason = r;
+    }
+    ++lost;
+  };
+  cb.on_signal_restored = [&] { ++restored; };
+  SignalClient cli(TempPath("flap"), MakeSub(), cb, 1000ms, clk.Make());
+  auto t0 = std::chrono::steady_clock::now();
+  cli.Start();
+
+  // A crash loop never proves health, so the third never-healthy attempt fires
+  // lost. Reaching four accepts must take at least the 200+400+800ms backoff; a
+  // busy-loop would blow past four in microseconds.
+  CHECK(WaitFor([&] { return srv.Accepts() >= 4; }));
+  auto elapsed = std::chrono::steady_clock::now() - t0;
+  CHECK(elapsed >= 1000ms);
+  CHECK(lost.load() == 1);  // flapping fires lost exactly once
+  {
+    std::lock_guard<std::mutex> l(rm);
+    CHECK(reason == "connect flapping");
+  }
+  CHECK(restored.load() == 0);  // no heartbeat ever arrived
+  cli.Stop();
+}
+
 }  // namespace
 
 int main() {
@@ -441,6 +545,7 @@ int main() {
   TestSeqGap();
   TestStopUnderFlood();
   TestSilentReconnectAfterLost();
+  TestFlappingPeerBounded();
   TestNoFdLeakAcrossStops();
   if (g_failures == 0) {
     std::printf("test_signal_client: OK\n");
