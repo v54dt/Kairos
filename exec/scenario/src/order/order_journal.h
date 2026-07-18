@@ -66,7 +66,10 @@ class OrderFlowJournal {
   static bool AppendFill(const std::string& dir, const std::string& id, long shares, Cents price,
                          bool unroutable);
   static bool AppendCancelReq(const std::string& dir, const std::string& id);
-  static bool AppendCancelAck(const std::string& dir, const std::string& id, bool ok);
+  // withdrawn=true marks a cancel the hub honored locally: the submit was still
+  // queued and never reached the broker (no broker cancel was issued).
+  static bool AppendCancelAck(const std::string& dir, const std::string& id, bool ok,
+                              bool withdrawn = false);
 
  private:
   // Append `line` to <dir>/hub-orders-<day>.jsonl, fsyncing when do_fsync.

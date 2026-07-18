@@ -207,10 +207,12 @@ bool OrderFlowJournal::AppendCancelReq(const std::string& dir, const std::string
               false);
 }
 
-bool OrderFlowJournal::AppendCancelAck(const std::string& dir, const std::string& id, bool ok) {
+bool OrderFlowJournal::AppendCancelAck(const std::string& dir, const std::string& id, bool ok,
+                                       bool withdrawn) {
   return Emit(dir,
               "{\"t\":" + std::to_string(SystemNowUs()) + ",\"type\":\"cancel_ack\",\"id\":\"" +
-                  JsonEscape(id) + "\",\"ok\":" + (ok ? "1" : "0") + "}\n",
+                  JsonEscape(id) + "\",\"ok\":" + (ok ? "1" : "0") +
+                  (withdrawn ? ",\"withdrawn\":1" : "") + "}\n",
               true);
 }
 
