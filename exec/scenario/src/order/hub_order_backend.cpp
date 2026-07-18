@@ -76,6 +76,9 @@ void HubOrderBackend::ReadLoop() {
       case OrderMsgKind::kCancelResult:
         if (on_cancel_) on_cancel_(m.cancel_result.id, m.cancel_result.ok);
         break;
+      case OrderMsgKind::kForwarded:
+        if (on_forwarded_) on_forwarded_(m.forwarded.id);
+        break;
       default:
         break;
     }

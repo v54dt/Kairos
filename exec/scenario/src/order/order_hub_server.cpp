@@ -17,11 +17,35 @@
 
 namespace kairos::exec {
 
+namespace {
+
+// One non-blocking write of the whole length-prefixed frame. On Linux a UDS
+// stream send of a message this small is all-or-nothing: with no buffer space it
+// returns EAGAIN having written nothing, so a false return never leaves a partial
+// frame on the wire. Returns true only when the entire frame was accepted.
+bool TryWriteFrameNonblocking(int fd, const std::vector<std::uint8_t>& payload) {
+  std::uint32_t len = static_cast<std::uint32_t>(payload.size());
+  std::vector<std::uint8_t> buf;
+  buf.reserve(4 + payload.size());
+  buf.push_back(static_cast<std::uint8_t>(len & 0xff));
+  buf.push_back(static_cast<std::uint8_t>((len >> 8) & 0xff));
+  buf.push_back(static_cast<std::uint8_t>((len >> 16) & 0xff));
+  buf.push_back(static_cast<std::uint8_t>((len >> 24) & 0xff));
+  buf.insert(buf.end(), payload.begin(), payload.end());
+  ssize_t w = ::send(fd, buf.data(), buf.size(), MSG_NOSIGNAL | MSG_DONTWAIT);
+  return w == static_cast<ssize_t>(buf.size());
+}
+
+}  // namespace
+
 OrderHubServer::OrderHubServer(OrderBackend* backend, std::string path, OrderHub::RiskConfig risk)
     : path_(std::move(path)),
       hub_(
           backend, [this](int c, const std::vector<std::uint8_t>& b) { Send(c, b); },
-          std::move(risk)) {}
+          std::move(risk)) {
+  hub_.SetForwardedSender(
+      [this](int c, const std::vector<std::uint8_t>& b) { TrySendForwarded(c, b); });
+}
 
 OrderHubServer::~OrderHubServer() { Stop(); }
 
@@ -76,6 +100,7 @@ void OrderHubServer::AcceptLoop() {
     {
       std::lock_guard<std::mutex> lock(clients_mu_);
       live_.insert(fd);
+      write_mu_[fd] = std::make_shared<std::mutex>();
     }
     hub_.OnClientConnect(fd);
     ++active_clients_;
@@ -97,24 +122,53 @@ void OrderHubServer::ClientLoop(int fd) {
   {
     std::lock_guard<std::mutex> lock(clients_mu_);
     live_.erase(fd);
+    write_mu_.erase(fd);
   }
   ::close(fd);
 }
 
 void OrderHubServer::Send(int client, const std::vector<std::uint8_t>& bytes) {
   int dupfd = -1;
+  std::shared_ptr<std::mutex> wmu;
   {
     std::lock_guard<std::mutex> lock(clients_mu_);
-    if (live_.count(client))
+    if (live_.count(client)) {
       dupfd = ::dup(client);  // keep the socket alive past a concurrent close
+      wmu = write_mu_[client];
+    }
   }
   if (dupfd < 0) {
     std::fprintf(stderr, "kairos-order-hub: drop reply to client=%d (connection gone)\n", client);
     return;
   }
-  // Outside the lock: a slow client can't stall accept/disconnect/Stop.
-  if (!WriteFrame(dupfd, bytes))
-    std::fprintf(stderr, "kairos-order-hub: reply write to client=%d failed\n", client);
+  // Off clients_mu_ so a slow client can't stall accept/disconnect/Stop, but under
+  // the per-client write lock so two concurrent replies to one fd (forwarder vs
+  // SDK-callback thread) never interleave and tear each other's framed payloads.
+  bool ok;
+  {
+    std::lock_guard<std::mutex> wlock(*wmu);
+    ok = WriteFrame(dupfd, bytes);
+  }
+  if (!ok) std::fprintf(stderr, "kairos-order-hub: reply write to client=%d failed\n", client);
+  ::close(dupfd);
+}
+
+void OrderHubServer::TrySendForwarded(int client, const std::vector<std::uint8_t>& bytes) {
+  int dupfd = -1;
+  std::shared_ptr<std::mutex> wmu;
+  {
+    std::lock_guard<std::mutex> lock(clients_mu_);
+    if (live_.count(client)) {
+      dupfd = ::dup(client);
+      wmu = write_mu_[client];
+    }
+  }
+  if (dupfd < 0) return;  // client gone: no hint to deliver
+  // try_lock shares the per-client write mutex with Send so the hint never tears a
+  // concurrent ack/fill; if it is contended or the send would block, drop the hint
+  // (the trader keeps its original ack-timeout clock) rather than stall the caller.
+  if (std::unique_lock<std::mutex> wlock(*wmu, std::try_to_lock); wlock.owns_lock())
+    TryWriteFrameNonblocking(dupfd, bytes);
   ::close(dupfd);
 }
 

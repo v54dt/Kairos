@@ -48,7 +48,22 @@ struct OrderCancelResultMsg {
   bool ok = false;
 };
 
-enum class OrderMsgKind { kNone, kSubmit, kCancel, kAck, kFill, kCancelResult, kHeartbeat };
+// Hub -> owning scenario: the queued submit cleared the forwarder gate and is
+// being handed to the broker now, so the trader can rebase its ack-timeout clock.
+struct OrderForwardedMsg {
+  std::string id;
+};
+
+enum class OrderMsgKind {
+  kNone,
+  kSubmit,
+  kCancel,
+  kAck,
+  kFill,
+  kCancelResult,
+  kHeartbeat,
+  kForwarded
+};
 
 // One decoded OrderEnvelope; `kind` selects which member is populated.
 struct OrderMessage {
@@ -58,6 +73,7 @@ struct OrderMessage {
   OrderAckMsg ack;
   OrderFillMsg fill;
   OrderCancelResultMsg cancel_result;
+  OrderForwardedMsg forwarded;
 };
 
 std::vector<std::uint8_t> EncodeOrderSubmit(const OrderSubmitMsg& m);
@@ -65,6 +81,7 @@ std::vector<std::uint8_t> EncodeOrderCancel(const OrderCancelMsg& m);
 std::vector<std::uint8_t> EncodeOrderAck(const OrderAckMsg& m);
 std::vector<std::uint8_t> EncodeOrderFill(const OrderFillMsg& m);
 std::vector<std::uint8_t> EncodeOrderCancelResult(const OrderCancelResultMsg& m);
+std::vector<std::uint8_t> EncodeOrderForwarded(const OrderForwardedMsg& m);
 
 // Decode a serialized OrderEnvelope into *out. Returns false on malformed input.
 bool DecodeOrder(const std::uint8_t* data, std::size_t len, OrderMessage* out);

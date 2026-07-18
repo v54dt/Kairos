@@ -353,6 +353,10 @@ add_executable(test_order_hub_forwarder tests/test_order_hub_forwarder.cpp)
 target_link_libraries(test_order_hub_forwarder PRIVATE kairos_order_hub)
 add_test(NAME test_order_hub_forwarder COMMAND test_order_hub_forwarder)
 
+add_executable(test_order_hub_forwarded tests/test_order_hub_forwarded.cpp)
+target_link_libraries(test_order_hub_forwarded PRIVATE kairos_order_hub)
+add_test(NAME test_order_hub_forwarded COMMAND test_order_hub_forwarded)
+
 # Opt-in ThreadSanitizer variant of the forwarder/stress test. Recompiles the hub itself under TSan
 # (so its own races are caught, not just the test's) and links the disk/codec helpers as-is. Off by
 # default so the normal build stays clean.
@@ -367,6 +371,27 @@ if(KAIROS_TSAN)
   target_compile_options(test_order_hub_forwarder_tsan PRIVATE -fsanitize=thread -O1 -g)
   target_link_options(test_order_hub_forwarder_tsan PRIVATE -fsanitize=thread)
   add_test(NAME test_order_hub_forwarder_tsan COMMAND test_order_hub_forwarder_tsan)
+
+  add_executable(test_order_hub_forwarded_tsan tests/test_order_hub_forwarded.cpp
+                                               src/order/order_hub.cpp src/order/risk_gate.cpp)
+  target_include_directories(test_order_hub_forwarded_tsan PRIVATE ${KAIROS_INC})
+  target_link_libraries(
+    test_order_hub_forwarded_tsan PRIVATE kairos_order_codec kairos_hub_status kairos_order_journal
+                                          kairos_scenario pthread)
+  target_compile_options(test_order_hub_forwarded_tsan PRIVATE -fsanitize=thread -O1 -g)
+  target_link_options(test_order_hub_forwarded_tsan PRIVATE -fsanitize=thread)
+  add_test(NAME test_order_hub_forwarded_tsan COMMAND test_order_hub_forwarded_tsan)
+
+  add_executable(
+    test_engine_forwarded_tsan
+    tests/test_engine_forwarded.cpp src/engine/engine.cpp src/engine/sell_cap_ledger.cpp
+    src/engine/failure_halt.cpp src/engine/dashboard_reporter.cpp)
+  target_include_directories(test_engine_forwarded_tsan PRIVATE ${KAIROS_INC})
+  target_link_libraries(test_engine_forwarded_tsan PRIVATE kairos_scenario kairos_dashboard
+                                                           kairos_order_journal pthread)
+  target_compile_options(test_engine_forwarded_tsan PRIVATE -fsanitize=thread -O1 -g)
+  target_link_options(test_engine_forwarded_tsan PRIVATE -fsanitize=thread)
+  add_test(NAME test_engine_forwarded_tsan COMMAND test_engine_forwarded_tsan)
 endif()
 
 add_executable(test_hub_status tests/test_hub_status.cpp)
@@ -410,6 +435,10 @@ add_test(NAME test_engine_logic COMMAND test_engine_logic)
 add_executable(test_engine tests/test_engine.cpp)
 target_link_libraries(test_engine PRIVATE kairos_engine kairos_sim_backend)
 add_test(NAME test_engine COMMAND test_engine)
+
+add_executable(test_engine_forwarded tests/test_engine_forwarded.cpp)
+target_link_libraries(test_engine_forwarded PRIVATE kairos_engine)
+add_test(NAME test_engine_forwarded COMMAND test_engine_forwarded)
 
 add_executable(test_sell_cap_ledger tests/test_sell_cap_ledger.cpp src/engine/sell_cap_ledger.cpp)
 target_include_directories(test_sell_cap_ledger PRIVATE ${KAIROS_INC})

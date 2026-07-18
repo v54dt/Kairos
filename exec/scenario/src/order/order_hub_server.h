@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -35,6 +36,10 @@ class OrderHubServer {
   void AcceptLoop();
   void ClientLoop(int fd);
   void Send(int client, const std::vector<std::uint8_t>& bytes);
+  // Best-effort, never-blocking `forwarded` hint: dropped if the client's write
+  // lock is contended or its socket buffer is full, so the shared forwarder thread
+  // that calls it is never stalled by a slow reader.
+  void TrySendForwarded(int client, const std::vector<std::uint8_t>& bytes);
   void StatusLoop();                          // periodic status snapshot writer
   void WriteStatus(const std::string& path);  // one snapshot, off all mutexes
 
@@ -45,7 +50,11 @@ class OrderHubServer {
   std::thread accept_thread_;
   std::thread status_thread_;
   std::mutex clients_mu_;
-  std::unordered_set<int> live_;        // open client fds (Send guard)
+  std::unordered_set<int> live_;  // open client fds (Send guard)
+  // Per-client write lock: serializes every reply to one fd so a forwarder-thread
+  // write and an SDK-callback-thread write never interleave and tear each other's
+  // length-prefixed frames. shared_ptr so an in-flight Send keeps it past a close.
+  std::unordered_map<int, std::shared_ptr<std::mutex>> write_mu_;
   std::atomic<int> active_clients_{0};  // detached client threads in flight
 };
 

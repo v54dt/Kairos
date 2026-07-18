@@ -47,8 +47,11 @@ int ConnectClient(const std::string& path) {
 
 bool ReadMsg(int fd, OrderMessage* out) {
   std::vector<std::uint8_t> frame;
-  if (ReadFrame(fd, &frame) != 1) return false;
-  return DecodeOrder(frame.data(), frame.size(), out);
+  for (;;) {  // forwarded frames are transparent to a client that ignores them
+    if (ReadFrame(fd, &frame) != 1) return false;
+    if (!DecodeOrder(frame.data(), frame.size(), out)) return false;
+    if (out->kind != OrderMsgKind::kForwarded) return true;
+  }
 }
 
 TopOfBook Book(std::vector<Level> bids, std::vector<Level> asks, std::int64_t ts) {
