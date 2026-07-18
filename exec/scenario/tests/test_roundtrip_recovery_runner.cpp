@@ -331,6 +331,40 @@ void TestPastCloseRecoveryFatal() {
   std::filesystem::remove_all(dir);
 }
 
+// The quote-stall watchdog's "no quote yet" anchor is this process's resume instant,
+// not the back-dated entry. Resume HOLD of a position entered 60s ago with the
+// PRODUCTION-default 30s stall alert and NEVER push a quote: the feed must get its
+// full grace from resume, so the watchdog does NOT fire a spurious forced exit.
+void TestStallAnchorFromResume() {
+  const std::string dir = TempDir();
+  FakeClock clk;
+  const std::string day = Day(clk);
+  const long enter_us = NowUs(clk) - 60 * 1000000L;  // entered 60s ago (> the 30s stall)
+  CHECK(OrderJournal::AppendFill(dir, "2330-Buy-" + day, "k-1", 300, 58000));
+  CHECK(RoundTripJournal::Arm(dir, "2330-rt-" + day));
+  CHECK(RoundTripJournal::Trigger(dir, "2330-rt-" + day, "vwap", 1, enter_us));
+  CHECK(RoundTripJournal::EnterDone(dir, "2330-rt-" + day, 300, 58000, enter_us));
+
+  Scenario s = BaseScenario(dir);
+  s.quote_stall_alert_ms = 30000;  // production default
+  FakeSignalSource sig;
+  FakeQuoteSource quotes;  // never pushes a quote
+  FakeLegFactory legs;
+  RecorderSink sink;
+  RoundTripRunner runner(std::move(s), &sig, &quotes, &legs, &sink, clk.Make());
+  std::thread th([&] { runner.Run(); });
+
+  CHECK(WaitFor([&] { return sink.Has("rt:2330:recover-hold"); }));
+  // Several 200ms watchdog ticks with the fake steady clock frozen: no real staleness
+  // has elapsed since resume, so the position stays in HOLD (no exit leg is created).
+  std::this_thread::sleep_for(500ms);
+  CHECK_EQ(legs.CreateCount(), 0);
+  CHECK(!sink.Has("rt:2330:exit"));
+  runner.RequestStop();
+  th.join();
+  std::filesystem::remove_all(dir);
+}
+
 // No journals at all: recovery is a no-op and the runner arms fresh.
 void TestFreshWhenEmpty() {
   const std::string dir = TempDir();
@@ -356,6 +390,7 @@ int main() {
   TestTerminalAfterRestart();
   TestNetShortRefuses();
   TestPastCloseRecoveryFatal();
+  TestStallAnchorFromResume();
   TestFreshWhenEmpty();
   if (g_failures == 0) {
     std::printf("test_roundtrip_recovery_runner: OK\n");

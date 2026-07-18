@@ -125,6 +125,8 @@ class RoundTripRunner {
   long entered_shares_ = 0;   // lifetime shares bought this day; the exit leg's total to sell
   long entry_avg_cents_ = 0;
   std::chrono::steady_clock::time_point enter_done_mono_{};
+  std::chrono::steady_clock::time_point
+      hold_since_mono_{};  // this process's HOLD start; quote-stall anchor
   ExitReason exit_reason_ = ExitReason::kForcedTime;
   bool done_ = false;
   int exit_code_ = 0;

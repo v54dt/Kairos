@@ -122,6 +122,9 @@ void RoundTripRunner::Recover() {
       // exit and the price stop remain the real backstops.
       long elapsed_us = std::max<long>(0, WallUs() - plan.enter_wall_us);
       enter_done_mono_ = clock_.mono() - std::chrono::microseconds(elapsed_us);
+      // Quote staleness is measured from THIS process's resume, not the back-dated
+      // entry, so the feed gets a full grace window before a stall can force an exit.
+      hold_since_mono_ = clock_.mono();
       state_ = RtState::kHold;
       EmitPhase(EventCategory::kReconnect, plan.degraded ? Severity::kWarning : Severity::kInfo,
                 plan.degraded ? "recover-degraded" : "recover-hold",
@@ -220,6 +223,7 @@ RtState RoundTripRunner::Execute(RtState from, const RunnerEvent& e, const FsmOu
     entered_shares_ = e.leg.filled_shares;
     entry_avg_cents_ = e.leg.avg_price_cents;
     enter_done_mono_ = clock_.mono();
+    hold_since_mono_ = enter_done_mono_;
     if (rt_enabled_)
       RoundTripJournal::EnterDone(rt_dir_, rt_name_, held_shares_, entry_avg_cents_, WallUs());
     if (e.ev == RtEvent::kLegHalted) {
@@ -328,8 +332,9 @@ void RoundTripRunner::CheckWatchdog() {
     tob = last_tob_;
     have = have_tob_;
   }
-  // No quote yet: measure staleness from HOLD start so a feed dead from entry still trips.
-  auto last_recv = have ? tob.recv_ts : enter_done_mono_;
+  // No quote yet: measure staleness from this process's HOLD start (resume instant on
+  // recovery, not the back-dated entry) so a feed dead since HOLD trips after its grace.
+  auto last_recv = have ? tob.recv_ts : hold_since_mono_;
   if (s_.quote_stall_alert_ms > 0 && SteadyMs(mono - last_recv) > s_.quote_stall_alert_ms) {
     Enqueue(RtEvent::kQuoteStallHard);
     return;
