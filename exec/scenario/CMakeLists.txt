@@ -154,6 +154,12 @@ target_include_directories(kairos_engine PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_engine PUBLIC kairos_scenario kairos_dashboard kairos_order_journal
                                            pthread)
 
+# Round-trip runtime: pure FSM + the orchestrator that owns a signal subscription, a HOLD watchdog,
+# and per-leg engines. PAPER/SIM only until live restart recovery lands.
+add_library(kairos_roundtrip src/engine/roundtrip_fsm.cpp src/engine/roundtrip_runner.cpp)
+target_include_directories(kairos_roundtrip PUBLIC ${KAIROS_INC})
+target_link_libraries(kairos_roundtrip PUBLIC kairos_engine kairos_signal)
+
 # Live order backend: real concords StockClient when the stock SDK is present in exec/scenario/lib,
 # otherwise a stub so --live reports "no broker SDK". CI has no SDK and builds the stub.
 set(CONCORDS_STOCK_LIB ${CMAKE_CURRENT_SOURCE_DIR}/lib/concords_sdk.so)
@@ -181,8 +187,14 @@ target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
 target_link_libraries(
-  kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_sim_backend kairos_notify
-                                 kairos_uds kairos_blacklist)
+  kairos_scenario_trader
+  PRIVATE kairos_engine
+          kairos_hub_backend
+          kairos_sim_backend
+          kairos_notify
+          kairos_uds
+          kairos_blacklist
+          kairos_roundtrip)
 
 add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
@@ -265,6 +277,22 @@ add_test(NAME test_roundtrip_legs COMMAND test_roundtrip_legs)
 add_executable(test_engine_result tests/test_engine_result.cpp)
 target_link_libraries(test_engine_result PRIVATE kairos_engine)
 add_test(NAME test_engine_result COMMAND test_engine_result)
+
+add_executable(test_roundtrip_fsm tests/test_roundtrip_fsm.cpp)
+target_link_libraries(test_roundtrip_fsm PRIVATE kairos_roundtrip)
+add_test(NAME test_roundtrip_fsm COMMAND test_roundtrip_fsm)
+
+add_executable(test_roundtrip_runner tests/test_roundtrip_runner.cpp)
+target_link_libraries(test_roundtrip_runner PRIVATE kairos_roundtrip)
+add_test(NAME test_roundtrip_runner COMMAND test_roundtrip_runner)
+
+add_executable(test_roundtrip_paper_e2e tests/test_roundtrip_paper_e2e.cpp)
+target_link_libraries(test_roundtrip_paper_e2e PRIVATE kairos_roundtrip kairos_sim_backend)
+add_test(NAME test_roundtrip_paper_e2e COMMAND test_roundtrip_paper_e2e)
+
+add_executable(test_roundtrip_live_refusal tests/test_roundtrip_live_refusal.cpp)
+add_dependencies(test_roundtrip_live_refusal kairos_scenario_trader)
+add_test(NAME test_roundtrip_live_refusal COMMAND test_roundtrip_live_refusal)
 
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
