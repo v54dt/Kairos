@@ -227,12 +227,12 @@ bool SignalClient::CheckLiveness() {
   bool teardown = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (health_ == Health::kHealthy && clock_.mono() - last_hb_ >= 3 * hb_interval_) {
-      health_ = Health::kLost;
-      fire_lost = true;
-      teardown = true;
-    } else if (health_ == Health::kInitial && clock_.mono() - last_hb_ >= 3 * hb_interval_) {
-      teardown = true;  // never became healthy: reconnect silently
+    if (clock_.mono() - last_hb_ >= 3 * hb_interval_) {
+      if (health_ == Health::kHealthy) {
+        health_ = Health::kLost;
+        fire_lost = true;
+      }
+      teardown = true;  // kInitial/kLost reconnect silently; kHealthy after firing lost
     }
   }
   if (fire_lost && cb_.on_signal_lost) cb_.on_signal_lost("heartbeat timeout");

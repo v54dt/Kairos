@@ -371,6 +371,49 @@ void TestStopUnderFlood() {
   CHECK(signals.load() >= 1);
 }
 
+// (i) after a loss, a reconnect onto a silent (no-heartbeat) peer is still
+// re-detected and retried; the kLost state must not pin the client to a dead feed.
+void TestSilentReconnectAfterLost() {
+  FakeServer srv(TempPath("sil"));
+  CHECK(srv.Start());
+  FakeClock clk;
+  std::atomic<int> lost{0}, restored{0}, signals{0};
+  SignalCallbacks cb;
+  cb.on_signal = [&](const SignalPush&) { ++signals; };
+  cb.on_signal_lost = [&](const std::string&) { ++lost; };
+  cb.on_signal_restored = [&] { ++restored; };
+  SignalClient cli(TempPath("sil"), MakeSub(), cb, 1000ms, clk.Make());
+  cli.Start();
+  CHECK(WaitFor([&] { return srv.ConnCount() >= 1; }));
+
+  SignalHeartbeat hb;
+  hb.seq = 1;
+  hb.ts_us = 1;
+  CHECK(srv.SendHeartbeat(hb));
+  SignalPush p;  // ordered after the hb: OnSignal proves the client is healthy
+  p.signal = "break-2330";
+  p.symbol = "2330";
+  p.action = SignalAction::kEnter;
+  p.seq = 2;
+  p.ts_us = 2;
+  CHECK(srv.SendSignal(p));
+  CHECK(WaitFor([&] { return signals.load() >= 1; }));
+
+  srv.DropCurrent();
+  CHECK(WaitFor([&] { return lost.load() >= 1; }));      // kLost fired once
+  CHECK(WaitFor([&] { return srv.ConnCount() >= 2; }));  // reconnected, now silent
+
+  // Keep the clock past the heartbeat window; the silent kLost peer must be torn
+  // down and retried (advance in the predicate to beat the last_hb_ reset race).
+  CHECK(WaitFor([&] {
+    clk.Advance(3001ms);
+    return srv.ConnCount() >= 3;
+  }));
+  CHECK(restored.load() == 0);  // no heartbeat ever arrived
+  CHECK(lost.load() == 1);      // the silent reconnect does not re-fire lost
+  cli.Stop();
+}
+
 // (g) Stop() on a connected client does not leak its socket fd.
 void TestNoFdLeakAcrossStops() {
   FakeServer srv(TempPath("fdl"));
@@ -397,6 +440,7 @@ int main() {
   TestReconnectRestored();
   TestSeqGap();
   TestStopUnderFlood();
+  TestSilentReconnectAfterLost();
   TestNoFdLeakAcrossStops();
   if (g_failures == 0) {
     std::printf("test_signal_client: OK\n");
