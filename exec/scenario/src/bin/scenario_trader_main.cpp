@@ -23,6 +23,7 @@
 #include "ntfy_dispatcher.h"
 #include "order_backend.h"
 #include "queue_sim_backend.h"
+#include "roundtrip_runner.h"
 #include "scenario.h"
 #include "socket_path.h"
 #include "tw_fees.h"
@@ -33,10 +34,12 @@ using namespace kairos::exec;
 
 namespace {
 ScenarioEngine* g_engine = nullptr;
+RoundTripRunner* g_runner = nullptr;
 std::atomic<bool> g_stop{false};
 void OnSig(int) {
   g_stop = true;
   if (g_engine) g_engine->RequestStop();
+  if (g_runner) g_runner->RequestStop();
 }
 
 void PrintPlan(const Scenario& s) {
@@ -53,6 +56,40 @@ void PrintPlan(const Scenario& s) {
   } else {
     std::printf("  (pass reference_price to preview the slice plan)\n");
   }
+}
+
+// PAPER/SIM round-trip: own signal subscription + HOLD quote feed + per-leg engines.
+// Each leg builds a fresh backend and quote client for its own symbol.
+int RunRoundTrip(Scenario scenario, bool paper_instant, bool ignore_window) {
+  std::unique_ptr<HttpPoster> poster;
+  std::unique_ptr<NtfyDispatcher> dispatcher;
+  NullEventSink null_sink;
+  EventSink* sink = &null_sink;
+  if (scenario.notify.enabled) {
+    poster = std::make_unique<HttpPoster>();
+    dispatcher = std::make_unique<NtfyDispatcher>(scenario.notify, poster.get());
+    sink = dispatcher.get();
+  }
+
+  EngineLegFactory::BackendFn backend_fn =
+      [paper_instant](const Scenario& leg) -> std::unique_ptr<OrderBackend> {
+    if (paper_instant) return std::make_unique<PaperOrderBackend>();
+    return std::make_unique<QueueSimBackend>(FillMode::kProbQueue,
+                                             std::vector<std::string>{leg.symbol});
+  };
+  EngineLegFactory::QuoteFn quote_fn = [](const Scenario& leg) -> std::unique_ptr<QuoteSource> {
+    return std::make_unique<UdsQuoteClient>(QuoteSocketPath(),
+                                            std::vector<std::string>{leg.symbol});
+  };
+  EngineLegFactory legs(std::move(backend_fn), std::move(quote_fn), sink, EngineClock{},
+                        ignore_window);
+
+  SignalClientSource signal(SignalSocketPath(),
+                            SignalSubscribe{scenario.roundtrip.signal, scenario.symbol});
+  UdsQuoteClient hold_quotes(QuoteSocketPath(), {scenario.symbol});
+  RoundTripRunner runner(std::move(scenario), &signal, &hold_quotes, &legs, sink, EngineClock{});
+  g_runner = &runner;
+  return runner.Run();
 }
 
 }  // namespace
@@ -153,6 +190,17 @@ int main(int argc, char** argv) {
 
   std::printf("%s", SummarizeScenario(scenario).c_str());
   std::fflush(stdout);
+
+  if (scenario.roundtrip.enabled) {
+    if (scenario.live) {
+      std::fprintf(stderr,
+                   "REFUSING TO TRADE: [roundtrip] live mode is not supported yet "
+                   "(journal-based restart recovery lands in a later change); "
+                   "run paper or --paper-instant only\n");
+      return 1;
+    }
+    return RunRoundTrip(std::move(scenario), flag_paper_instant, ignore_window);
+  }
 
   // --live routes orders through the shared order hub (kairos_order_hubd); the hub
   // holds the account creds and the 1 req/s gate, so the scenario just connects.

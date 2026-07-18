@@ -188,7 +188,7 @@ target_link_libraries(kairos_quote_tap PRIVATE kairos_uds)
 add_executable(kairos_scenario_trader src/bin/scenario_trader_main.cpp)
 target_link_libraries(
   kairos_scenario_trader PRIVATE kairos_engine kairos_hub_backend kairos_sim_backend kairos_notify
-                                 kairos_uds kairos_blacklist)
+                                 kairos_uds kairos_blacklist kairos_roundtrip)
 
 add_executable(kairos_order_hubd src/bin/order_hub_main.cpp)
 target_link_libraries(kairos_order_hubd PRIVATE kairos_order_hub_server kairos_live
@@ -283,6 +283,10 @@ add_test(NAME test_roundtrip_runner COMMAND test_roundtrip_runner)
 add_executable(test_roundtrip_paper_e2e tests/test_roundtrip_paper_e2e.cpp)
 target_link_libraries(test_roundtrip_paper_e2e PRIVATE kairos_roundtrip kairos_sim_backend)
 add_test(NAME test_roundtrip_paper_e2e COMMAND test_roundtrip_paper_e2e)
+
+add_executable(test_roundtrip_live_refusal tests/test_roundtrip_live_refusal.cpp)
+add_dependencies(test_roundtrip_live_refusal kairos_scenario_trader)
+add_test(NAME test_roundtrip_live_refusal COMMAND test_roundtrip_live_refusal)
 
 add_executable(test_quote_codec tests/test_quote_codec.cpp)
 target_link_libraries(test_quote_codec PRIVATE kairos_quote_codec)
