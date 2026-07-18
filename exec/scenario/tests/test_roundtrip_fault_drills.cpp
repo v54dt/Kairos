@@ -755,9 +755,34 @@ int Drill5b(const Env& e) {
   int code = WaitExit(t2, 15000);
   KillReap(sig, SIGTERM);
   bool orphan = ReapSim(n, sim);
-  std::printf("DRILL5B: entered=%ld stop_fired=%d flat=%d exit=%d orphan=%d\n", entered, stop_fired,
-              flat, code, orphan);
+  // No double-buy across the restart: the Buy fill journal must hold exactly one enter
+  // leg's worth. Recovery resumes HOLD from the journal; it must never re-run the enter.
+  long buy_shares = 0;
+  int buy_fills = 0;
+  {
+    std::ifstream bf(FindJournal(n.journal_dir, "-Buy-"));
+    std::string line;
+    while (std::getline(bf, line)) {
+      if (line.find("\"type\":\"fill\"") == std::string::npos) continue;
+      long sh = JsonInt(line, "shares");
+      if (sh != 0) {
+        buy_shares += sh;
+        ++buy_fills;
+      }
+    }
+  }
+  std::printf(
+      "DRILL5B: entered=%ld buy_fills=%d buy_shares=%ld stop_fired=%d flat=%d exit=%d "
+      "orphan=%d\n",
+      entered, buy_fills, buy_shares, stop_fired, flat, code, orphan);
   if (entered <= 0) std::printf("DRILL5B: FAIL (enter did not fill before the kill)\n"), rc = 1;
+  if (buy_shares != entered || buy_fills < 1) {
+    std::printf(
+        "DRILL5B: FAIL (SAFETY: double-buy — Buy journal %ld sh in %d fills != one enter "
+        "leg's %ld sh)\n",
+        buy_shares, buy_fills, entered);
+    rc = 1;
+  }
   if (!stop_fired || !flat || code != 0) {
     std::printf(
         "DRILL5B: FAIL (SAFETY: crash restart did not re-arm the stop watchdog autonomously)\n");
