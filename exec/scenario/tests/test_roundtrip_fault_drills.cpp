@@ -20,8 +20,8 @@
 //   DRILL 5  (A) EXIT hub disconnect => the leg stops fail-closed (stop_on_disconnect)
 //            with the position remaining; (B) SIGKILL the trader mid-HOLD, restart it,
 //            and the PR5 recovery resumes protection and exits (the CI kill -9).
-//   DRILL 6  Degenerate late trigger: a manual signal after the 13:25 arithmetic is
-//            dropped with no leg started (closes the PR3 handoff loop).
+//   DRILL 6  Late trigger: a manual signal after the arm window closes is dropped by the
+//            arm-window guard with no leg started, and an out-of-window alert fires.
 //
 // The wall clock is offset into the trading session with the KAIROS_RT_WALL_HHMM test
 // seam so these run off-hours. Opt-in: self-skips (exit 0) unless KAIROS_FAULT_DRILLS=1.
@@ -698,8 +698,11 @@ int Drill5b(const Env& e) {
 }
 
 int Drill6(const Env& e) {
-  // Degenerate late trigger: a manual enter injected after the 13:25 window arithmetic
-  // is dropped — armed, but no trigger and no leg — closing the PR3 handoff loop.
+  // Late trigger: a manual enter injected after the arm window closes is dropped by the
+  // FSM's arm-window guard — armed, but no trigger and no leg — and an out-of-window
+  // alert fires. arm_end is capped at 13:00 by validation, so it necessarily closes
+  // before the runner's 13:25 degenerate arithmetic; that inner guard is defensive and
+  // covered by the FSM/runner unit tests, not reachable from here.
   Ns n = MakeNs("d6-" + std::to_string(::getpid()));
   WriteScenario(n, 2000000, "[risk]\nquote_stall_alert_ms=0\nquote_max_age_ms=60000\n",
                 "stop_loss_pct=5\nmax_hold_min=5\nenter_window_min=10\narm_start=\"09:00\"\n"
@@ -714,7 +717,7 @@ int Drill6(const Env& e) {
     Cleanup(n);
     return 1;
   }
-  pid_t trader = StartTrader(e, n, {"--paper-instant"}, "1326");  // now >= 13:25
+  pid_t trader = StartTrader(e, n, {"--paper-instant"}, "1326");  // now past arm_end (and 13:25)
   bool armed = !WaitRtRecord(n.journal_dir, "armed", 15000).empty();
   std::this_thread::sleep_for(std::chrono::milliseconds(900));
   InjectSignal(n, "enter");
@@ -723,15 +726,21 @@ int Drill6(const Env& e) {
   bool triggered = RtHas(n.journal_dir, "trigger");
   bool entered = RtHas(n.journal_dir, "enter_done");
   bool buy_fills = !FindJournal(n.journal_dir, "-Buy-").empty();
+  bool late_alert = Count(Slurp(n.trader_log), "rt:2330:alert") >= 1;
   KillReap(sig, SIGTERM);
   ::kill(trader, SIGTERM);
   int code = WaitExit(trader, 8000);
   bool orphan = ReapSim(n, sim);
-  std::printf("DRILL6: armed=%d triggered=%d entered=%d buy_fills=%d exit=%d orphan=%d\n", armed,
-              triggered, entered, buy_fills, code, orphan);
+  std::printf(
+      "DRILL6: armed=%d triggered=%d entered=%d buy_fills=%d late_alert=%d exit=%d orphan=%d\n",
+      armed, triggered, entered, buy_fills, late_alert, code, orphan);
   if (!armed) std::printf("DRILL6: FAIL (never armed)\n"), rc = 1;
   if (triggered || entered || buy_fills) {
-    std::printf("DRILL6: FAIL (SAFETY: a leg started for a past-13:25 trigger)\n");
+    std::printf("DRILL6: FAIL (SAFETY: a leg started for a past-window trigger)\n");
+    rc = 1;
+  }
+  if (!late_alert) {
+    std::printf("DRILL6: FAIL (SAFETY: no out-of-window alert for the late trigger drop)\n");
     rc = 1;
   }
   if (orphan) std::printf("DRILL6: FAIL (orphan)\n"), rc = 1;
