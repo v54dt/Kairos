@@ -250,9 +250,12 @@ pid_t StartSim(const Env& e, const Ns& n, const std::string& hubd_args, int spee
 }
 
 pid_t StartSignald(const Env& e, const Ns& n) {
+  // Own the harness process group (not its own) so a group-kill of the harness — the
+  // ctest TIMEOUT or an operator Ctrl-C — reaps the daemon too. Unlike the sim it is
+  // registered in no pidfile, so a private group would orphan it on abnormal exit.
   return SpawnLogged({e.signald, "--config", n.signald_toml, "--signal-sock", n.signal_sock,
                       "--quote-sock", n.quote_sock, "--spool", n.spool},
-                     {}, n.signald_log, /*own_pgroup=*/true);
+                     {}, n.signald_log, /*own_pgroup=*/false);
 }
 
 pid_t StartTrader(const Env& e, const Ns& n, const std::vector<std::string>& mode_args,
