@@ -126,7 +126,7 @@ class SignalDaemon {
   SignalDaemonClock clock_;
   std::unique_ptr<QuoteSource> quote_source_;
 
-  int listen_fd_ = -1;
+  std::atomic<int> listen_fd_{-1};
   std::atomic<bool> stop_{false};
   std::atomic<int> active_clients_{0};
   std::thread accept_thread_;
