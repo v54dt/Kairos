@@ -71,7 +71,7 @@ target_include_directories(kairos_hub_status PUBLIC ${KAIROS_INC})
 add_library(kairos_order_hub src/order/order_hub.cpp src/order/risk_gate.cpp)
 target_include_directories(kairos_order_hub PUBLIC ${KAIROS_INC})
 target_link_libraries(kairos_order_hub PUBLIC kairos_order_codec kairos_hub_status
-                                              kairos_order_journal kairos_scenario)
+                                              kairos_order_journal kairos_scenario pthread)
 
 # UDS front end for the order hub: listen socket + per-client reader threads.
 add_library(kairos_order_hub_server src/order/order_hub_server.cpp)
