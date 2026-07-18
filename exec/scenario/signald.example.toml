@@ -1,0 +1,27 @@
+# Kairos signal daemon config template — copy to signald.toml, run:
+#   kairos_signald --config signald.toml
+# The daemon subscribes to the core quote UDS for the union of the predicates'
+# symbols and pushes signals + a 1s heartbeat to subscribed traders over the
+# signal UDS. Each [[predicate]] declares a kind, a unique name (the signal name a
+# trader subscribes to), and the symbols it watches.
+
+# depth_evap: fires enter when the watched side's five-level total volume collapses
+# below `ratio` of a rolling EWMA baseline, exit once it recovers above ratio_exit.
+[[predicate]]
+kind = "depth_evap"
+name = "depth-evap-2330"
+symbols = ["2330"]
+side = "bid"           # bid | ask
+window_s = 10.0        # EWMA time-constant of the depth baseline (seconds)
+ratio = 0.4            # enter when depth / baseline drops below this
+ratio_exit = 0.7       # exit only once it recovers above this (hysteresis)
+warmup_s = 5.0         # suppress firing until the baseline has settled
+cooldown_ms = 3000     # minimum gap between successive enter fires
+
+# manual: operator drill injection. Append a JSON line to the spool file
+# (KAIROS_SIGNAL_SPOOL) and the daemon emits it once:
+#   {"signal":"manual","symbol":"2330","action":"enter"}
+[[predicate]]
+kind = "manual"
+name = "manual"
+symbols = ["2330", "2317"]
